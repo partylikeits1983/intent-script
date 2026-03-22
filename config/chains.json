@@ -1,0 +1,22 @@
+{
+  "ethereum": {
+    "chain_id": 1,
+    "native_asset": "ETH",
+    "wrapped_native": "WETH"
+  },
+  "sepolia": {
+    "chain_id": 11155111,
+    "native_asset": "ETH",
+    "wrapped_native": "WETH"
+  },
+  "base": {
+    "chain_id": 8453,
+    "native_asset": "ETH",
+    "wrapped_native": "WETH"
+  },
+  "arbitrum": {
+    "chain_id": 42161,
+    "native_asset": "ETH",
+    "wrapped_native": "WETH"
+  }
+}

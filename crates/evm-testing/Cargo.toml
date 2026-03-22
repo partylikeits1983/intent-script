@@ -1,0 +1,20 @@
+[package]
+name = "evm-testing"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+intent-script = { path = "../intent-script" }
+alloy = { version = "1.7.3", features = [
+    "provider-anvil-node",
+    "signer-local",
+    "network",
+    "consensus",
+    "rpc-types",
+    "sol-types",
+] }
+alloy-primitives = "1"
+alloy-sol-types = "1"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+eyre = "0.6"
