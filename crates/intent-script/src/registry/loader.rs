@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use alloy_primitives::Address;
 use serde::Deserialize;
 
 use crate::error::{CompileError, Result};
@@ -100,5 +101,19 @@ impl RegistryContext {
     /// Check if an asset alias refers to the wrapped native asset (e.g. "WETH").
     pub fn is_wrapped_native(&self, alias: &str) -> bool {
         alias == self.chain.wrapped_native
+    }
+
+    /// Look up the IntentRouter address for this network, if configured.
+    ///
+    /// Returns `None` if no router is configured or the address is the zero address.
+    pub fn router_address(&self) -> Option<Address> {
+        let router_config = self.protocols.get("intent_router")?;
+        let addr_str = router_config.contracts.get("router")?;
+        let addr: Address = addr_str.parse().ok()?;
+        if addr == Address::ZERO {
+            None
+        } else {
+            Some(addr)
+        }
     }
 }

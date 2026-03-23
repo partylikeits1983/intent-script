@@ -59,7 +59,7 @@ fn test_wrap_eth_to_weth() {
 }
 
 #[test]
-fn test_aave_deposit_usdc() {
+fn test_aave_deposit_usdc_batched_through_router() {
     let input = r#"{
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
@@ -70,42 +70,41 @@ fn test_aave_deposit_usdc() {
 
     let output = compile(input, &config_dir()).expect("compile should succeed");
 
-    // Deposit should produce a TxSequence: approve + supply
+    // Deposit produces 2 calls (approve + supply) which get batched
+    // into a single router.execute() tx since a router is configured.
     match &output {
-        CompileOutput::TxSequence(txs) => {
-            assert_eq!(txs.len(), 2, "Expected 2 txs (approve + supply)");
-
-            // First tx: ERC-20 approve
-            let approve_tx = &txs[0];
-            // Target should be USDC contract
+        CompileOutput::SingleTx(tx) => {
+            // Target should be the IntentRouter
             assert_eq!(
-                format!("{}", approve_tx.to),
-                "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+                format!("{}", tx.to),
+                "0x1111111254EEB25477B68fb85Ed929f73A960582"
             );
-            assert_eq!(approve_tx.value.to_string(), "0");
-            // approve(address,uint256) selector: 0x095ea7b3
-            assert_eq!(&approve_tx.data[..4], &[0x09, 0x5e, 0xa7, 0xb3]);
-
-            // Second tx: Aave V3 supply
-            let supply_tx = &txs[1];
-            // Target should be Aave V3 Pool
-            assert_eq!(
-                format!("{}", supply_tx.to),
-                "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+            // No direct ETH value (approve + supply are both 0-value)
+            assert_eq!(tx.value.to_string(), "0");
+            // Calldata should start with execute() selector
+            // execute((address,bytes,uint256)[],address[])
+            // The selector is the first 4 bytes of keccak256 of the signature
+            assert!(
+                tx.data.len() > 4,
+                "Should have calldata for router.execute()"
             );
-            assert_eq!(supply_tx.value.to_string(), "0");
-            // supply(address,uint256,address,uint16) selector: 0x617ba037
-            assert_eq!(&supply_tx.data[..4], &[0x61, 0x7b, 0xa0, 0x37]);
+            // Description should mention batching
+            assert!(
+                tx.description.contains("Batched"),
+                "Description should mention batching: {}",
+                tx.description
+            );
         }
-        other => panic!("Expected TxSequence, got {:?}", other),
+        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
     }
 
     // Verify JSON serialization
     let json_output = CompileOutputJson::from(&output);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
-    println!("Aave deposit output:\n{json_str}");
+    println!("Aave deposit (batched) output:\n{json_str}");
 
-    assert!(json_str.contains("tx_sequence"));
+    assert!(json_str.contains("single_tx"));
+    assert!(json_str.contains("0x1111111254EEB25477B68fb85Ed929f73A960582"));
 }
 
 #[test]

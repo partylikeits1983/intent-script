@@ -11,6 +11,9 @@ pub struct ResolvedIntent {
     pub chain_id: u64,
     pub signer: Address,
     pub steps: Vec<ResolvedStep>,
+    /// ERC-20 tokens that should be swept back to the signer after batched execution.
+    /// Populated by the enricher when a router is available.
+    pub tokens_to_sweep: Vec<Address>,
 }
 
 /// A resolved action step with concrete types.

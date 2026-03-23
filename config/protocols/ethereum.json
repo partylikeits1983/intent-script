@@ -5,5 +5,12 @@
     "contracts": {
       "pool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
     }
+  },
+  "intent_router": {
+    "type": "router",
+    "version": "v1",
+    "contracts": {
+      "router": "0x1111111254EEB25477B68fb85Ed929f73A960582"
+    }
   }
 }

@@ -24,6 +24,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<Re
         chain_id: registry.chain.chain_id,
         signer,
         steps,
+        tokens_to_sweep: Vec::new(),
     })
 }
 
