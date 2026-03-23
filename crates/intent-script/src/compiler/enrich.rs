@@ -29,19 +29,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 ..
             } => {
                 // Insert ERC-20 approve before supply.
-                // If we have a router and multiple steps, the approval targets
-                // the router (since the router will be msg.sender in the sub-call).
-                // For single-step intents, approval targets the pool directly.
-                let spender = if router.is_some() && intent.steps.len() > 1 {
-                    // When batching through router, the router calls the pool,
-                    // so the pool needs allowance from the router. But the user's
-                    // tokens need to get to the router first via transferFrom.
-                    // For now, keep approval targeting the pool — the router
-                    // pattern for ERC-20 protocols needs a transferFrom step.
-                    *pool
-                } else {
-                    *pool
-                };
+                let spender = *pool;
 
                 enriched_steps.push(ResolvedStep::Erc20Approve {
                     token: *asset,
@@ -49,6 +37,38 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                     amount: *amount,
                 });
                 enriched_steps.push(step.clone());
+            }
+            ResolvedStep::UniswapV3Swap {
+                router: swap_router,
+                token_in,
+                token_out,
+                amount_in,
+                ..
+            } => {
+                // Insert ERC-20 approve for token_in → router before swap
+                // (skip if token_in is native ETH, i.e. Address::ZERO — but
+                // the normalizer already converts native to WETH address, so
+                // we check if the original swap sends ETH via value)
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token: *token_in,
+                    spender: *swap_router,
+                    amount: *amount_in,
+                });
+                enriched_steps.push(step.clone());
+
+                // Track output token for sweep when batching
+                if router.is_some() && !sweep_tokens.contains(token_out) {
+                    sweep_tokens.push(*token_out);
+                }
+            }
+            ResolvedStep::LidoStake { lido, .. } => {
+                // No approval needed — ETH is sent as msg.value
+                enriched_steps.push(step.clone());
+
+                // Track stETH for sweep when batching (stETH address == lido address)
+                if router.is_some() && !sweep_tokens.contains(lido) {
+                    sweep_tokens.push(*lido);
+                }
             }
             ResolvedStep::Wrap { wrapped_token, .. } => {
                 // Wrap produces an ERC-20 token that may need sweeping
@@ -59,7 +79,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 }
                 enriched_steps.push(step.clone());
             }
-            // Other steps don't need enrichment in v1
+            // Other steps don't need enrichment (borrow, withdraw, unwrap, approve)
             _ => {
                 enriched_steps.push(step.clone());
             }

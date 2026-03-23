@@ -184,3 +184,194 @@ fn test_empty_steps_fails() {
     let result = compile(input, &config_dir());
     assert!(result.is_err());
 }
+
+// ─── New primitive tests ───────────────────────────────────────────────
+
+#[test]
+fn test_swap_usdc_to_weth() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Swap produces 2 calls (approve + exactInputSingle) batched via router
+    match &output {
+        CompileOutput::SingleTx(tx) => {
+            // Target should be the IntentRouter (batched)
+            assert_eq!(
+                format!("{}", tx.to),
+                "0x1111111254EEB25477B68fb85Ed929f73A960582"
+            );
+            assert!(
+                tx.data.len() > 4,
+                "Should have calldata for router.execute()"
+            );
+            assert!(
+                tx.description.contains("Batched"),
+                "Description should mention batching: {}",
+                tx.description
+            );
+            assert!(
+                tx.description.contains("Uniswap V3"),
+                "Description should mention Uniswap V3: {}",
+                tx.description
+            );
+        }
+        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+    }
+
+    // Verify JSON serialization
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Swap USDC→WETH output:\n{json_str}");
+    assert!(json_str.contains("single_tx"));
+}
+
+#[test]
+fn test_deposit_and_borrow_single_tx() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
+            { "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Deposit + borrow produces 3 calls (approve + supply + borrow) batched via router
+    match &output {
+        CompileOutput::SingleTx(tx) => {
+            // Target should be the IntentRouter
+            assert_eq!(
+                format!("{}", tx.to),
+                "0x1111111254EEB25477B68fb85Ed929f73A960582"
+            );
+            assert!(
+                tx.data.len() > 4,
+                "Should have calldata for router.execute()"
+            );
+            assert!(
+                tx.description.contains("Batched"),
+                "Description should mention batching: {}",
+                tx.description
+            );
+            // Should contain both supply and borrow descriptions
+            assert!(
+                tx.description.contains("Supply"),
+                "Description should mention Supply: {}",
+                tx.description
+            );
+            assert!(
+                tx.description.contains("Borrow"),
+                "Description should mention Borrow: {}",
+                tx.description
+            );
+        }
+        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+    }
+
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Deposit+Borrow output:\n{json_str}");
+    assert!(json_str.contains("single_tx"));
+}
+
+#[test]
+fn test_swap_deposit_borrow_chain() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH" } },
+            { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Should produce batched tx: approve USDC, swap, approve WETH, supply, borrow
+    match &output {
+        CompileOutput::SingleTx(tx) => {
+            assert_eq!(
+                format!("{}", tx.to),
+                "0x1111111254EEB25477B68fb85Ed929f73A960582"
+            );
+            assert!(
+                tx.data.len() > 4,
+                "Should have calldata for router.execute()"
+            );
+            assert!(
+                tx.description.contains("Batched"),
+                "Description should mention batching: {}",
+                tx.description
+            );
+            // Should contain swap, supply, and borrow
+            assert!(
+                tx.description.contains("Swap"),
+                "Description should mention Swap: {}",
+                tx.description
+            );
+            assert!(
+                tx.description.contains("Supply"),
+                "Description should mention Supply: {}",
+                tx.description
+            );
+            assert!(
+                tx.description.contains("Borrow"),
+                "Description should mention Borrow: {}",
+                tx.description
+            );
+        }
+        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+    }
+
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Swap+Deposit+Borrow output:\n{json_str}");
+    assert!(json_str.contains("single_tx"));
+}
+
+#[test]
+fn test_stake_eth_in_lido() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Stake is a single call (no approval needed for ETH)
+    match &output {
+        CompileOutput::SingleTx(tx) => {
+            // Target should be Lido stETH contract
+            assert_eq!(
+                format!("{}", tx.to),
+                "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
+            );
+            // Value should be 10 ETH in wei
+            assert_eq!(tx.value.to_string(), "10000000000000000000");
+            // Calldata should be submit(address) selector
+            assert!(tx.data.len() >= 4, "Should have calldata for submit()");
+            // submit(address) selector: 0xa1903eab
+            assert_eq!(&tx.data[..4], &[0xa1, 0x90, 0x3e, 0xab]);
+        }
+        other => panic!("Expected SingleTx, got {:?}", other),
+    }
+
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Stake ETH in Lido output:\n{json_str}");
+    assert!(json_str.contains("single_tx"));
+    assert!(json_str.contains("0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"));
+}

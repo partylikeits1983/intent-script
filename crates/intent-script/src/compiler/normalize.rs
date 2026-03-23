@@ -142,9 +142,93 @@ fn normalize_step(
                 to: signer,
             })
         }
-        Step::Swap(_) => Err(CompileError::UnsupportedStep(
-            "swap is not yet implemented in v1".to_string(),
-        )),
+        Step::Swap(s) => {
+            let token_in = resolve_asset_address(&s.from, registry)?;
+            let token_in_decimals = resolve_asset_decimals(&s.from, registry)?;
+            let amount_in = parse_amount(&s.amount, token_in_decimals)?;
+            let token_out = resolve_asset_address(&s.to, registry)?;
+
+            // Look up Uniswap V3 router from protocol config
+            let protocol =
+                registry
+                    .protocols
+                    .get("uniswap")
+                    .ok_or_else(|| CompileError::UnknownProtocol {
+                        protocol: "uniswap".to_string(),
+                        network: registry.network.clone(),
+                    })?;
+
+            let router_addr = protocol.contracts.get("router").ok_or_else(|| {
+                CompileError::Adapter(
+                    "Protocol 'uniswap' has no 'router' contract configured".to_string(),
+                )
+            })?;
+            let router = parse_address(router_addr)?;
+
+            // If swapping from native ETH, use WETH address as token_in
+            // (Uniswap V3 router wraps ETH internally)
+            let effective_token_in = if token_in == Address::ZERO {
+                resolve_asset_address(&registry.chain.wrapped_native, registry)?
+            } else {
+                token_in
+            };
+
+            // If swapping to native ETH, use WETH address as token_out
+            let effective_token_out = if token_out == Address::ZERO {
+                resolve_asset_address(&registry.chain.wrapped_native, registry)?
+            } else {
+                token_out
+            };
+
+            Ok(ResolvedStep::UniswapV3Swap {
+                router,
+                token_in: effective_token_in,
+                token_out: effective_token_out,
+                amount_in,
+                fee: 3000, // Default 0.3% fee tier
+                recipient: signer,
+                deadline: U256::MAX, // No expiry for offline compilation
+                amount_out_minimum: U256::ZERO, // No slippage protection for offline compilation
+            })
+        }
+        Step::Stake(s) => {
+            let decimals = resolve_asset_decimals(&s.asset, registry)?;
+            let amount = parse_amount(&s.amount, decimals)?;
+
+            let protocol =
+                registry
+                    .protocols
+                    .get(&s.into)
+                    .ok_or_else(|| CompileError::UnknownProtocol {
+                        protocol: s.into.clone(),
+                        network: registry.network.clone(),
+                    })?;
+
+            let contract_key = match s.into.as_str() {
+                "lido" => "steth",
+                _ => "pool",
+            };
+
+            let contract_addr = protocol.contracts.get(contract_key).ok_or_else(|| {
+                CompileError::Adapter(format!(
+                    "Protocol '{}' has no '{}' contract configured",
+                    s.into, contract_key
+                ))
+            })?;
+            let contract = parse_address(contract_addr)?;
+
+            match s.into.as_str() {
+                "lido" => Ok(ResolvedStep::LidoStake {
+                    lido: contract,
+                    amount,
+                    referral: Address::ZERO,
+                }),
+                _ => Err(CompileError::UnsupportedStep(format!(
+                    "staking into '{}' is not yet supported",
+                    s.into
+                ))),
+            }
+        }
         Step::Custom(_) => Err(CompileError::UnsupportedStep(
             "custom steps are not yet implemented in v1".to_string(),
         )),

@@ -105,4 +105,76 @@ contract IntentRouterCalldataTest is Test {
 
         console.log("Compiler-style wrap ETH through router succeeded");
     }
+
+    /// @notice Test: Verify compiler-generated swap calldata decodes correctly.
+    ///         The swap intent produces a batched router.execute() call
+    ///         containing approve + exactInputSingle.
+    function test_executeCompilerCalldata_swapUSDCtoWETH_decodesCorrectly() public {
+        string memory calldataHex = vm.readFile("test/fixtures/swap_usdc_weth.txt");
+        bytes memory callData = vm.parseBytes(calldataHex);
+
+        // Verify non-empty and starts with execute() selector
+        assertTrue(callData.length > 4, "Calldata should be non-empty");
+
+        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 calldataSelector;
+        assembly {
+            calldataSelector := mload(add(callData, 32))
+        }
+        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+
+        console.log("Swap USDC->WETH calldata length:", callData.length);
+        console.log("Calldata selector matches router.execute()");
+    }
+
+    /// @notice Test: Verify compiler-generated deposit+borrow calldata decodes correctly.
+    function test_executeCompilerCalldata_depositBorrow_decodesCorrectly() public {
+        string memory calldataHex = vm.readFile("test/fixtures/deposit_borrow.txt");
+        bytes memory callData = vm.parseBytes(calldataHex);
+
+        assertTrue(callData.length > 4, "Calldata should be non-empty");
+
+        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 calldataSelector;
+        assembly {
+            calldataSelector := mload(add(callData, 32))
+        }
+        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+
+        console.log("Deposit+Borrow calldata length:", callData.length);
+    }
+
+    /// @notice Test: Verify compiler-generated swap+deposit+borrow calldata decodes correctly.
+    function test_executeCompilerCalldata_swapDepositBorrow_decodesCorrectly() public {
+        string memory calldataHex = vm.readFile("test/fixtures/swap_deposit_borrow.txt");
+        bytes memory callData = vm.parseBytes(calldataHex);
+
+        assertTrue(callData.length > 4, "Calldata should be non-empty");
+
+        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 calldataSelector;
+        assembly {
+            calldataSelector := mload(add(callData, 32))
+        }
+        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+
+        console.log("Swap+Deposit+Borrow calldata length:", callData.length);
+    }
+
+    /// @notice Test: Verify compiler-generated Lido stake calldata.
+    ///         The stake intent produces a direct lido.submit() call (not batched).
+    function test_executeCompilerCalldata_stakeETHLido_decodesCorrectly() public {
+        string memory calldataHex = vm.readFile("test/fixtures/stake_eth_lido.txt");
+        bytes memory callData = vm.parseBytes(calldataHex);
+
+        // Lido submit(address) selector: 0xa1903eab
+        assertTrue(callData.length >= 4, "Calldata should have at least selector");
+        bytes4 calldataSelector;
+        assembly {
+            calldataSelector := mload(add(callData, 32))
+        }
+        assertEq(calldataSelector, bytes4(0xa1903eab), "Calldata should target submit()");
+
+        console.log("Lido stake calldata length:", callData.length);
+    }
 }

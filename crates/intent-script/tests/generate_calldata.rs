@@ -35,6 +35,8 @@ fn fixtures_dir() -> PathBuf {
 }
 
 /// Write calldata to a fixture file as a hex string (with 0x prefix).
+/// Also writes a companion {name}_value.txt with the ETH value in wei,
+/// and {name}_to.txt with the target address.
 fn write_calldata(name: &str, output: &CompileOutput) {
     let dir = fixtures_dir();
     std::fs::create_dir_all(&dir).expect("create fixtures dir");
@@ -44,6 +46,15 @@ fn write_calldata(name: &str, output: &CompileOutput) {
             let hex = format!("0x{}", hex_encode(&tx.data));
             let path = dir.join(format!("{name}.txt"));
             std::fs::write(&path, &hex).expect("write calldata file");
+
+            // Write value file
+            let value_path = dir.join(format!("{name}_value.txt"));
+            std::fs::write(&value_path, tx.value.to_string()).expect("write value file");
+
+            // Write target address file
+            let to_path = dir.join(format!("{name}_to.txt"));
+            std::fs::write(&to_path, format!("{}", tx.to)).expect("write to file");
+
             println!(
                 "Wrote calldata to {}: {} bytes",
                 path.display(),
@@ -101,4 +112,63 @@ fn generate_aave_deposit_calldata() {
 
     let output = compile(input, &config_dir()).expect("compile should succeed");
     write_calldata("aave_deposit_usdc", &output);
+}
+
+#[test]
+fn generate_swap_usdc_weth_calldata() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+    write_calldata("swap_usdc_weth", &output);
+}
+
+#[test]
+fn generate_deposit_borrow_calldata() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
+            { "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+    write_calldata("deposit_borrow", &output);
+}
+
+#[test]
+fn generate_swap_deposit_borrow_calldata() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH" } },
+            { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+    write_calldata("swap_deposit_borrow", &output);
+}
+
+#[test]
+fn generate_stake_eth_lido_calldata() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+    write_calldata("stake_eth_lido", &output);
 }

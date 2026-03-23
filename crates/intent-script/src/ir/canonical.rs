@@ -57,6 +57,23 @@ pub enum ResolvedStep {
         amount: U256,
         to: Address,
     },
+    /// Uniswap V3 exactInputSingle swap
+    UniswapV3Swap {
+        router: Address,
+        token_in: Address,
+        token_out: Address,
+        amount_in: U256,
+        fee: u32,
+        recipient: Address,
+        deadline: U256,
+        amount_out_minimum: U256,
+    },
+    /// Lido stETH staking via submit()
+    LidoStake {
+        lido: Address,
+        amount: U256,
+        referral: Address,
+    },
 }
 
 /// A concrete EVM call produced by an adapter.

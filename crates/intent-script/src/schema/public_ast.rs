@@ -31,6 +31,7 @@ pub enum Step {
     Withdraw(WithdrawStep),
     Wrap(WrapStep),
     Unwrap(UnwrapStep),
+    Stake(StakeStep),
     Custom(serde_json::Value),
 }
 
@@ -72,4 +73,11 @@ pub struct WrapStep {
 pub struct UnwrapStep {
     pub asset: String,
     pub amount: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StakeStep {
+    pub asset: String,
+    pub amount: String,
+    pub into: String,
 }

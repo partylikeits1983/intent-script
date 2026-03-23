@@ -6,6 +6,21 @@
       "pool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
     }
   },
+  "uniswap": {
+    "type": "dex",
+    "version": "v3",
+    "contracts": {
+      "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+    }
+  },
+  "lido": {
+    "type": "staking",
+    "version": "v1",
+    "contracts": {
+      "steth": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
+    }
+  },
   "intent_router": {
     "type": "router",
     "version": "v1",

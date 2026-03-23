@@ -22,6 +22,10 @@ test-foundry:
 # Full test flow: generate calldata, then run Foundry tests
 test-router: generate-calldata test-foundry
 
+# Run Foundry fork tests against mainnet (requires ETH_RPC_URL)
+test-fork:
+	cd contracts && forge test --mc IntentForkTests --fork-url $(ETH_RPC_URL) -vvv
+
 # Run Anvil fork tests (requires ETH_RPC_URL or uses public node)
 test-anvil:
 	cargo test -p evm-testing -- --nocapture
