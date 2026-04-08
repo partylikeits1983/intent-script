@@ -18,6 +18,11 @@ import { IERC20 } from "../src/interfaces/IERC20.sol";
 ///
 /// The compiler outputs calldata targeting the router at ROUTER_ADDR.
 /// We use vm.etch to place our IntentRouter bytecode at that address.
+///
+/// NOTE: The compiler currently does NOT generate transferFrom calls to pull
+/// tokens from the user into the router. The user must approve the router,
+/// and the test must transfer tokens to the router before executing.
+/// This is a known compiler limitation — see plans/test-improvement-plan.md.
 contract IntentForkE2E is Test {
     // ─── Mainnet addresses ───────────────────────────────────────────
     address constant ROUTER_ADDR = 0x1111111254EEB25477B68fb85Ed929f73A960582;
@@ -28,6 +33,11 @@ contract IntentForkE2E is Test {
     address constant WSTETH      = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
     address constant AAVE_POOL   = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
     address constant UNI_ROUTER  = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+
+    // Compiler signer address — must match the "from" field in example JSON files.
+    // The compiler bakes this address into transferFrom calls, so the test user
+    // must be the same address for compiler-generated calldata to work.
+    address constant COMPILER_SIGNER = 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045;
 
     // Aave V3 aToken addresses on mainnet
     address constant A_WETH      = 0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8;
@@ -53,8 +63,9 @@ contract IntentForkE2E is Test {
         vm.etch(ROUTER_ADDR, address(impl_).code);
         router = IntentRouter(payable(ROUTER_ADDR));
 
-        // Use a deterministic user address
-        user = makeAddr("forkTestUser");
+        // Use the same signer address as the compiler so that transferFrom calls
+        // in the compiler-generated calldata reference the correct user.
+        user = COMPILER_SIGNER;
         vm.deal(user, 1000 ether);
     }
 
@@ -76,6 +87,19 @@ contract IntentForkE2E is Test {
 
     function _dealERC20(address token, address to, uint256 amount) internal {
         deal(token, to, amount);
+    }
+
+    // ─── Helper: approve credit delegation for Aave V3 borrows ───────
+
+    /// @dev Aave V3 requires credit delegation when msg.sender != onBehalfOf.
+    ///      When borrowing through the router, the router is msg.sender but
+    ///      onBehalfOf is the user, so the user must delegate borrow power.
+    function _approveDelegation(address vDebtToken, address delegator, address delegatee, uint256 amount) internal {
+        vm.prank(delegator);
+        (bool ok,) = vDebtToken.call(
+            abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount)
+        );
+        require(ok, "approveDelegation failed");
     }
 
     // ─── Helper: build EIP-712 digest for executeSigned ──────────────
@@ -212,6 +236,7 @@ contract IntentForkE2E is Test {
     /// @notice Deposit USDC into Aave and borrow DAI using compiler-generated calldata.
     function test_fork_depositBorrow() public {
         uint256 usdcAmount = 5000 * 1e6; // 5000 USDC
+        uint256 borrowAmount = 2000 * 1e18; // 2000 DAI
 
         // Give user USDC
         _dealERC20(USDC, user, usdcAmount);
@@ -219,6 +244,10 @@ contract IntentForkE2E is Test {
         // User approves router to pull USDC
         vm.prank(user);
         IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+
+        // Credit delegation: user delegates borrow power to router for DAI.
+        // Aave V3 requires approveDelegation when msg.sender != onBehalfOf.
+        _approveDelegation(VDEBT_DAI, user, ROUTER_ADDR, borrowAmount);
 
         uint256 daiBefore = IERC20(DAI).balanceOf(user);
 
@@ -236,8 +265,10 @@ contract IntentForkE2E is Test {
 
         assertTrue(aUsdcAfter > 0, "User should have aUSDC from deposit");
         assertEq(usdcAfter, 0, "User should have spent all USDC");
-        // DAI borrowed = 2000 * 1e18
-        assertEq(daiAfter - daiBefore, 2000 * 1e18, "User should have borrowed 2000 DAI");
+        // DAI borrowed amount — allow small dust tolerance because the router address
+        // on the mainnet fork may have pre-existing DAI dust that gets swept too.
+        assertTrue(daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 2000 DAI");
+        assertApproxEqAbs(daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~2000 DAI");
 
         console.log("Fork deposit+borrow: aUSDC", aUsdcAfter, "DAI gained", daiAfter - daiBefore);
     }
@@ -279,6 +310,7 @@ contract IntentForkE2E is Test {
     ///         swap 5000 USDC → WETH, deposit 2 WETH into Aave, borrow 1000 DAI.
     function test_fork_complexDefi_executeDirect() public {
         uint256 usdcAmount = 5000 * 1e6; // 5000 USDC
+        uint256 borrowAmount = 1000 * 1e18; // 1000 DAI
 
         // Give user USDC
         _dealERC20(USDC, user, usdcAmount);
@@ -286,6 +318,10 @@ contract IntentForkE2E is Test {
         // User approves router to pull USDC
         vm.prank(user);
         IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+
+        // Credit delegation: user delegates borrow power to router for DAI.
+        // Aave V3 requires approveDelegation when msg.sender != onBehalfOf.
+        _approveDelegation(VDEBT_DAI, user, ROUTER_ADDR, borrowAmount);
 
         uint256 wethBefore = IERC20(WETH).balanceOf(user);
         uint256 daiBefore = IERC20(DAI).balanceOf(user);
@@ -310,8 +346,11 @@ contract IntentForkE2E is Test {
         // 2. aWETH should be > 0 (deposited 2 WETH into Aave)
         assertTrue(aWethAfter > 0, "User should have aWETH from Aave deposit");
 
-        // 3. DAI should have increased by 1000 (borrowed from Aave)
-        assertEq(daiAfter - daiBefore, 1000 * 1e18, "User should have borrowed 1000 DAI");
+        // 3. DAI should have increased by ~1000 (borrowed from Aave)
+        //    Allow small dust tolerance because the router address on mainnet fork
+        //    may have pre-existing DAI dust that gets swept too.
+        assertTrue(daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 1000 DAI");
+        assertApproxEqAbs(daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~1000 DAI");
 
         // 4. User may have excess WETH from the swap (swapped 5000 USDC but only deposited 2 WETH)
         //    The sweep should return any remaining WETH to the user
@@ -328,15 +367,29 @@ contract IntentForkE2E is Test {
     // ═════════════════════════════════════════════════════════════════
 
     /// @notice Build the complex DeFi calls array for a given signer and amounts.
+    ///         Matches the compiler output: transferFrom + approve + swap(recipient=router)
+    ///         + approve + supply + borrow. Intermediate tokens stay in the router.
     function _buildComplexDefiCalls(
         address signer,
+        address routerAddr,
         uint256 usdcAmount,
         uint256 depositAmount,
         uint256 borrowAmount
     ) internal pure returns (IntentRouter.Call[] memory) {
-        IntentRouter.Call[] memory calls = new IntentRouter.Call[](5);
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](6);
 
+        // Step 0: Pull USDC from signer into router
         calls[0] = IntentRouter.Call({
+            target: USDC,
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)",
+                signer, routerAddr, usdcAmount
+            ),
+            value: 0
+        });
+
+        // Step 1: Router approves Uniswap to spend USDC
+        calls[1] = IntentRouter.Call({
             target: USDC,
             callData: abi.encodeWithSignature(
                 "approve(address,uint256)", UNI_ROUTER, usdcAmount
@@ -344,17 +397,19 @@ contract IntentForkE2E is Test {
             value: 0
         });
 
-        calls[1] = IntentRouter.Call({
+        // Step 2: Swap USDC → WETH, recipient = router (WETH stays in router)
+        calls[2] = IntentRouter.Call({
             target: UNI_ROUTER,
             callData: abi.encodeWithSignature(
                 "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
-                USDC, WETH, uint24(3000), signer,
+                USDC, WETH, uint24(3000), routerAddr,
                 type(uint256).max, usdcAmount, uint256(0), uint160(0)
             ),
             value: 0
         });
 
-        calls[2] = IntentRouter.Call({
+        // Step 3: Router approves Aave to spend WETH (already in router from swap)
+        calls[3] = IntentRouter.Call({
             target: WETH,
             callData: abi.encodeWithSignature(
                 "approve(address,uint256)", AAVE_POOL, depositAmount
@@ -362,7 +417,8 @@ contract IntentForkE2E is Test {
             value: 0
         });
 
-        calls[3] = IntentRouter.Call({
+        // Step 4: Supply WETH to Aave on behalf of signer
+        calls[4] = IntentRouter.Call({
             target: AAVE_POOL,
             callData: abi.encodeWithSignature(
                 "supply(address,uint256,address,uint16)",
@@ -371,7 +427,8 @@ contract IntentForkE2E is Test {
             value: 0
         });
 
-        calls[4] = IntentRouter.Call({
+        // Step 5: Borrow DAI from Aave on behalf of signer
+        calls[5] = IntentRouter.Call({
             target: AAVE_POOL,
             callData: abi.encodeWithSignature(
                 "borrow(address,uint256,uint256,uint16,address)",
@@ -401,13 +458,18 @@ contract IntentForkE2E is Test {
         vm.prank(signer);
         IERC20(USDC).approve(address(signedRouter), usdcAmount);
 
-        // Build batch
-        address[] memory tokensToSweep = new address[](1);
+        // Credit delegation: signer delegates borrow power to signedRouter for DAI.
+        // Aave V3 requires approveDelegation when msg.sender != onBehalfOf.
+        _approveDelegation(VDEBT_DAI, signer, address(signedRouter), borrowAmount);
+
+        // Build batch — sweep both WETH (excess from swap) and DAI (borrowed by router)
+        address[] memory tokensToSweep = new address[](2);
         tokensToSweep[0] = WETH;
+        tokensToSweep[1] = DAI;
 
         IntentRouter.IntentBatch memory batch = IntentRouter.IntentBatch({
             signer: signer,
-            calls: _buildComplexDefiCalls(signer, usdcAmount, 2 ether, borrowAmount),
+            calls: _buildComplexDefiCalls(signer, address(signedRouter), usdcAmount, 2 ether, borrowAmount),
             tokensToSweep: tokensToSweep,
             nonce: 0,
             deadline: 0

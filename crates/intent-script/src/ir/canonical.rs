@@ -39,6 +39,13 @@ pub enum ResolvedStep {
         spender: Address,
         amount: U256,
     },
+    /// ERC-20 transferFrom (auto-inserted by enricher for router batching)
+    Erc20TransferFrom {
+        token: Address,
+        from: Address,
+        to: Address,
+        amount: U256,
+    },
     /// Aave V3 supply
     AaveV3Supply {
         pool: Address,

@@ -12,6 +12,7 @@ use crate::ir::{ConcreteCall, ResolvedStep};
 
 alloy_sol_types::sol! {
     function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
     function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
 }
 
@@ -41,6 +42,38 @@ pub fn lower_approve(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         description: format!(
             "Approve {} wei of token {} for spender {}",
             amount, token, spender
+        ),
+    }])
+}
+
+/// Lower an Erc20TransferFrom step to a concrete transferFrom() call.
+pub fn lower_transfer_from(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
+    let ResolvedStep::Erc20TransferFrom {
+        token,
+        from,
+        to,
+        amount,
+    } = step
+    else {
+        return Err(CompileError::Adapter(
+            "Expected Erc20TransferFrom step".to_string(),
+        ));
+    };
+
+    let calldata = transferFromCall {
+        from: *from,
+        to: *to,
+        amount: *amount,
+    }
+    .abi_encode();
+
+    Ok(vec![ConcreteCall {
+        to: *token,
+        calldata: Bytes::from(calldata),
+        value: U256::ZERO,
+        description: format!(
+            "TransferFrom {} wei of token {} from {} to {}",
+            amount, token, from, to
         ),
     }])
 }
