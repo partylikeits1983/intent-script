@@ -1,0 +1,468 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import { Test, console } from "forge-std/Test.sol";
+import { IntentRouter } from "../src/IntentRouter.sol";
+import { IERC20 } from "../src/interfaces/IERC20.sol";
+
+/// @title IntentForkE2E
+/// @notice End-to-end fork tests that:
+///   1) Deploy IntentRouter on a forked L1 (via vm.etch at the config address)
+///   2) Read compiler-generated calldata from fixture files
+///   3) Execute via executeDirect or executeSigned
+///   4) Assert token balances are correct after execution
+///
+/// Prerequisites:
+///   - Run `make generate-calldata` and `make generate-fixtures` first
+///   - Run with: forge test --mc IntentForkE2E --fork-url $ETH_RPC_URL -vvv
+///
+/// The compiler outputs calldata targeting the router at ROUTER_ADDR.
+/// We use vm.etch to place our IntentRouter bytecode at that address.
+contract IntentForkE2E is Test {
+    // ─── Mainnet addresses ───────────────────────────────────────────
+    address constant ROUTER_ADDR = 0x1111111254EEB25477B68fb85Ed929f73A960582;
+    address constant WETH        = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address constant USDC        = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant DAI         = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+    address constant STETH       = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
+    address constant WSTETH      = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    address constant AAVE_POOL   = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+    address constant UNI_ROUTER  = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+
+    // Aave V3 aToken addresses on mainnet
+    address constant A_WETH      = 0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8;
+    address constant A_USDC      = 0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c;
+
+    // Variable debt token for DAI on Aave V3
+    address constant VDEBT_DAI   = 0xcF8d0c70c850859266f5C338b38F9D663181C314;
+
+    IntentRouter public router;
+    address public user;
+
+    // ─── Known signer for EIP-712 tests ──────────────────────────────
+    // Foundry's vm.addr(1) private key
+    uint256 constant SIGNER_PK = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+
+    function setUp() public {
+        // Deploy a fresh IntentRouter to get the correct bytecode
+        IntentRouter impl_ = new IntentRouter();
+
+        // Etch our router bytecode at the config address so compiler-generated
+        // calldata works as-is. Note: DOMAIN_SEPARATOR immutable will have the
+        // impl_ address, but executeDirect doesn't use it.
+        vm.etch(ROUTER_ADDR, address(impl_).code);
+        router = IntentRouter(payable(ROUTER_ADDR));
+
+        // Use a deterministic user address
+        user = makeAddr("forkTestUser");
+        vm.deal(user, 1000 ether);
+    }
+
+    // ─── Helper: read fixture files ──────────────────────────────────
+
+    function _readCalldata(string memory name) internal view returns (bytes memory) {
+        string memory path = string.concat("test/fixtures/", name, ".txt");
+        string memory hex_ = vm.readFile(path);
+        return vm.parseBytes(hex_);
+    }
+
+    function _readValue(string memory name) internal view returns (uint256) {
+        string memory path = string.concat("test/fixtures/", name, "_value.txt");
+        string memory val = vm.readFile(path);
+        return vm.parseUint(val);
+    }
+
+    // ─── Helper: give user ERC-20 tokens via deal ────────────────────
+
+    function _dealERC20(address token, address to, uint256 amount) internal {
+        deal(token, to, amount);
+    }
+
+    // ─── Helper: build EIP-712 digest for executeSigned ──────────────
+
+    bytes32 constant CALL_TYPEHASH = keccak256("Call(address target,bytes callData,uint256 value)");
+    bytes32 constant INTENT_BATCH_TYPEHASH = keccak256(
+        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)"
+    );
+
+    function _buildDigest(IntentRouter.IntentBatch memory batch) internal view returns (bytes32) {
+        bytes32[] memory callHashes = new bytes32[](batch.calls.length);
+        for (uint256 i = 0; i < batch.calls.length; i++) {
+            callHashes[i] = keccak256(abi.encode(
+                CALL_TYPEHASH,
+                batch.calls[i].target,
+                keccak256(batch.calls[i].callData),
+                batch.calls[i].value
+            ));
+        }
+        bytes32 callsHash = keccak256(abi.encodePacked(callHashes));
+
+        bytes32 structHash = keccak256(abi.encode(
+            INTENT_BATCH_TYPEHASH,
+            batch.signer,
+            callsHash,
+            keccak256(abi.encodePacked(batch.tokensToSweep)),
+            batch.nonce,
+            batch.deadline
+        ));
+
+        return keccak256(abi.encodePacked("\x19\x01", router.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 1: Wrap ETH → WETH via compiler-generated calldata
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Wrap ETH to WETH using compiler-generated calldata on a fork.
+    ///         The wrap intent produces a direct WETH.deposit() call (SingleTx).
+    function test_fork_wrapETH() public {
+        uint256 wethBefore = IERC20(WETH).balanceOf(user);
+
+        // Read compiler-generated calldata (targets WETH directly, not router)
+        bytes memory callData = _readCalldata("wrap_eth");
+        uint256 value = _readValue("wrap_eth");
+
+        // Execute directly against WETH (wrap is a SingleTx, not batched)
+        vm.prank(user);
+        (bool success,) = WETH.call{ value: value }(callData);
+        assertTrue(success, "Wrap ETH should succeed");
+
+        uint256 wethAfter = IERC20(WETH).balanceOf(user);
+        assertEq(wethAfter - wethBefore, value, "WETH balance should increase by wrapped amount");
+
+        console.log("Fork wrap ETH: WETH balance", wethBefore, "->", wethAfter);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 2: Swap USDC → WETH via Uniswap V3 through the router
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Swap USDC to WETH using compiler-generated calldata on a fork.
+    ///         The compiler produces: approve USDC for Uniswap + exactInputSingle.
+    function test_fork_swapUSDC_WETH() public {
+        uint256 usdcAmount = 1000 * 1e6; // 1000 USDC
+
+        // Give user USDC
+        _dealERC20(USDC, user, usdcAmount);
+        assertEq(IERC20(USDC).balanceOf(user), usdcAmount, "User should have USDC");
+
+        // User must approve the router to pull USDC
+        vm.prank(user);
+        IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+
+        uint256 wethBefore = IERC20(WETH).balanceOf(user);
+
+        // Read compiler-generated calldata (batched via router)
+        bytes memory callData = _readCalldata("swap_usdc_weth");
+        uint256 value = _readValue("swap_usdc_weth");
+
+        // Execute through router
+        vm.prank(user);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
+        assertTrue(success, "Swap USDC->WETH should succeed");
+
+        uint256 wethAfter = IERC20(WETH).balanceOf(user);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(user);
+
+        assertTrue(wethAfter > wethBefore, "User should have received WETH");
+        assertEq(usdcAfter, 0, "User should have spent all USDC");
+
+        console.log("Fork swap USDC->WETH: WETH gained", wethAfter - wethBefore);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 3: Deposit USDC into Aave V3 through the router
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Deposit USDC into Aave V3 using compiler-generated calldata.
+    ///         The compiler produces: approve USDC for Aave + supply.
+    function test_fork_aaveDepositUSDC() public {
+        uint256 usdcAmount = 100 * 1e6; // 100 USDC
+
+        // Give user USDC
+        _dealERC20(USDC, user, usdcAmount);
+
+        // User approves router to pull USDC
+        vm.prank(user);
+        IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+
+        uint256 aUsdcBefore = IERC20(A_USDC).balanceOf(user);
+
+        // Read compiler-generated calldata
+        bytes memory callData = _readCalldata("aave_deposit_usdc");
+        uint256 value = _readValue("aave_deposit_usdc");
+
+        vm.prank(user);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
+        assertTrue(success, "Aave deposit USDC should succeed");
+
+        uint256 aUsdcAfter = IERC20(A_USDC).balanceOf(user);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(user);
+
+        assertTrue(aUsdcAfter > aUsdcBefore, "User should have received aUSDC");
+        assertEq(usdcAfter, 0, "User should have spent all USDC");
+
+        console.log("Fork Aave deposit: aUSDC gained", aUsdcAfter - aUsdcBefore);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 4: Deposit USDC + Borrow DAI through the router
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Deposit USDC into Aave and borrow DAI using compiler-generated calldata.
+    function test_fork_depositBorrow() public {
+        uint256 usdcAmount = 5000 * 1e6; // 5000 USDC
+
+        // Give user USDC
+        _dealERC20(USDC, user, usdcAmount);
+
+        // User approves router to pull USDC
+        vm.prank(user);
+        IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+
+        uint256 daiBefore = IERC20(DAI).balanceOf(user);
+
+        // Read compiler-generated calldata
+        bytes memory callData = _readCalldata("deposit_borrow");
+        uint256 value = _readValue("deposit_borrow");
+
+        vm.prank(user);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
+        assertTrue(success, "Deposit+Borrow should succeed");
+
+        uint256 daiAfter = IERC20(DAI).balanceOf(user);
+        uint256 aUsdcAfter = IERC20(A_USDC).balanceOf(user);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(user);
+
+        assertTrue(aUsdcAfter > 0, "User should have aUSDC from deposit");
+        assertEq(usdcAfter, 0, "User should have spent all USDC");
+        // DAI borrowed = 2000 * 1e18
+        assertEq(daiAfter - daiBefore, 2000 * 1e18, "User should have borrowed 2000 DAI");
+
+        console.log("Fork deposit+borrow: aUSDC", aUsdcAfter, "DAI gained", daiAfter - daiBefore);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 5: Stake ETH in Lido via compiler-generated calldata
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Stake ETH in Lido using compiler-generated calldata.
+    ///         The stake intent produces a direct lido.submit() call (SingleTx).
+    function test_fork_stakeETH_lido() public {
+        uint256 stethBefore = IERC20(STETH).balanceOf(user);
+
+        // Read compiler-generated calldata (targets Lido directly, not router)
+        bytes memory callData = _readCalldata("stake_eth_lido");
+        uint256 value = _readValue("stake_eth_lido");
+
+        vm.prank(user);
+        (bool success,) = STETH.call{ value: value }(callData);
+        assertTrue(success, "Stake ETH in Lido should succeed");
+
+        uint256 stethAfter = IERC20(STETH).balanceOf(user);
+
+        // stETH is a rebasing token, so balance may be slightly less than value
+        // due to rounding. Allow 2 wei tolerance.
+        assertTrue(stethAfter > stethBefore, "User should have received stETH");
+        assertApproxEqAbs(stethAfter - stethBefore, value, 2, "stETH should be ~= staked ETH");
+
+        console.log("Fork stake ETH: stETH gained", stethAfter - stethBefore);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 6: Complex DeFi — Swap USDC→WETH + Deposit WETH + Borrow DAI
+    //         via executeDirect (compiler-generated calldata)
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Full complex DeFi chain using compiler-generated calldata.
+    ///         This is the end-to-end test for complex_defi.json:
+    ///         swap 5000 USDC → WETH, deposit 2 WETH into Aave, borrow 1000 DAI.
+    function test_fork_complexDefi_executeDirect() public {
+        uint256 usdcAmount = 5000 * 1e6; // 5000 USDC
+
+        // Give user USDC
+        _dealERC20(USDC, user, usdcAmount);
+
+        // User approves router to pull USDC
+        vm.prank(user);
+        IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+
+        uint256 wethBefore = IERC20(WETH).balanceOf(user);
+        uint256 daiBefore = IERC20(DAI).balanceOf(user);
+
+        // Read compiler-generated calldata for complex_defi
+        bytes memory callData = _readCalldata("complex_defi");
+        uint256 value = _readValue("complex_defi");
+
+        vm.prank(user);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
+        assertTrue(success, "Complex DeFi executeDirect should succeed");
+
+        uint256 wethAfter = IERC20(WETH).balanceOf(user);
+        uint256 daiAfter = IERC20(DAI).balanceOf(user);
+        uint256 aWethAfter = IERC20(A_WETH).balanceOf(user);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(user);
+
+        // Assertions:
+        // 1. USDC should be spent
+        assertEq(usdcAfter, 0, "User should have spent all USDC");
+
+        // 2. aWETH should be > 0 (deposited 2 WETH into Aave)
+        assertTrue(aWethAfter > 0, "User should have aWETH from Aave deposit");
+
+        // 3. DAI should have increased by 1000 (borrowed from Aave)
+        assertEq(daiAfter - daiBefore, 1000 * 1e18, "User should have borrowed 1000 DAI");
+
+        // 4. User may have excess WETH from the swap (swapped 5000 USDC but only deposited 2 WETH)
+        //    The sweep should return any remaining WETH to the user
+        console.log("Fork complex DeFi executeDirect:");
+        console.log("  USDC spent:", usdcAmount);
+        console.log("  WETH balance change:", wethAfter > wethBefore ? wethAfter - wethBefore : 0);
+        console.log("  aWETH received:", aWethAfter);
+        console.log("  DAI borrowed:", daiAfter - daiBefore);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Test 7: Complex DeFi via executeSigned (EIP-712 signature)
+    //         Solver/relayer submits on behalf of signer
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Build the complex DeFi calls array for a given signer and amounts.
+    function _buildComplexDefiCalls(
+        address signer,
+        uint256 usdcAmount,
+        uint256 depositAmount,
+        uint256 borrowAmount
+    ) internal pure returns (IntentRouter.Call[] memory) {
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](5);
+
+        calls[0] = IntentRouter.Call({
+            target: USDC,
+            callData: abi.encodeWithSignature(
+                "approve(address,uint256)", UNI_ROUTER, usdcAmount
+            ),
+            value: 0
+        });
+
+        calls[1] = IntentRouter.Call({
+            target: UNI_ROUTER,
+            callData: abi.encodeWithSignature(
+                "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
+                USDC, WETH, uint24(3000), signer,
+                type(uint256).max, usdcAmount, uint256(0), uint160(0)
+            ),
+            value: 0
+        });
+
+        calls[2] = IntentRouter.Call({
+            target: WETH,
+            callData: abi.encodeWithSignature(
+                "approve(address,uint256)", AAVE_POOL, depositAmount
+            ),
+            value: 0
+        });
+
+        calls[3] = IntentRouter.Call({
+            target: AAVE_POOL,
+            callData: abi.encodeWithSignature(
+                "supply(address,uint256,address,uint16)",
+                WETH, depositAmount, signer, uint16(0)
+            ),
+            value: 0
+        });
+
+        calls[4] = IntentRouter.Call({
+            target: AAVE_POOL,
+            callData: abi.encodeWithSignature(
+                "borrow(address,uint256,uint256,uint16,address)",
+                DAI, borrowAmount, uint256(2), uint16(0), signer
+            ),
+            value: 0
+        });
+
+        return calls;
+    }
+
+    /// @notice Full complex DeFi chain via executeSigned with EIP-712 signature.
+    ///         Deploys a fresh router (correct DOMAIN_SEPARATOR), builds the batch
+    ///         manually, signs with vm.sign, and submits via a relayer.
+    function test_fork_complexDefi_executeSigned() public {
+        IntentRouter signedRouter = new IntentRouter();
+
+        uint256 signerPk = 0xA11CE;
+        address signer = vm.addr(signerPk);
+        vm.deal(signer, 1000 ether);
+
+        uint256 usdcAmount = 5000 * 1e6;
+        uint256 borrowAmount = 1000 * 1e18;
+
+        _dealERC20(USDC, signer, usdcAmount);
+
+        vm.prank(signer);
+        IERC20(USDC).approve(address(signedRouter), usdcAmount);
+
+        // Build batch
+        address[] memory tokensToSweep = new address[](1);
+        tokensToSweep[0] = WETH;
+
+        IntentRouter.IntentBatch memory batch = IntentRouter.IntentBatch({
+            signer: signer,
+            calls: _buildComplexDefiCalls(signer, usdcAmount, 2 ether, borrowAmount),
+            tokensToSweep: tokensToSweep,
+            nonce: 0,
+            deadline: 0
+        });
+
+        // Sign and submit via relayer
+        bytes memory signature;
+        {
+            bytes32 digest = _buildSignedRouterDigest(signedRouter, batch);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
+            signature = abi.encodePacked(r, s, v);
+        }
+
+        address relayer = makeAddr("relayer");
+        vm.deal(relayer, 10 ether);
+
+        vm.prank(relayer);
+        signedRouter.executeSigned{ value: 0 }(batch, signature);
+
+        // Assertions
+        assertEq(IERC20(USDC).balanceOf(signer), 0, "Signer should have spent all USDC");
+        assertTrue(IERC20(A_WETH).balanceOf(signer) > 0, "Signer should have aWETH");
+        assertEq(IERC20(DAI).balanceOf(signer), borrowAmount, "Signer should have borrowed DAI");
+        assertEq(signedRouter.nonces(signer), 1, "Nonce should be 1 after execution");
+        assertEq(IERC20(WETH).balanceOf(relayer), 0, "Relayer should have 0 WETH");
+        assertEq(IERC20(DAI).balanceOf(relayer), 0, "Relayer should have 0 DAI");
+
+        console.log("Fork complex DeFi executeSigned: OK");
+    }
+
+    /// @notice Helper to build digest using a specific router's DOMAIN_SEPARATOR
+    function _buildSignedRouterDigest(
+        IntentRouter targetRouter,
+        IntentRouter.IntentBatch memory batch
+    ) internal view returns (bytes32) {
+        bytes32[] memory callHashes = new bytes32[](batch.calls.length);
+        for (uint256 i = 0; i < batch.calls.length; i++) {
+            callHashes[i] = keccak256(abi.encode(
+                CALL_TYPEHASH,
+                batch.calls[i].target,
+                keccak256(batch.calls[i].callData),
+                batch.calls[i].value
+            ));
+        }
+        bytes32 callsHash = keccak256(abi.encodePacked(callHashes));
+
+        bytes32 structHash = keccak256(abi.encode(
+            INTENT_BATCH_TYPEHASH,
+            batch.signer,
+            callsHash,
+            keccak256(abi.encodePacked(batch.tokensToSweep)),
+            batch.nonce,
+            batch.deadline
+        ));
+
+        return keccak256(abi.encodePacked("\x19\x01", targetRouter.DOMAIN_SEPARATOR(), structHash));
+    }
+}

@@ -614,3 +614,180 @@ fn test_eip712_nonce_and_deadline() {
         other => panic!("Expected Eip712Intent, got {:?}", other),
     }
 }
+
+// ─── Additional coverage tests ─────────────────────────────────────────
+
+#[test]
+fn test_aave_withdraw() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Withdraw is a single call (no approval needed — user already has aTokens)
+    match &output {
+        CompileOutput::SingleTx(tx) => {
+            // Target should be Aave V3 Pool
+            assert_eq!(
+                format!("{}", tx.to),
+                "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+            );
+            // No ETH value
+            assert_eq!(tx.value.to_string(), "0");
+            // withdraw(address,uint256,address) selector: 0x69328dec
+            assert_eq!(&tx.data[..4], &[0x69, 0x32, 0x8d, 0xec]);
+        }
+        other => panic!("Expected SingleTx for withdraw, got {:?}", other),
+    }
+
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Aave withdraw output:\n{json_str}");
+    assert!(json_str.contains("single_tx"));
+}
+
+#[test]
+fn test_complex_defi_from_example_file() {
+    // Read the actual example file — this is the canonical complex DeFi intent
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/complex_defi.json");
+    let input =
+        std::fs::read_to_string(&example_path).expect("should read complex_defi.json example file");
+
+    let output = compile(&input, &config_dir()).expect("compile should succeed");
+
+    // complex_defi.json: swap USDC→WETH + deposit WETH into Aave + borrow DAI
+    // This produces multiple calls batched via router
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            // Should be batched via router
+            assert!(
+                intent.description.contains("Batched"),
+                "Description should mention batching: {}",
+                intent.description
+            );
+            // Should contain all three operations
+            assert!(
+                intent.description.contains("Swap") || intent.description.contains("swap"),
+                "Description should mention Swap: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("Supply") || intent.description.contains("supply"),
+                "Description should mention Supply: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("Borrow") || intent.description.contains("borrow"),
+                "Description should mention Borrow: {}",
+                intent.description
+            );
+            // Should have multiple calls in the batch
+            assert!(
+                intent.intent_batch.calls.len() >= 3,
+                "Complex DeFi should produce at least 3 calls (approve+swap+approve+supply+borrow), got {}",
+                intent.intent_batch.calls.len()
+            );
+            // EIP-712 domain should be set
+            assert_eq!(intent.domain.name, "IntentRouter");
+            assert_eq!(intent.domain.chain_id, 1);
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
+
+    // Verify JSON serialization round-trips
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Complex DeFi output:\n{json_str}");
+    assert!(json_str.contains("eip712_intent"));
+    assert!(json_str.contains("IntentRouter"));
+}
+
+#[test]
+fn test_stake_lido_wsteth_from_example_file() {
+    // Read the actual example file
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/stake_lido_wsteth.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read stake_lido_wsteth.json example file");
+
+    let output = compile(&input, &config_dir()).expect("compile should succeed");
+
+    // stake ETH in Lido + wrap stETH → wstETH produces batched calls
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.description.contains("Batched"),
+                "Description should mention batching: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("Stake"),
+                "Description should mention Stake: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("wstETH"),
+                "Description should mention wstETH: {}",
+                intent.description
+            );
+            // Should have calls for: stake + approve stETH + wrap to wstETH
+            assert!(
+                intent.intent_batch.calls.len() >= 2,
+                "Stake+wrap should produce at least 2 calls, got {}",
+                intent.intent_batch.calls.len()
+            );
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
+
+    let json_output = CompileOutputJson::from(&output);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+    println!("Stake Lido wstETH output:\n{json_str}");
+    assert!(json_str.contains("eip712_intent"));
+}
+
+#[test]
+fn test_all_example_files_compile() {
+    // Ensure every example JSON file in the examples directory compiles successfully
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let examples_dir = std::path::Path::new(manifest_dir).join("examples");
+
+    let entries = std::fs::read_dir(&examples_dir).expect("should read examples directory");
+    let mut count = 0;
+
+    for entry in entries {
+        let entry = entry.expect("should read dir entry");
+        let path = entry.path();
+        if path.extension().map_or(false, |ext| ext == "json") {
+            let input = std::fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("should read {}", path.display()));
+            let result = compile(&input, &config_dir());
+            assert!(
+                result.is_ok(),
+                "Example {} should compile successfully, but got error: {:?}",
+                path.file_name().unwrap().to_string_lossy(),
+                result.unwrap_err()
+            );
+            count += 1;
+            println!(
+                "✅ {} compiled successfully",
+                path.file_name().unwrap().to_string_lossy()
+            );
+        }
+    }
+
+    assert!(count > 0, "Should have found at least one example file");
+    println!("All {count} example files compiled successfully");
+}

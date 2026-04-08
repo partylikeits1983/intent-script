@@ -177,3 +177,41 @@ fn generate_stake_eth_lido_calldata() {
     let output = compile(input, &config_dir()).expect("compile should succeed");
     write_calldata("stake_eth_lido", &output);
 }
+
+#[test]
+fn generate_aave_withdraw_calldata() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+    write_calldata("aave_withdraw_usdc", &output);
+}
+
+#[test]
+fn generate_complex_defi_calldata() {
+    // Read from the actual example file — the canonical complex DeFi intent
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/complex_defi.json");
+    let input =
+        std::fs::read_to_string(&example_path).expect("should read complex_defi.json example file");
+
+    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    write_calldata("complex_defi", &output);
+}
+
+#[test]
+fn generate_stake_lido_wsteth_calldata() {
+    // Read from the actual example file
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/stake_lido_wsteth.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read stake_lido_wsteth.json example file");
+
+    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    write_calldata("stake_lido_wsteth", &output);
+}
