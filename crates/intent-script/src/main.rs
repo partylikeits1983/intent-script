@@ -33,8 +33,13 @@ fn main() {
     };
 
     match intent_script::compile(&json_input, &cli.config_dir) {
-        Ok(output) => {
-            let json_output = CompileOutputJson::from(&output);
+        Ok(result) => {
+            // Print warnings to stderr
+            for warning in &result.warnings {
+                eprintln!("⚠ Warning: {warning}");
+            }
+
+            let json_output = CompileOutputJson::from(&result);
             let result = if cli.pretty {
                 serde_json::to_string_pretty(&json_output)
             } else {

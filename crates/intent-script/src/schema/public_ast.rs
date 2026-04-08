@@ -3,6 +3,8 @@
 //! These types are intentionally simple and string-based. The compiler
 //! normalizes them into the canonical IR with resolved addresses and amounts.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 /// Top-level intent script document.
@@ -20,6 +22,35 @@ pub struct IntentScript {
     /// Optional deadline timestamp for EIP-712 expiry (default: 0 = no expiry)
     #[serde(default)]
     pub deadline: Option<u64>,
+    /// Optional user balance information for enhanced validation.
+    /// When provided, the compiler can check feasibility and produce better warnings.
+    #[serde(default)]
+    pub balances: Option<UserBalances>,
+}
+
+/// User's on-chain balance information, provided optionally by the frontend.
+#[derive(Debug, Deserialize, Default)]
+pub struct UserBalances {
+    /// Token alias → human-readable balance (e.g. "USDC" → "10000.0")
+    #[serde(default)]
+    pub tokens: HashMap<String, String>,
+    /// Aave V3 position information
+    #[serde(default)]
+    pub aave_positions: Option<AavePositions>,
+}
+
+/// Aave V3 position information for balance-aware validation.
+#[derive(Debug, Deserialize, Default)]
+pub struct AavePositions {
+    /// Token alias → supplied amount (e.g. "USDC" → "50000.0")
+    #[serde(default)]
+    pub supplied: HashMap<String, String>,
+    /// Token alias → borrowed amount (e.g. "DAI" → "5000.0")
+    #[serde(default)]
+    pub borrowed: HashMap<String, String>,
+    /// Current health factor as string (e.g. "1.85")
+    #[serde(default)]
+    pub health_factor: Option<String>,
 }
 
 /// A single action step. Each variant wraps a minimal payload.

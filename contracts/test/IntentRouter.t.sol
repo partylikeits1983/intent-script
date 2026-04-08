@@ -425,4 +425,80 @@ contract IntentRouterTest is Test {
         assertEq(weth.balanceOf(signer), 1 ether, "Signer should have 1 WETH");
         assertEq(weth.balanceOf(relayer), 0, "Relayer should have 0 WETH");
     }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Fuzz Tests
+    // ═════════════════════════════════════════════════════════════════
+
+    /// @notice Fuzz: executeDirect with empty calls array succeeds (no-op).
+    ///         The router doesn't revert on empty calls — it just does nothing.
+    function testFuzz_executeDirect_emptyCallsSucceeds(uint256 seed) public {
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](0);
+        address[] memory sweep = new address[](0);
+
+        uint256 balanceBefore = user.balance;
+
+        // Empty calls should succeed (no-op)
+        vm.prank(user);
+        router.executeDirect(calls, sweep);
+
+        // User balance should be unchanged (no ETH sent)
+        assertEq(user.balance, balanceBefore, "Balance should be unchanged after empty executeDirect");
+    }
+
+    /// @notice Fuzz: executeSigned with invalid signature should revert.
+    function testFuzz_executeSigned_invalidSignature(uint8 v, bytes32 r, bytes32 s) public {
+        // Build a minimal valid batch
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
+        calls[0] = IntentRouter.Call({
+            target: address(weth),
+            callData: abi.encodeWithSignature("deposit()"),
+            value: 1 ether
+        });
+
+        address[] memory sweep = new address[](1);
+        sweep[0] = address(weth);
+
+        IntentRouter.IntentBatch memory batch = IntentRouter.IntentBatch({
+            signer: user,
+            calls: calls,
+            tokensToSweep: sweep,
+            nonce: 0,
+            deadline: 0
+        });
+
+        // Random signature should fail ECDSA recovery
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.deal(address(this), 10 ether);
+        vm.expectRevert();
+        router.executeSigned{ value: 1 ether }(batch, signature);
+    }
+
+    /// @notice Fuzz: sweep with the WETH token address always works.
+    ///         After wrapping ETH, the sweep sends WETH back to the user.
+    function testFuzz_sweep_wethAmount(uint96 amount) public {
+        // Bound to reasonable range (0.001 ETH to 50 ETH)
+        vm.assume(amount > 0.001 ether);
+        vm.assume(amount < 50 ether);
+
+        // Build a wrap call + sweep WETH
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
+        calls[0] = IntentRouter.Call({
+            target: address(weth),
+            callData: abi.encodeWithSignature("deposit()"),
+            value: amount
+        });
+
+        address[] memory sweep = new address[](1);
+        sweep[0] = address(weth);
+
+        uint256 wethBefore = weth.balanceOf(user);
+
+        vm.prank(user);
+        router.executeDirect{ value: amount }(calls, sweep);
+
+        uint256 wethAfter = weth.balanceOf(user);
+        assertEq(wethAfter - wethBefore, amount, "User should receive all wrapped WETH via sweep");
+    }
 }

@@ -8,4 +8,4 @@ pub mod registry;
 pub mod schema;
 
 pub use compiler::compile;
-pub use output::{CompileOutput, CompileOutputJson};
+pub use output::{CompileOutput, CompileOutputJson, CompileResult};

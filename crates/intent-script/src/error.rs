@@ -26,6 +26,9 @@ pub enum CompileError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Invalid intent chain: {0}")]
+    InvalidChain(String),
+
     #[error("Adapter error: {0}")]
     Adapter(String),
 

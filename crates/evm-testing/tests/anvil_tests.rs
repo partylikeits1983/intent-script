@@ -114,8 +114,8 @@ async fn test_wrap_eth_on_anvil() -> eyre::Result<()> {
         signer
     );
 
-    let output = compile_intent(&intent_json).expect("compile should succeed");
-    let txs = extract_txs(&output);
+    let result = compile_intent(&intent_json).expect("compile should succeed");
+    let txs = extract_txs(&result.output);
     assert_eq!(txs.len(), 1, "Wrap should produce exactly 1 tx");
 
     let receipt = provider
@@ -164,8 +164,8 @@ async fn test_unwrap_weth_on_anvil() -> eyre::Result<()> {
         }}"#,
         signer
     );
-    let wrap_output = compile_intent(&wrap_json).unwrap();
-    let wrap_txs = extract_txs(&wrap_output);
+    let wrap_result = compile_intent(&wrap_json).unwrap();
+    let wrap_txs = extract_txs(&wrap_result.output);
     provider
         .send_transaction(to_alloy_tx(wrap_txs[0]))
         .await?
@@ -188,8 +188,8 @@ async fn test_unwrap_weth_on_anvil() -> eyre::Result<()> {
         signer
     );
 
-    let output = compile_intent(&unwrap_json).unwrap();
-    let txs = extract_txs(&output);
+    let result = compile_intent(&unwrap_json).unwrap();
+    let txs = extract_txs(&result.output);
     assert_eq!(txs.len(), 1);
 
     let receipt = provider
@@ -232,11 +232,11 @@ async fn test_aave_deposit_usdc_produces_batched_tx() -> eyre::Result<()> {
         signer
     );
 
-    let output = compile_intent(&intent_json).expect("compile should succeed");
+    let result = compile_intent(&intent_json).expect("compile should succeed");
 
     // With a router configured, the 2 calls (approve + supply) are batched
     // into a single router.execute() tx
-    let txs = extract_txs(&output);
+    let txs = extract_txs(&result.output);
     assert_eq!(
         txs.len(),
         1,

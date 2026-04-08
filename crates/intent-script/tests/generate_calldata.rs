@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use intent_script::{CompileOutput, compile};
+use intent_script::{CompileOutput, CompileResult, compile};
 
 /// Get the path to the config directory at the workspace root.
 fn config_dir() -> PathBuf {
@@ -37,12 +37,12 @@ fn fixtures_dir() -> PathBuf {
 /// Write calldata to a fixture file as a hex string (with 0x prefix).
 /// Also writes a companion {name}_value.txt with the ETH value in wei,
 /// and {name}_to.txt with the target address.
-fn write_calldata(name: &str, output: &CompileOutput) {
+fn write_calldata(name: &str, result: &CompileResult) {
     let dir = fixtures_dir();
     std::fs::create_dir_all(&dir).expect("create fixtures dir");
 
     // Extract the transaction to write — for Eip712Intent, use the direct_tx
-    let tx = match output {
+    let tx = match &result.output {
         CompileOutput::SingleTx(tx) => tx,
         CompileOutput::Eip712Intent(intent) => &intent.direct_tx,
         CompileOutput::TxSequence(txs) => {

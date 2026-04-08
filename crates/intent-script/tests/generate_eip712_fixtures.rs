@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use intent_script::output::CompileOutputJson;
-use intent_script::{CompileOutput, compile};
+use intent_script::{CompileOutput, CompileResult, compile};
 
 /// Get the path to the config directory at the workspace root.
 fn config_dir() -> PathBuf {
@@ -50,14 +50,14 @@ fn hex_encode(data: &[u8]) -> String {
 
 /// Write EIP-712 batch data as a JSON fixture file for Foundry fork tests.
 /// Also writes the full EIP-712 typed data JSON for reference.
-fn write_eip712_fixture(name: &str, output: &CompileOutput) {
+fn write_eip712_fixture(name: &str, result: &CompileResult) {
     let dir = fixtures_dir();
     std::fs::create_dir_all(&dir).expect("create fixtures dir");
 
-    match output {
+    match &result.output {
         CompileOutput::Eip712Intent(intent) => {
             // Write the full EIP-712 typed data JSON (for reference / wallet signing)
-            let eip712_json = CompileOutputJson::from(output);
+            let eip712_json = CompileOutputJson::from(result);
             let eip712_str =
                 serde_json::to_string_pretty(&eip712_json).expect("serialize eip712 json");
             let eip712_path = dir.join(format!("{name}_eip712.json"));

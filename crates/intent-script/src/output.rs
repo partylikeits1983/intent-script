@@ -3,6 +3,15 @@
 use alloy_primitives::{Address, Bytes, U256};
 use serde::Serialize;
 
+/// The full result of compilation: output + any warnings.
+#[derive(Debug, Clone)]
+pub struct CompileResult {
+    /// The compiled output (transaction data)
+    pub output: CompileOutput,
+    /// Non-fatal warnings from validation (e.g., "borrow without prior deposit")
+    pub warnings: Vec<String>,
+}
+
 /// The result of compiling an intent script.
 #[derive(Debug, Clone)]
 pub enum CompileOutput {
@@ -86,6 +95,9 @@ pub struct CompileOutputJson {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Non-fatal warnings from compilation (omitted when empty)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -266,6 +278,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 direct_tx: None,
                 description: None,
                 reason: None,
+                warnings: Vec::new(),
             },
             CompileOutput::Eip712Intent(intent) => CompileOutputJson {
                 output_type: "eip712_intent".to_string(),
@@ -274,6 +287,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 direct_tx: Some(UnsignedTxJson::from(&intent.direct_tx)),
                 description: Some(intent.description.clone()),
                 reason: None,
+                warnings: Vec::new(),
             },
             CompileOutput::TxSequence(txs) => CompileOutputJson {
                 output_type: "tx_sequence".to_string(),
@@ -282,6 +296,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 direct_tx: None,
                 description: None,
                 reason: None,
+                warnings: Vec::new(),
             },
             CompileOutput::RequiresExecutor { reason } => CompileOutputJson {
                 output_type: "requires_executor".to_string(),
@@ -290,8 +305,17 @@ impl From<&CompileOutput> for CompileOutputJson {
                 direct_tx: None,
                 description: None,
                 reason: Some(reason.clone()),
+                warnings: Vec::new(),
             },
         }
+    }
+}
+
+impl From<&CompileResult> for CompileOutputJson {
+    fn from(result: &CompileResult) -> Self {
+        let mut json = CompileOutputJson::from(&result.output);
+        json.warnings = result.warnings.clone();
+        json
     }
 }
 

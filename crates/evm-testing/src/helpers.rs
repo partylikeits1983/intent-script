@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use alloy::network::TransactionBuilder;
 use alloy::rpc::types::TransactionRequest;
 
-use intent_script::output::{CompileOutput, UnsignedTx};
+use intent_script::output::{CompileOutput, CompileResult, UnsignedTx};
 
 /// Get the path to the config directory at the workspace root.
 pub fn workspace_config_dir() -> PathBuf {
@@ -31,8 +31,8 @@ pub fn to_alloy_tx(tx: &UnsignedTx) -> TransactionRequest {
     req
 }
 
-/// Compile an intent JSON and return the output.
-pub fn compile_intent(json: &str) -> intent_script::error::Result<CompileOutput> {
+/// Compile an intent JSON and return the result (output + warnings).
+pub fn compile_intent(json: &str) -> intent_script::error::Result<CompileResult> {
     intent_script::compile(json, &workspace_config_dir())
 }
 

@@ -3,6 +3,8 @@
 //! All aliases have been resolved to addresses, all amounts to U256,
 //! and all protocol references to concrete deployment addresses.
 
+use std::collections::HashMap;
+
 use alloy_primitives::{Address, Bytes, U256};
 
 /// Fully resolved intent, ready for enrichment and lowering.
@@ -18,6 +20,21 @@ pub struct ResolvedIntent {
     pub nonce: u64,
     /// Deadline timestamp for EIP-712 expiry (0 = no expiry).
     pub deadline: u64,
+    /// Optional user balance information for enhanced validation.
+    pub user_balances: Option<ResolvedBalances>,
+}
+
+/// Resolved user balance information with concrete addresses and U256 amounts.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedBalances {
+    /// Token address → balance in smallest unit (wei, etc.)
+    pub tokens: HashMap<Address, U256>,
+    /// Aave V3 supplied: token address → supplied amount in smallest unit
+    pub aave_supplied: HashMap<Address, U256>,
+    /// Aave V3 borrowed: token address → borrowed amount in smallest unit
+    pub aave_borrowed: HashMap<Address, U256>,
+    /// Aave V3 health factor (parsed from string)
+    pub aave_health_factor: Option<f64>,
 }
 
 /// A resolved action step with concrete types.

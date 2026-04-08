@@ -8,7 +8,7 @@ pub mod validate;
 use std::path::Path;
 
 use crate::error::Result;
-use crate::output::CompileOutput;
+use crate::output::CompileResult;
 use crate::registry::RegistryContext;
 use crate::schema::IntentScript;
 
@@ -17,10 +17,13 @@ use crate::schema::IntentScript;
 /// This is the main entry point for the compiler pipeline:
 /// Parse → Normalize → Validate → Enrich → Lower → Plan → Build
 ///
+/// Returns a `CompileResult` containing the output and any warnings
+/// from validation (e.g., borrow without prior deposit when no balance info).
+///
 /// When a router address is configured in the registry and the intent
 /// produces multiple calls, they are automatically batched into a single
 /// `router.execute()` transaction.
-pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileOutput> {
+pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileResult> {
     // Stage A: Parse JSON into public AST
     let script: IntentScript = serde_json::from_str(json_input)?;
 
@@ -30,8 +33,8 @@ pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileOutput> {
     // Stage B: Normalize — resolve aliases, parse amounts
     let resolved = normalize::normalize(&script, &registry)?;
 
-    // Stage C: Validate
-    validate::validate(&resolved, &registry)?;
+    // Stage C: Validate — returns warnings for non-fatal issues
+    let validation = validate::validate(&resolved, &registry)?;
 
     // Stage D: Enrich — insert approvals, wraps, track sweep tokens
     let enriched = enrich::enrich(resolved, &registry)?;
@@ -53,5 +56,8 @@ pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileOutput> {
         enriched.deadline,
     );
 
-    Ok(output)
+    Ok(CompileResult {
+        output,
+        warnings: validation.warnings,
+    })
 }

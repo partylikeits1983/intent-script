@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use intent_script::output::CompileOutputJson;
-use intent_script::{CompileOutput, compile};
+use intent_script::{CompileOutput, CompileResult, compile};
 
 /// Get the path to the config directory at the workspace root.
 fn config_dir() -> PathBuf {
@@ -28,10 +28,11 @@ fn test_wrap_eth_to_weth() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Wrap is a single tx
-    match &output {
+    match output {
         CompileOutput::SingleTx(tx) => {
             // Target should be WETH contract
             assert_eq!(
@@ -50,7 +51,7 @@ fn test_wrap_eth_to_weth() {
     }
 
     // Verify JSON serialization works
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Wrap ETH output:\n{json_str}");
 
@@ -68,11 +69,12 @@ fn test_aave_deposit_usdc_batched_through_router() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Deposit produces 2 calls (approve + supply) which get batched
     // into an Eip712Intent since a router is configured.
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             // Direct tx target should be the IntentRouter
             assert_eq!(
@@ -103,7 +105,7 @@ fn test_aave_deposit_usdc_batched_through_router() {
     }
 
     // Verify JSON serialization
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Aave deposit (batched) output:\n{json_str}");
 
@@ -122,9 +124,9 @@ fn test_unwrap_weth() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
 
-    match &output {
+    match &result.output {
         CompileOutput::SingleTx(tx) => {
             // Target should be WETH contract
             assert_eq!(
@@ -202,10 +204,11 @@ fn test_swap_usdc_to_weth() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Swap produces 2 calls (approve + exactInputSingle) batched via router
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter (batched)
             assert_eq!(
@@ -234,7 +237,7 @@ fn test_swap_usdc_to_weth() {
     }
 
     // Verify JSON serialization
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Swap USDC→WETH output:\n{json_str}");
     assert!(json_str.contains("eip712_intent"));
@@ -251,10 +254,11 @@ fn test_deposit_and_borrow_single_tx() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Deposit + borrow produces 3 calls (approve + supply + borrow) batched via router
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter
             assert_eq!(
@@ -288,7 +292,7 @@ fn test_deposit_and_borrow_single_tx() {
         ),
     }
 
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Deposit+Borrow output:\n{json_str}");
     assert!(json_str.contains("eip712_intent"));
@@ -306,10 +310,11 @@ fn test_swap_deposit_borrow_chain() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Should produce batched tx: approve USDC, swap, approve WETH, supply, borrow
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             assert_eq!(
                 format!("{}", intent.direct_tx.to),
@@ -347,7 +352,7 @@ fn test_swap_deposit_borrow_chain() {
         ),
     }
 
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Swap+Deposit+Borrow output:\n{json_str}");
     assert!(json_str.contains("eip712_intent"));
@@ -363,9 +368,10 @@ fn test_swap_with_custom_fee_tier() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             assert!(
                 intent.direct_tx.data.len() > 4,
@@ -394,9 +400,10 @@ fn test_swap_without_fee_defaults_to_3000() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             assert!(intent.direct_tx.data.len() > 4);
         }
@@ -414,9 +421,10 @@ fn test_swap_via_1inch_with_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             assert!(intent.direct_tx.data.len() > 4);
             assert!(
@@ -480,10 +488,11 @@ fn test_wrap_steth_to_wsteth() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Wrap stETH produces 2 calls (approve + wrap) batched via router
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter (batched)
             assert_eq!(
@@ -523,10 +532,11 @@ fn test_stake_and_wrap_steth() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Stake + wrap produces batched calldata
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             assert_eq!(
                 format!("{}", intent.direct_tx.to),
@@ -565,10 +575,11 @@ fn test_stake_eth_in_lido() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Stake is a single call (no approval needed for ETH)
-    match &output {
+    match output {
         CompileOutput::SingleTx(tx) => {
             // Target should be Lido stETH contract
             assert_eq!(
@@ -585,7 +596,7 @@ fn test_stake_eth_in_lido() {
         other => panic!("Expected SingleTx, got {:?}", other),
     }
 
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Stake ETH in Lido output:\n{json_str}");
     assert!(json_str.contains("single_tx"));
@@ -604,9 +615,10 @@ fn test_eip712_nonce_and_deadline() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
-    match &output {
+    match output {
         CompileOutput::Eip712Intent(intent) => {
             assert_eq!(intent.intent_batch.nonce, 5);
             assert_eq!(intent.intent_batch.deadline, 1712345678);
@@ -627,10 +639,11 @@ fn test_aave_withdraw() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let output = &result.output;
 
     // Withdraw is a single call (no approval needed — user already has aTokens)
-    match &output {
+    match output {
         CompileOutput::SingleTx(tx) => {
             // Target should be Aave V3 Pool
             assert_eq!(
@@ -645,7 +658,7 @@ fn test_aave_withdraw() {
         other => panic!("Expected SingleTx for withdraw, got {:?}", other),
     }
 
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Aave withdraw output:\n{json_str}");
     assert!(json_str.contains("single_tx"));
@@ -659,11 +672,11 @@ fn test_complex_defi_from_example_file() {
     let input =
         std::fs::read_to_string(&example_path).expect("should read complex_defi.json example file");
 
-    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    let result = compile(&input, &config_dir()).expect("compile should succeed");
 
     // complex_defi.json: swap USDC→WETH + deposit WETH into Aave + borrow DAI
     // This produces multiple calls batched via router
-    match &output {
+    match &result.output {
         CompileOutput::Eip712Intent(intent) => {
             // Should be batched via router
             assert!(
@@ -704,7 +717,7 @@ fn test_complex_defi_from_example_file() {
     }
 
     // Verify JSON serialization round-trips
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Complex DeFi output:\n{json_str}");
     assert!(json_str.contains("eip712_intent"));
@@ -719,10 +732,10 @@ fn test_stake_lido_wsteth_from_example_file() {
     let input = std::fs::read_to_string(&example_path)
         .expect("should read stake_lido_wsteth.json example file");
 
-    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    let result = compile(&input, &config_dir()).expect("compile should succeed");
 
     // stake ETH in Lido + wrap stETH → wstETH produces batched calls
-    match &output {
+    match &result.output {
         CompileOutput::Eip712Intent(intent) => {
             assert!(
                 intent.description.contains("Batched"),
@@ -752,7 +765,7 @@ fn test_stake_lido_wsteth_from_example_file() {
         ),
     }
 
-    let json_output = CompileOutputJson::from(&output);
+    let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Stake Lido wstETH output:\n{json_str}");
     assert!(json_str.contains("eip712_intent"));
@@ -790,4 +803,428 @@ fn test_all_example_files_compile() {
 
     assert!(count > 0, "Should have found at least one example file");
     println!("All {count} example files compiled successfully");
+}
+
+// ─── Invalid input tests ───────────────────────────────────────────────
+
+#[test]
+fn test_missing_network_field_fails() {
+    let input = r#"{
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1.0" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Missing network should fail");
+}
+
+#[test]
+fn test_missing_from_field_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1.0" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Missing from should fail");
+}
+
+#[test]
+fn test_missing_steps_field_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Missing steps should fail");
+}
+
+#[test]
+fn test_invalid_from_address_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "not-a-hex-address",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1.0" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Invalid from address should fail");
+}
+
+#[test]
+fn test_zero_address_signer_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0x0000000000000000000000000000000000000000",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1.0" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Zero address signer should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("zero"),
+        "Error should mention zero address: {err}"
+    );
+}
+
+#[test]
+fn test_unknown_step_type_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "fly": { "to": "moon" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Unknown step type should fail");
+}
+
+#[test]
+fn test_deposit_missing_amount_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "into": "aave" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Deposit missing amount should fail");
+}
+
+#[test]
+fn test_deposit_missing_into_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "100" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Deposit missing into should fail");
+}
+
+#[test]
+fn test_deposit_into_unknown_protocol_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "100", "into": "compound" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Deposit into unknown protocol should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("compound"),
+        "Error should mention unknown protocol: {err}"
+    );
+}
+
+#[test]
+fn test_borrow_from_unknown_protocol_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "compound" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Borrow from unknown protocol should fail");
+}
+
+#[test]
+fn test_non_numeric_amount_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "abc" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Non-numeric amount should fail");
+}
+
+#[test]
+fn test_zero_amount_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "0" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Zero amount should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("greater than zero"),
+        "Error should mention zero amount: {err}"
+    );
+}
+
+#[test]
+fn test_swap_same_asset_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "USDC" } }
+        ]
+    }"#;
+    let result = compile(input, &config_dir());
+    assert!(result.is_err(), "Swap same asset should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("itself"),
+        "Error should mention swap to itself: {err}"
+    );
+}
+
+// ─── Balance-aware compilation tests ───────────────────────────────────
+
+#[test]
+fn test_borrow_without_deposit_no_balances_warns() {
+    // Borrow without deposit and no balance info → should compile with warning
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile (optimistic)");
+    assert!(
+        !result.warnings.is_empty(),
+        "Should have warnings about borrow without deposit"
+    );
+    assert!(
+        result.warnings[0].contains("Borrow without prior deposit"),
+        "Warning should mention borrow without deposit: {}",
+        result.warnings[0]
+    );
+}
+
+#[test]
+fn test_borrow_with_existing_collateral_no_warning() {
+    // Borrow with balance info showing existing collateral → should compile without warning
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "balances": {
+            "tokens": { "USDC": "50000.0" },
+            "aave_positions": {
+                "supplied": { "USDC": "50000.0" },
+                "borrowed": {},
+                "health_factor": "2.5"
+            }
+        },
+        "steps": [
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile with existing collateral");
+    assert!(
+        result.warnings.is_empty(),
+        "Should have no warnings when user has collateral. Warnings: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_borrow_without_collateral_with_balances_fails() {
+    // Borrow with balance info showing NO collateral → should fail
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "balances": {
+            "tokens": { "USDC": "50000.0" },
+            "aave_positions": {
+                "supplied": {},
+                "borrowed": {}
+            }
+        },
+        "steps": [
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir());
+    assert!(
+        result.is_err(),
+        "Borrow without collateral should fail when balances provided"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("collateral"),
+        "Error should mention collateral: {err}"
+    );
+}
+
+#[test]
+fn test_withdraw_without_deposit_no_balances_warns() {
+    // Withdraw without deposit and no balance info → should compile with warning
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile (optimistic)");
+    assert!(
+        !result.warnings.is_empty(),
+        "Should have warnings about withdraw without deposit"
+    );
+    assert!(
+        result.warnings[0].contains("Withdraw without prior deposit"),
+        "Warning should mention withdraw without deposit: {}",
+        result.warnings[0]
+    );
+}
+
+#[test]
+fn test_withdraw_with_existing_position_no_warning() {
+    // Withdraw with balance info showing existing position → should compile without warning
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "balances": {
+            "tokens": {},
+            "aave_positions": {
+                "supplied": { "USDC": "50000.0" },
+                "borrowed": {}
+            }
+        },
+        "steps": [
+            { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile with existing position");
+    assert!(
+        result.warnings.is_empty(),
+        "Should have no warnings when user has position. Warnings: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_withdraw_without_position_with_balances_fails() {
+    // Withdraw with balance info showing NO position for this asset → should fail
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "balances": {
+            "tokens": {},
+            "aave_positions": {
+                "supplied": {},
+                "borrowed": {}
+            }
+        },
+        "steps": [
+            { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir());
+    assert!(
+        result.is_err(),
+        "Withdraw without position should fail when balances provided"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("position"),
+        "Error should mention position: {err}"
+    );
+}
+
+#[test]
+fn test_deposit_then_borrow_no_warning() {
+    // Deposit then borrow in same intent → should compile without warning
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
+            { "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile");
+    assert!(
+        result.warnings.is_empty(),
+        "Deposit then borrow should have no warnings. Warnings: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_balances_field_is_optional() {
+    // Existing intent without balances field should still work
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1.0" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile without balances");
+    assert!(result.warnings.is_empty());
+}
+
+#[test]
+fn test_borrow_existing_collateral_example_compiles() {
+    // The new example file should compile successfully
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/borrow_existing_collateral.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read borrow_existing_collateral.json");
+
+    let result = compile(&input, &config_dir()).expect("should compile with existing collateral");
+    assert!(
+        result.warnings.is_empty(),
+        "Example with existing collateral should have no warnings. Warnings: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_warnings_in_json_output() {
+    // Verify warnings appear in JSON output
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("should compile");
+    let json_output = CompileOutputJson::from(&result);
+    let json_str = serde_json::to_string_pretty(&json_output).unwrap();
+
+    assert!(
+        json_str.contains("warnings"),
+        "JSON output should contain warnings field: {json_str}"
+    );
+    assert!(
+        json_str.contains("Borrow without prior deposit"),
+        "JSON output should contain the warning text: {json_str}"
+    );
 }

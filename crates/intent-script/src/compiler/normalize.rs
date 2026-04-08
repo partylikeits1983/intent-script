@@ -3,10 +3,12 @@
 //! Resolves aliases to addresses, parses human-readable amounts to U256,
 //! and maps protocol names to concrete deployment addresses.
 
+use std::collections::HashMap;
+
 use alloy_primitives::{Address, Bytes, U256};
 
 use crate::error::{CompileError, Result};
-use crate::ir::{ResolvedIntent, ResolvedStep};
+use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep};
 use crate::registry::RegistryContext;
 use crate::schema::{IntentScript, Step};
 
@@ -20,6 +22,13 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<Re
         steps.push(resolved);
     }
 
+    // Parse optional user balances
+    let user_balances = if let Some(ref balances) = script.balances {
+        Some(normalize_balances(balances, registry)?)
+    } else {
+        None
+    };
+
     Ok(ResolvedIntent {
         chain_id: registry.chain.chain_id,
         signer,
@@ -27,6 +36,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<Re
         tokens_to_sweep: Vec::new(),
         nonce: script.nonce.unwrap_or(0),
         deadline: script.deadline.unwrap_or(0),
+        user_balances,
     })
 }
 
@@ -380,9 +390,56 @@ fn parse_address(s: &str) -> Result<Address> {
         .map_err(|_| CompileError::InvalidAddress(s.to_string()))
 }
 
+/// Normalize user balance information into resolved types.
+fn normalize_balances(
+    balances: &crate::schema::UserBalances,
+    registry: &RegistryContext,
+) -> Result<ResolvedBalances> {
+    let mut tokens = HashMap::new();
+    for (alias, amount_str) in &balances.tokens {
+        if let Ok(addr) = resolve_asset_address(alias, registry) {
+            let decimals = resolve_asset_decimals(alias, registry)?;
+            let amount = parse_amount(amount_str, decimals)?;
+            tokens.insert(addr, amount);
+        }
+        // Skip unknown assets in balances — they're informational, not critical
+    }
+
+    let mut aave_supplied = HashMap::new();
+    let mut aave_borrowed = HashMap::new();
+    let mut aave_health_factor = None;
+
+    if let Some(ref aave) = balances.aave_positions {
+        for (alias, amount_str) in &aave.supplied {
+            if let Ok(addr) = resolve_asset_address(alias, registry) {
+                let decimals = resolve_asset_decimals(alias, registry)?;
+                let amount = parse_amount(amount_str, decimals)?;
+                aave_supplied.insert(addr, amount);
+            }
+        }
+        for (alias, amount_str) in &aave.borrowed {
+            if let Ok(addr) = resolve_asset_address(alias, registry) {
+                let decimals = resolve_asset_decimals(alias, registry)?;
+                let amount = parse_amount(amount_str, decimals)?;
+                aave_borrowed.insert(addr, amount);
+            }
+        }
+        if let Some(ref hf_str) = aave.health_factor {
+            aave_health_factor = hf_str.parse::<f64>().ok();
+        }
+    }
+
+    Ok(ResolvedBalances {
+        tokens,
+        aave_supplied,
+        aave_borrowed,
+        aave_health_factor,
+    })
+}
+
 /// Parse a human-readable amount string (e.g. "1.5", "10000", "0.01") into U256
 /// using the token's decimal places.
-fn parse_amount(amount_str: &str, decimals: u8) -> Result<U256> {
+pub(crate) fn parse_amount(amount_str: &str, decimals: u8) -> Result<U256> {
     // Split on decimal point
     let parts: Vec<&str> = amount_str.split('.').collect();
 
