@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod compiler;
+pub mod eip712;
 pub mod error;
 pub mod ir;
 pub mod output;

@@ -45,7 +45,7 @@ contract IntentRouterCalldataTest is Test {
     }
 
     /// @notice Test: Execute compiler-generated Aave deposit calldata through router.
-    ///         The Aave deposit intent produces a batched router.execute() call
+    ///         The Aave deposit intent produces a batched router.executeDirect() call
     ///         containing approve + supply. Since we don't have Aave locally,
     ///         we verify the router correctly decodes and attempts the calls.
     ///
@@ -62,7 +62,7 @@ contract IntentRouterCalldataTest is Test {
         assertTrue(callData.length > 4, "Calldata should be non-empty");
 
         // The execute() function selector
-        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 executeSelector = IntentRouter.executeDirect.selector;
         bytes4 calldataSelector;
         assembly {
             calldataSelector := mload(add(callData, 32))
@@ -70,7 +70,7 @@ contract IntentRouterCalldataTest is Test {
         assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
 
         console.log("Aave deposit calldata length:", callData.length);
-        console.log("Calldata selector matches router.execute()");
+        console.log("Calldata selector matches router.executeDirect()");
     }
 
     /// @notice Test: Full wrap ETH flow through the router using compiler-like calldata.
@@ -88,9 +88,9 @@ contract IntentRouterCalldataTest is Test {
         address[] memory tokensToSweep = new address[](1);
         tokensToSweep[0] = address(weth);
 
-        // Encode as router.execute() calldata — same as what the Rust compiler produces
+        // Encode as router.executeDirect() calldata — same as what the Rust compiler produces
         bytes memory routerCalldata = abi.encodeCall(
-            IntentRouter.execute, (calls, tokensToSweep)
+            IntentRouter.executeDirect, (calls, tokensToSweep)
         );
 
         // Execute the raw calldata against the router
@@ -107,7 +107,7 @@ contract IntentRouterCalldataTest is Test {
     }
 
     /// @notice Test: Verify compiler-generated swap calldata decodes correctly.
-    ///         The swap intent produces a batched router.execute() call
+    ///         The swap intent produces a batched router.executeDirect() call
     ///         containing approve + exactInputSingle.
     function test_executeCompilerCalldata_swapUSDCtoWETH_decodesCorrectly() public {
         string memory calldataHex = vm.readFile("test/fixtures/swap_usdc_weth.txt");
@@ -116,7 +116,7 @@ contract IntentRouterCalldataTest is Test {
         // Verify non-empty and starts with execute() selector
         assertTrue(callData.length > 4, "Calldata should be non-empty");
 
-        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 executeSelector = IntentRouter.executeDirect.selector;
         bytes4 calldataSelector;
         assembly {
             calldataSelector := mload(add(callData, 32))
@@ -124,7 +124,7 @@ contract IntentRouterCalldataTest is Test {
         assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
 
         console.log("Swap USDC->WETH calldata length:", callData.length);
-        console.log("Calldata selector matches router.execute()");
+        console.log("Calldata selector matches router.executeDirect()");
     }
 
     /// @notice Test: Verify compiler-generated deposit+borrow calldata decodes correctly.
@@ -134,7 +134,7 @@ contract IntentRouterCalldataTest is Test {
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
 
-        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 executeSelector = IntentRouter.executeDirect.selector;
         bytes4 calldataSelector;
         assembly {
             calldataSelector := mload(add(callData, 32))
@@ -151,7 +151,7 @@ contract IntentRouterCalldataTest is Test {
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
 
-        bytes4 executeSelector = IntentRouter.execute.selector;
+        bytes4 executeSelector = IntentRouter.executeDirect.selector;
         bytes4 calldataSelector;
         assembly {
             calldataSelector := mload(add(callData, 32))

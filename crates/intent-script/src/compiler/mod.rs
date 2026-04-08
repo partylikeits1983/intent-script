@@ -45,7 +45,13 @@ pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileOutput> {
     let plan = plan::plan(&calls, router, enriched.tokens_to_sweep);
 
     // Stage G: Build — produce final unsigned transactions
-    let output = build::build(plan, enriched.chain_id, enriched.signer);
+    let output = build::build(
+        plan,
+        enriched.chain_id,
+        enriched.signer,
+        enriched.nonce,
+        enriched.deadline,
+    );
 
     Ok(output)
 }

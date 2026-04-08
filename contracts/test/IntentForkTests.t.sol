@@ -119,7 +119,7 @@ contract IntentLocalTests is Test {
 
         // Execute through router
         vm.prank(user);
-        router.execute(calls, tokensToSweep);
+        router.executeDirect(calls, tokensToSweep);
 
         // Verify: user should have received WETH
         uint256 wethBalance = weth.balanceOf(user);
@@ -189,7 +189,7 @@ contract IntentLocalTests is Test {
 
         // Execute through router
         vm.prank(user);
-        router.execute(calls, tokensToSweep);
+        router.executeDirect(calls, tokensToSweep);
 
         // Verify
         assertEq(aavePool.deposits(user, address(usdc)), usdcAmount, "USDC should be deposited");
@@ -291,7 +291,7 @@ contract IntentLocalTests is Test {
         address[] memory tokensToSweep = new address[](0);
 
         vm.prank(user);
-        router.execute(calls, tokensToSweep);
+        router.executeDirect(calls, tokensToSweep);
 
         // Verify
         assertEq(aavePool.deposits(user, address(weth)), expectedWeth, "WETH should be deposited");
@@ -322,7 +322,7 @@ contract IntentLocalTests is Test {
         tokensToSweep[0] = address(lido); // stETH is the Lido contract itself
 
         vm.prank(user);
-        router.execute{ value: stakeAmount }(calls, tokensToSweep);
+        router.executeDirect{ value: stakeAmount }(calls, tokensToSweep);
 
         // Verify: user should have stETH
         uint256 stethBalance = lido.balanceOf(user);
@@ -410,7 +410,7 @@ contract IntentLocalTests is Test {
 
         // No extra ETH needed — the ETH comes from unwrapping WETH
         vm.prank(user);
-        router.execute{ value: 0 }(calls, tokensToSweep);
+        router.executeDirect{ value: 0 }(calls, tokensToSweep);
 
         // Verify
         uint256 stethBalance = lido.balanceOf(user);

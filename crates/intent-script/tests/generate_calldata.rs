@@ -41,29 +41,10 @@ fn write_calldata(name: &str, output: &CompileOutput) {
     let dir = fixtures_dir();
     std::fs::create_dir_all(&dir).expect("create fixtures dir");
 
-    match output {
-        CompileOutput::SingleTx(tx) => {
-            let hex = format!("0x{}", hex_encode(&tx.data));
-            let path = dir.join(format!("{name}.txt"));
-            std::fs::write(&path, &hex).expect("write calldata file");
-
-            // Write value file
-            let value_path = dir.join(format!("{name}_value.txt"));
-            std::fs::write(&value_path, tx.value.to_string()).expect("write value file");
-
-            // Write target address file
-            let to_path = dir.join(format!("{name}_to.txt"));
-            std::fs::write(&to_path, format!("{}", tx.to)).expect("write to file");
-
-            println!(
-                "Wrote calldata to {}: {} bytes",
-                path.display(),
-                tx.data.len()
-            );
-            println!("  to: {}", tx.to);
-            println!("  value: {}", tx.value);
-            println!("  calldata: {hex}");
-        }
+    // Extract the transaction to write — for Eip712Intent, use the direct_tx
+    let tx = match output {
+        CompileOutput::SingleTx(tx) => tx,
+        CompileOutput::Eip712Intent(intent) => &intent.direct_tx,
         CompileOutput::TxSequence(txs) => {
             for (i, tx) in txs.iter().enumerate() {
                 let hex = format!("0x{}", hex_encode(&tx.data));
@@ -75,11 +56,33 @@ fn write_calldata(name: &str, output: &CompileOutput) {
                     tx.data.len()
                 );
             }
+            return;
         }
         CompileOutput::RequiresExecutor { reason } => {
             panic!("Cannot generate calldata: {reason}");
         }
-    }
+    };
+
+    let hex = format!("0x{}", hex_encode(&tx.data));
+    let path = dir.join(format!("{name}.txt"));
+    std::fs::write(&path, &hex).expect("write calldata file");
+
+    // Write value file
+    let value_path = dir.join(format!("{name}_value.txt"));
+    std::fs::write(&value_path, tx.value.to_string()).expect("write value file");
+
+    // Write target address file
+    let to_path = dir.join(format!("{name}_to.txt"));
+    std::fs::write(&to_path, format!("{}", tx.to)).expect("write to file");
+
+    println!(
+        "Wrote calldata to {}: {} bytes",
+        path.display(),
+        tx.data.len()
+    );
+    println!("  to: {}", tx.to);
+    println!("  value: {}", tx.value);
+    println!("  calldata: {hex}");
 }
 
 fn hex_encode(data: &[u8]) -> String {
@@ -98,6 +101,8 @@ fn generate_wrap_eth_calldata() {
 
     let output = compile(input, &config_dir()).expect("compile should succeed");
     write_calldata("wrap_eth", &output);
+
+    println!("Generated calldata for wrap ETH: {:?}", output);
 }
 
 #[test]

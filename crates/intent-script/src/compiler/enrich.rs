@@ -79,7 +79,45 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 }
                 enriched_steps.push(step.clone());
             }
-            // Other steps don't need enrichment (borrow, withdraw, unwrap, approve)
+            ResolvedStep::WstETHWrap {
+                wsteth,
+                steth,
+                amount,
+            } => {
+                // Insert ERC-20 approve for stETH → wstETH before the wrap
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token: *steth,
+                    spender: *wsteth,
+                    amount: *amount,
+                });
+                enriched_steps.push(step.clone());
+
+                // Track wstETH for sweep when batching
+                if router.is_some() && !sweep_tokens.contains(wsteth) {
+                    sweep_tokens.push(*wsteth);
+                }
+            }
+            ResolvedStep::OneInchSwap {
+                router: oneinch_router,
+                token_in,
+                token_out,
+                amount_in,
+                ..
+            } => {
+                // Insert ERC-20 approve for token_in → 1inch router before swap
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token: *token_in,
+                    spender: *oneinch_router,
+                    amount: *amount_in,
+                });
+                enriched_steps.push(step.clone());
+
+                // Track output token for sweep when batching
+                if router.is_some() && !sweep_tokens.contains(token_out) {
+                    sweep_tokens.push(*token_out);
+                }
+            }
+            // Other steps don't need enrichment (borrow, withdraw, unwrap, approve, permit)
             _ => {
                 enriched_steps.push(step.clone());
             }

@@ -71,31 +71,35 @@ fn test_aave_deposit_usdc_batched_through_router() {
     let output = compile(input, &config_dir()).expect("compile should succeed");
 
     // Deposit produces 2 calls (approve + supply) which get batched
-    // into a single router.execute() tx since a router is configured.
+    // into an Eip712Intent since a router is configured.
     match &output {
-        CompileOutput::SingleTx(tx) => {
-            // Target should be the IntentRouter
+        CompileOutput::Eip712Intent(intent) => {
+            // Direct tx target should be the IntentRouter
             assert_eq!(
-                format!("{}", tx.to),
+                format!("{}", intent.direct_tx.to),
                 "0x1111111254EEB25477B68fb85Ed929f73A960582"
             );
             // No direct ETH value (approve + supply are both 0-value)
-            assert_eq!(tx.value.to_string(), "0");
-            // Calldata should start with execute() selector
-            // execute((address,bytes,uint256)[],address[])
-            // The selector is the first 4 bytes of keccak256 of the signature
+            assert_eq!(intent.direct_tx.value.to_string(), "0");
+            // Calldata should start with executeDirect() selector
             assert!(
-                tx.data.len() > 4,
-                "Should have calldata for router.execute()"
+                intent.direct_tx.data.len() > 4,
+                "Should have calldata for router.executeDirect()"
             );
             // Description should mention batching
             assert!(
-                tx.description.contains("Batched"),
+                intent.description.contains("Batched"),
                 "Description should mention batching: {}",
-                tx.description
+                intent.description
             );
+            // Should have EIP-712 domain
+            assert_eq!(intent.domain.name, "IntentRouter");
+            assert_eq!(intent.domain.chain_id, 1);
         }
-        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
     }
 
     // Verify JSON serialization
@@ -103,7 +107,8 @@ fn test_aave_deposit_usdc_batched_through_router() {
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Aave deposit (batched) output:\n{json_str}");
 
-    assert!(json_str.contains("single_tx"));
+    assert!(json_str.contains("eip712_intent"));
+    assert!(json_str.contains("IntentRouter"));
     assert!(json_str.contains("0x1111111254EEB25477B68fb85Ed929f73A960582"));
 }
 
@@ -201,35 +206,38 @@ fn test_swap_usdc_to_weth() {
 
     // Swap produces 2 calls (approve + exactInputSingle) batched via router
     match &output {
-        CompileOutput::SingleTx(tx) => {
+        CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter (batched)
             assert_eq!(
-                format!("{}", tx.to),
+                format!("{}", intent.direct_tx.to),
                 "0x1111111254EEB25477B68fb85Ed929f73A960582"
             );
             assert!(
-                tx.data.len() > 4,
-                "Should have calldata for router.execute()"
+                intent.direct_tx.data.len() > 4,
+                "Should have calldata for router.executeDirect()"
             );
             assert!(
-                tx.description.contains("Batched"),
+                intent.description.contains("Batched"),
                 "Description should mention batching: {}",
-                tx.description
+                intent.description
             );
             assert!(
-                tx.description.contains("Uniswap V3"),
+                intent.description.contains("Uniswap V3"),
                 "Description should mention Uniswap V3: {}",
-                tx.description
+                intent.description
             );
         }
-        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
     }
 
     // Verify JSON serialization
     let json_output = CompileOutputJson::from(&output);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Swap USDC→WETH output:\n{json_str}");
-    assert!(json_str.contains("single_tx"));
+    assert!(json_str.contains("eip712_intent"));
 }
 
 #[test]
@@ -247,40 +255,43 @@ fn test_deposit_and_borrow_single_tx() {
 
     // Deposit + borrow produces 3 calls (approve + supply + borrow) batched via router
     match &output {
-        CompileOutput::SingleTx(tx) => {
+        CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter
             assert_eq!(
-                format!("{}", tx.to),
+                format!("{}", intent.direct_tx.to),
                 "0x1111111254EEB25477B68fb85Ed929f73A960582"
             );
             assert!(
-                tx.data.len() > 4,
-                "Should have calldata for router.execute()"
+                intent.direct_tx.data.len() > 4,
+                "Should have calldata for router.executeDirect()"
             );
             assert!(
-                tx.description.contains("Batched"),
+                intent.description.contains("Batched"),
                 "Description should mention batching: {}",
-                tx.description
+                intent.description
             );
             // Should contain both supply and borrow descriptions
             assert!(
-                tx.description.contains("Supply"),
+                intent.description.contains("Supply"),
                 "Description should mention Supply: {}",
-                tx.description
+                intent.description
             );
             assert!(
-                tx.description.contains("Borrow"),
+                intent.description.contains("Borrow"),
                 "Description should mention Borrow: {}",
-                tx.description
+                intent.description
             );
         }
-        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
     }
 
     let json_output = CompileOutputJson::from(&output);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Deposit+Borrow output:\n{json_str}");
-    assert!(json_str.contains("single_tx"));
+    assert!(json_str.contains("eip712_intent"));
 }
 
 #[test]
@@ -299,44 +310,249 @@ fn test_swap_deposit_borrow_chain() {
 
     // Should produce batched tx: approve USDC, swap, approve WETH, supply, borrow
     match &output {
-        CompileOutput::SingleTx(tx) => {
+        CompileOutput::Eip712Intent(intent) => {
             assert_eq!(
-                format!("{}", tx.to),
+                format!("{}", intent.direct_tx.to),
                 "0x1111111254EEB25477B68fb85Ed929f73A960582"
             );
             assert!(
-                tx.data.len() > 4,
-                "Should have calldata for router.execute()"
+                intent.direct_tx.data.len() > 4,
+                "Should have calldata for router.executeDirect()"
             );
             assert!(
-                tx.description.contains("Batched"),
+                intent.description.contains("Batched"),
                 "Description should mention batching: {}",
-                tx.description
+                intent.description
             );
             // Should contain swap, supply, and borrow
             assert!(
-                tx.description.contains("Swap"),
+                intent.description.contains("Swap"),
                 "Description should mention Swap: {}",
-                tx.description
+                intent.description
             );
             assert!(
-                tx.description.contains("Supply"),
+                intent.description.contains("Supply"),
                 "Description should mention Supply: {}",
-                tx.description
+                intent.description
             );
             assert!(
-                tx.description.contains("Borrow"),
+                intent.description.contains("Borrow"),
                 "Description should mention Borrow: {}",
-                tx.description
+                intent.description
             );
         }
-        other => panic!("Expected SingleTx (batched via router), got {:?}", other),
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
     }
 
     let json_output = CompileOutputJson::from(&output);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Swap+Deposit+Borrow output:\n{json_str}");
-    assert!(json_str.contains("single_tx"));
+    assert!(json_str.contains("eip712_intent"));
+}
+
+#[test]
+fn test_swap_with_custom_fee_tier() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "fee": "500" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.direct_tx.data.len() > 4,
+                "Should have calldata for router.executeDirect()"
+            );
+            assert!(
+                intent.description.contains("Uniswap V3"),
+                "Description should mention Uniswap V3: {}",
+                intent.description
+            );
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_swap_without_fee_defaults_to_3000() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(intent.direct_tx.data.len() > 4);
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_swap_via_1inch_with_calldata() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(intent.direct_tx.data.len() > 4);
+            assert!(
+                intent.description.contains("1inch"),
+                "Description should mention 1inch: {}",
+                intent.description
+            );
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_swap_via_1inch_missing_calldata_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("calldata"),
+        "Error should mention missing calldata: {err}"
+    );
+}
+
+#[test]
+fn test_swap_via_unsupported_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "paraswap" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("paraswap"),
+        "Error should mention unsupported provider: {err}"
+    );
+}
+
+#[test]
+fn test_wrap_steth_to_wsteth() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "stETH", "amount": "10.0" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Wrap stETH produces 2 calls (approve + wrap) batched via router
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            // Target should be the IntentRouter (batched)
+            assert_eq!(
+                format!("{}", intent.direct_tx.to),
+                "0x1111111254EEB25477B68fb85Ed929f73A960582"
+            );
+            assert!(
+                intent.direct_tx.data.len() > 4,
+                "Should have calldata for router.executeDirect()"
+            );
+            assert!(
+                intent.description.contains("Batched"),
+                "Description should mention batching: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("wstETH"),
+                "Description should mention wstETH: {}",
+                intent.description
+            );
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_stake_and_wrap_steth() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } },
+            { "wrap": { "asset": "stETH", "amount": "10.0" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    // Stake + wrap produces batched calldata
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert_eq!(
+                format!("{}", intent.direct_tx.to),
+                "0x1111111254EEB25477B68fb85Ed929f73A960582"
+            );
+            assert!(
+                intent.description.contains("Batched"),
+                "Description should mention batching: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("Stake"),
+                "Description should mention Stake: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("wstETH"),
+                "Description should mention wstETH: {}",
+                intent.description
+            );
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
 }
 
 #[test]
@@ -374,4 +590,27 @@ fn test_stake_eth_in_lido() {
     println!("Stake ETH in Lido output:\n{json_str}");
     assert!(json_str.contains("single_tx"));
     assert!(json_str.contains("0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"));
+}
+
+#[test]
+fn test_eip712_nonce_and_deadline() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "nonce": 5,
+        "deadline": 1712345678,
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
+        ]
+    }"#;
+
+    let output = compile(input, &config_dir()).expect("compile should succeed");
+
+    match &output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert_eq!(intent.intent_batch.nonce, 5);
+            assert_eq!(intent.intent_batch.deadline, 1712345678);
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
 }

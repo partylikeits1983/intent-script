@@ -3,7 +3,7 @@
 //! Resolves aliases to addresses, parses human-readable amounts to U256,
 //! and maps protocol names to concrete deployment addresses.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 
 use crate::error::{CompileError, Result};
 use crate::ir::{ResolvedIntent, ResolvedStep};
@@ -25,6 +25,8 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<Re
         signer,
         steps,
         tokens_to_sweep: Vec::new(),
+        nonce: script.nonce.unwrap_or(0),
+        deadline: script.deadline.unwrap_or(0),
     })
 }
 
@@ -35,14 +37,48 @@ fn normalize_step(
 ) -> Result<ResolvedStep> {
     match step {
         Step::Wrap(w) => {
-            // Wrap: asset should be native (ETH) or we wrap to the wrapped native
-            let wrapped_token = resolve_asset_address(&registry.chain.wrapped_native, registry)?;
-            let decimals = resolve_asset_decimals(&w.asset, registry)?;
-            let amount = parse_amount(&w.amount, decimals)?;
-            Ok(ResolvedStep::Wrap {
-                wrapped_token,
-                amount,
-            })
+            if w.asset == "stETH" {
+                // Wrap stETH → wstETH via wstETH.wrap(uint256)
+                let decimals = resolve_asset_decimals(&w.asset, registry)?;
+                let amount = parse_amount(&w.amount, decimals)?;
+
+                let lido_protocol = registry.protocols.get("lido").ok_or_else(|| {
+                    CompileError::UnknownProtocol {
+                        protocol: "lido".to_string(),
+                        network: registry.network.clone(),
+                    }
+                })?;
+
+                let wsteth_addr = lido_protocol.contracts.get("wsteth").ok_or_else(|| {
+                    CompileError::Adapter(
+                        "Protocol 'lido' has no 'wsteth' contract configured".to_string(),
+                    )
+                })?;
+                let wsteth = parse_address(wsteth_addr)?;
+
+                let steth_addr = lido_protocol.contracts.get("steth").ok_or_else(|| {
+                    CompileError::Adapter(
+                        "Protocol 'lido' has no 'steth' contract configured".to_string(),
+                    )
+                })?;
+                let steth = parse_address(steth_addr)?;
+
+                Ok(ResolvedStep::WstETHWrap {
+                    wsteth,
+                    steth,
+                    amount,
+                })
+            } else {
+                // Wrap: asset should be native (ETH) or we wrap to the wrapped native
+                let wrapped_token =
+                    resolve_asset_address(&registry.chain.wrapped_native, registry)?;
+                let decimals = resolve_asset_decimals(&w.asset, registry)?;
+                let amount = parse_amount(&w.amount, decimals)?;
+                Ok(ResolvedStep::Wrap {
+                    wrapped_token,
+                    amount,
+                })
+            }
         }
         Step::Unwrap(u) => {
             // Unwrap: asset should be WETH or the wrapped native
@@ -148,48 +184,119 @@ fn normalize_step(
             let amount_in = parse_amount(&s.amount, token_in_decimals)?;
             let token_out = resolve_asset_address(&s.to, registry)?;
 
-            // Look up Uniswap V3 router from protocol config
-            let protocol =
-                registry
-                    .protocols
-                    .get("uniswap")
-                    .ok_or_else(|| CompileError::UnknownProtocol {
-                        protocol: "uniswap".to_string(),
-                        network: registry.network.clone(),
+            // Determine routing provider
+            let via = s.via.as_deref().unwrap_or("uniswap");
+
+            match via {
+                "uniswap" | "" => {
+                    // Parse optional fee tier (default 3000 = 0.3%)
+                    let fee: u32 = s.fee.as_deref().unwrap_or("3000").parse().map_err(|_| {
+                        CompileError::InvalidAmount(format!(
+                            "Invalid fee tier: {}",
+                            s.fee.as_deref().unwrap_or("")
+                        ))
                     })?;
 
-            let router_addr = protocol.contracts.get("router").ok_or_else(|| {
-                CompileError::Adapter(
-                    "Protocol 'uniswap' has no 'router' contract configured".to_string(),
-                )
-            })?;
-            let router = parse_address(router_addr)?;
+                    // Look up Uniswap V3 router from protocol config
+                    let protocol = registry.protocols.get("uniswap").ok_or_else(|| {
+                        CompileError::UnknownProtocol {
+                            protocol: "uniswap".to_string(),
+                            network: registry.network.clone(),
+                        }
+                    })?;
 
-            // If swapping from native ETH, use WETH address as token_in
-            // (Uniswap V3 router wraps ETH internally)
-            let effective_token_in = if token_in == Address::ZERO {
-                resolve_asset_address(&registry.chain.wrapped_native, registry)?
-            } else {
-                token_in
-            };
+                    let router_addr = protocol.contracts.get("router").ok_or_else(|| {
+                        CompileError::Adapter(
+                            "Protocol 'uniswap' has no 'router' contract configured".to_string(),
+                        )
+                    })?;
+                    let router = parse_address(router_addr)?;
 
-            // If swapping to native ETH, use WETH address as token_out
-            let effective_token_out = if token_out == Address::ZERO {
-                resolve_asset_address(&registry.chain.wrapped_native, registry)?
-            } else {
-                token_out
-            };
+                    // If swapping from native ETH, use WETH address as token_in
+                    // (Uniswap V3 router wraps ETH internally)
+                    let effective_token_in = if token_in == Address::ZERO {
+                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
+                    } else {
+                        token_in
+                    };
 
-            Ok(ResolvedStep::UniswapV3Swap {
-                router,
-                token_in: effective_token_in,
-                token_out: effective_token_out,
-                amount_in,
-                fee: 3000, // Default 0.3% fee tier
-                recipient: signer,
-                deadline: U256::MAX, // No expiry for offline compilation
-                amount_out_minimum: U256::ZERO, // No slippage protection for offline compilation
-            })
+                    // If swapping to native ETH, use WETH address as token_out
+                    let effective_token_out = if token_out == Address::ZERO {
+                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
+                    } else {
+                        token_out
+                    };
+
+                    Ok(ResolvedStep::UniswapV3Swap {
+                        router,
+                        token_in: effective_token_in,
+                        token_out: effective_token_out,
+                        amount_in,
+                        fee,
+                        recipient: signer,
+                        deadline: U256::MAX,
+                        amount_out_minimum: U256::ZERO,
+                    })
+                }
+                "1inch" => {
+                    // Require pre-fetched calldata
+                    let calldata_hex = s.calldata.as_deref().ok_or_else(|| {
+                        CompileError::Adapter(
+                            "1inch swap requires 'calldata' field with pre-fetched calldata"
+                                .to_string(),
+                        )
+                    })?;
+
+                    // Parse hex calldata (strip 0x prefix if present)
+                    let hex_str = calldata_hex.strip_prefix("0x").unwrap_or(calldata_hex);
+                    let calldata_bytes = hex_decode(hex_str).map_err(|_| {
+                        CompileError::Adapter(format!(
+                            "Invalid hex calldata for 1inch swap: {}",
+                            calldata_hex
+                        ))
+                    })?;
+
+                    // Look up 1inch router from protocol config
+                    let protocol = registry.protocols.get("1inch").ok_or_else(|| {
+                        CompileError::UnknownProtocol {
+                            protocol: "1inch".to_string(),
+                            network: registry.network.clone(),
+                        }
+                    })?;
+
+                    let router_addr = protocol.contracts.get("router").ok_or_else(|| {
+                        CompileError::Adapter(
+                            "Protocol '1inch' has no 'router' contract configured".to_string(),
+                        )
+                    })?;
+                    let router = parse_address(router_addr)?;
+
+                    // If swapping from native ETH, use WETH address as token_in
+                    let effective_token_in = if token_in == Address::ZERO {
+                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
+                    } else {
+                        token_in
+                    };
+
+                    let effective_token_out = if token_out == Address::ZERO {
+                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
+                    } else {
+                        token_out
+                    };
+
+                    Ok(ResolvedStep::OneInchSwap {
+                        router,
+                        token_in: effective_token_in,
+                        token_out: effective_token_out,
+                        amount_in,
+                        calldata: Bytes::from(calldata_bytes),
+                    })
+                }
+                other => Err(CompileError::UnsupportedStep(format!(
+                    "swap via '{}' is not supported; use 'uniswap' or '1inch'",
+                    other
+                ))),
+            }
         }
         Step::Stake(s) => {
             let decimals = resolve_asset_decimals(&s.asset, registry)?;
@@ -315,6 +422,17 @@ fn parse_amount(amount_str: &str, decimals: u8) -> Result<U256> {
         }
         _ => Err(CompileError::InvalidAmount(amount_str.to_string())),
     }
+}
+
+/// Decode a hex string into bytes.
+fn hex_decode(hex: &str) -> std::result::Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 {
+        return Err("Odd-length hex string".to_string());
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| format!("Invalid hex: {}", e)))
+        .collect()
 }
 
 #[cfg(test)]

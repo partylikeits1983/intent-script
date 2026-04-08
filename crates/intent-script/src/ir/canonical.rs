@@ -14,6 +14,10 @@ pub struct ResolvedIntent {
     /// ERC-20 tokens that should be swept back to the signer after batched execution.
     /// Populated by the enricher when a router is available.
     pub tokens_to_sweep: Vec<Address>,
+    /// Nonce for EIP-712 replay protection.
+    pub nonce: u64,
+    /// Deadline timestamp for EIP-712 expiry (0 = no expiry).
+    pub deadline: u64,
 }
 
 /// A resolved action step with concrete types.
@@ -73,6 +77,28 @@ pub enum ResolvedStep {
         lido: Address,
         amount: U256,
         referral: Address,
+    },
+    /// Wrap stETH → wstETH via wstETH.wrap(uint256)
+    WstETHWrap {
+        wsteth: Address,
+        steth: Address,
+        amount: U256,
+    },
+    /// 1inch swap with pre-fetched calldata passthrough
+    OneInchSwap {
+        router: Address,
+        token_in: Address,
+        token_out: Address,
+        amount_in: U256,
+        calldata: Bytes,
+    },
+    /// ERC-20 permit (v, r, s are placeholder zeros — frontend fills after signing)
+    Erc20Permit {
+        token: Address,
+        owner: Address,
+        spender: Address,
+        value: U256,
+        deadline: U256,
     },
 }
 

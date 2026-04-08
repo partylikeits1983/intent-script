@@ -40,6 +40,7 @@ pub fn compile_intent(json: &str) -> intent_script::error::Result<CompileOutput>
 pub fn extract_txs(output: &CompileOutput) -> Vec<&UnsignedTx> {
     match output {
         CompileOutput::SingleTx(tx) => vec![tx],
+        CompileOutput::Eip712Intent(intent) => vec![&intent.direct_tx],
         CompileOutput::TxSequence(txs) => txs.iter().collect(),
         CompileOutput::RequiresExecutor { .. } => vec![],
     }

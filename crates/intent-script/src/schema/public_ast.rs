@@ -14,6 +14,12 @@ pub struct IntentScript {
     pub from: String,
     /// Ordered list of action steps
     pub steps: Vec<Step>,
+    /// Optional nonce for EIP-712 replay protection (default: 0)
+    #[serde(default)]
+    pub nonce: Option<u64>,
+    /// Optional deadline timestamp for EIP-712 expiry (default: 0 = no expiry)
+    #[serde(default)]
+    pub deadline: Option<u64>,
 }
 
 /// A single action step. Each variant wraps a minimal payload.
@@ -40,6 +46,15 @@ pub struct SwapStep {
     pub from: String,
     pub amount: String,
     pub to: String,
+    /// Optional fee tier for Uniswap V3 (default: 3000 = 0.3%)
+    #[serde(default)]
+    pub fee: Option<String>,
+    /// Optional routing provider: "uniswap" (default), "1inch"
+    #[serde(default)]
+    pub via: Option<String>,
+    /// Pre-fetched calldata for aggregator swaps (required when via = "1inch")
+    #[serde(default)]
+    pub calldata: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
