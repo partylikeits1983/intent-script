@@ -154,7 +154,7 @@ fn generate_swap_usdc_weth_eip712() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
         ]
     }"#;
 

@@ -45,12 +45,33 @@ The system has two main components:
   "nonce": 0,
   "deadline": 0,
   "steps": [
-    { "swap": { "from": "USDC", "amount": "5000", "to": "WETH" } },
+    { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.4" } },
     { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
     { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
   ]
 }
 ```
+
+### Swap Slippage Protection
+
+Uniswap swaps support slippage protection via two mechanisms:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `min_amount_out` | `string` (optional) | Explicit minimum output in human-readable output-token units. Takes precedence. |
+| `price` | `string` (optional) | Market price: output tokens per 1 input token. Required when `slippage` is used. |
+| `slippage` | `string` (optional) | Max slippage as percentage (e.g., `"0.5"` = 0.5%). Default: 0.5% when `price` is provided. |
+
+**Precedence:** `min_amount_out` > `price`+`slippage` > nothing (warns + defaults to 0).
+
+**Examples:**
+```json
+{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }
+{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005", "slippage": "1.0" } }
+{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005" } }
+```
+
+> **Note:** 1inch swaps handle slippage via the 1inch Fusion protocol, not via these fields.
 
 ### Design Principles
 - **Aliases over addresses** — `"ETH"`, `"USDC"`, `"aave"`, `"uniswap"`

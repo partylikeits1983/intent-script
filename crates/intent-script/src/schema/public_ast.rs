@@ -86,6 +86,21 @@ pub struct SwapStep {
     /// Pre-fetched calldata for aggregator swaps (required when via = "1inch")
     #[serde(default)]
     pub calldata: Option<String>,
+    /// Explicit minimum output amount in human-readable output-token units.
+    /// Takes precedence over slippage+price calculation.
+    /// Example: "0.48" means at least 0.48 WETH out.
+    #[serde(default)]
+    pub min_amount_out: Option<String>,
+    /// Current market price: output tokens per 1 input token.
+    /// Required when slippage is specified without min_amount_out.
+    /// Example: "0.0005" means 1 USDC → 0.0005 WETH.
+    #[serde(default)]
+    pub price: Option<String>,
+    /// Max slippage tolerance as percentage (e.g., "0.5" = 0.5%).
+    /// Default: 0.5% when price is provided but slippage is omitted.
+    /// Requires the price field to be set.
+    #[serde(default)]
+    pub slippage: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,3 +1,7 @@
+# Load .env file if it exists (provides ETH_RPC_URL for fork tests)
+-include .env
+export
+
 format:
 	cargo fmt --all
 
@@ -26,7 +30,7 @@ test-foundry:
 # Full test flow: generate calldata, then run Foundry tests
 test-router: generate-calldata test-foundry
 
-# Run Foundry fork E2E tests against mainnet (requires ETH_RPC_URL)
+# Run Foundry fork E2E tests against mainnet (requires ETH_RPC_URL in .env)
 # These deploy IntentRouter on a fork and execute against real protocols
 test-fork-e2e: generate-fixtures
 	cd contracts && forge test --mc IntentForkE2E --fork-url $(ETH_RPC_URL) -vvv
@@ -42,5 +46,5 @@ test-anvil:
 # Run all tests: compiler + foundry + anvil (no fork needed)
 test-all: test-compiler test-router test-anvil
 
-# Run everything including fork E2E (requires ETH_RPC_URL)
+# Run everything including fork E2E (requires ETH_RPC_URL in .env)
 test-e2e: test-all test-fork-e2e

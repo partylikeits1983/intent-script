@@ -398,12 +398,14 @@ contract IntentForkE2E is Test {
         });
 
         // Step 2: Swap USDC → WETH, recipient = router (WETH stays in router)
+        // amountOutMinimum is set to a conservative value for slippage protection
+        // (matches compiler behavior when min_amount_out is specified)
         calls[2] = IntentRouter.Call({
             target: UNI_ROUTER,
             callData: abi.encodeWithSignature(
                 "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
                 USDC, WETH, uint24(3000), routerAddr,
-                type(uint256).max, usdcAmount, uint256(0), uint160(0)
+                type(uint256).max, usdcAmount, uint256(1), uint160(0)
             ),
             value: 0
         });

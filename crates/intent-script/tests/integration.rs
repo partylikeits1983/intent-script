@@ -1228,3 +1228,186 @@ fn test_warnings_in_json_output() {
         "JSON output should contain the warning text: {json_str}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Slippage / min_amount_out tests
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_swap_with_min_amount_out() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    // Should have no slippage warnings
+    assert!(
+        !result.warnings.iter().any(|w| w.contains("slippage")),
+        "Should not have slippage warning when min_amount_out is provided: {:?}",
+        result.warnings
+    );
+
+    // Verify the output compiles to a batched tx (swap produces multiple calls)
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.description.contains("Uniswap V3"),
+                "Description should mention Uniswap V3: {}",
+                intent.description
+            );
+        }
+        other => panic!("Expected Eip712Intent for swap, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_swap_with_price_and_slippage() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005", "slippage": "1.0" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    // Should have no slippage warnings
+    assert!(
+        !result.warnings.iter().any(|w| w.contains("slippage")),
+        "Should not have slippage warning when price+slippage is provided: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_swap_with_price_default_slippage() {
+    // When price is provided but slippage is omitted, default 0.5% is used
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    // Should have no slippage warnings (price triggers computation with default 0.5%)
+    assert!(
+        !result.warnings.iter().any(|w| w.contains("slippage")),
+        "Should not have slippage warning when price is provided: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_swap_slippage_without_price_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "slippage": "0.5" } }
+        ]
+    }"#;
+
+    let err = compile(input, &config_dir()).unwrap_err().to_string();
+    assert!(
+        err.contains("price"),
+        "Error should mention that price is required: {err}"
+    );
+}
+
+#[test]
+fn test_swap_no_slippage_warns() {
+    // When neither min_amount_out nor price/slippage is provided, compiler warns
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    assert!(
+        result.warnings.iter().any(|w| w.contains("slippage")),
+        "Should have a slippage warning when no protection is specified: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_swap_min_amount_out_overrides_slippage() {
+    // When both min_amount_out and price/slippage are provided, min_amount_out wins
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48", "price": "0.0005", "slippage": "1.0" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    // Should have no slippage warnings
+    assert!(
+        !result.warnings.iter().any(|w| w.contains("slippage")),
+        "Should not have slippage warning when min_amount_out is provided: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_swap_1inch_ignores_slippage_params() {
+    // 1inch swaps use pre-fetched calldata — slippage params are ignored
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef", "min_amount_out": "0.48" } }
+        ]
+    }"#;
+
+    let result = compile(input, &config_dir()).expect("compile should succeed");
+    // 1inch swap should compile fine regardless of slippage params
+    match &result.output {
+        CompileOutput::Eip712Intent(_) => {}
+        other => panic!("Expected Eip712Intent for 1inch swap, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_swap_negative_slippage_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005", "slippage": "-1.0" } }
+        ]
+    }"#;
+
+    let err = compile(input, &config_dir()).unwrap_err().to_string();
+    assert!(
+        err.contains("Slippage must be between"),
+        "Error should mention invalid slippage range: {err}"
+    );
+}
+
+#[test]
+fn test_swap_invalid_price_fails() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "abc" } }
+        ]
+    }"#;
+
+    let err = compile(input, &config_dir()).unwrap_err().to_string();
+    assert!(
+        err.contains("Invalid price"),
+        "Error should mention invalid price: {err}"
+    );
+}

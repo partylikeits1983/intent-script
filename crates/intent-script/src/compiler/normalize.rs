@@ -10,15 +10,22 @@ use alloy_primitives::{Address, Bytes, U256};
 use crate::error::{CompileError, Result};
 use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep};
 use crate::registry::RegistryContext;
-use crate::schema::{IntentScript, Step};
+use crate::schema::{IntentScript, Step, SwapStep};
+
+/// Result of normalization: the resolved intent plus any warnings.
+pub struct NormalizeResult {
+    pub intent: ResolvedIntent,
+    pub warnings: Vec<String>,
+}
 
 /// Normalize a parsed intent script into the canonical IR.
-pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<ResolvedIntent> {
+pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<NormalizeResult> {
     let signer = parse_address(&script.from)?;
+    let mut warnings = Vec::new();
 
     let mut steps = Vec::new();
     for step in &script.steps {
-        let resolved = normalize_step(step, signer, registry)?;
+        let resolved = normalize_step(step, signer, registry, &mut warnings)?;
         steps.push(resolved);
     }
 
@@ -29,14 +36,17 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<Re
         None
     };
 
-    Ok(ResolvedIntent {
-        chain_id: registry.chain.chain_id,
-        signer,
-        steps,
-        tokens_to_sweep: Vec::new(),
-        nonce: script.nonce.unwrap_or(0),
-        deadline: script.deadline.unwrap_or(0),
-        user_balances,
+    Ok(NormalizeResult {
+        intent: ResolvedIntent {
+            chain_id: registry.chain.chain_id,
+            signer,
+            steps,
+            tokens_to_sweep: Vec::new(),
+            nonce: script.nonce.unwrap_or(0),
+            deadline: script.deadline.unwrap_or(0),
+            user_balances,
+        },
+        warnings,
     })
 }
 
@@ -44,6 +54,7 @@ fn normalize_step(
     step: &Step,
     signer: Address,
     registry: &RegistryContext,
+    warnings: &mut Vec<String>,
 ) -> Result<ResolvedStep> {
     match step {
         Step::Wrap(w) => {
@@ -237,6 +248,10 @@ fn normalize_step(
                         token_out
                     };
 
+                    // Compute amount_out_minimum from slippage params
+                    let amount_out_minimum =
+                        compute_amount_out_minimum(s, amount_in, &s.to, registry, warnings)?;
+
                     Ok(ResolvedStep::UniswapV3Swap {
                         router,
                         token_in: effective_token_in,
@@ -245,7 +260,7 @@ fn normalize_step(
                         fee,
                         recipient: signer,
                         deadline: U256::MAX,
-                        amount_out_minimum: U256::ZERO,
+                        amount_out_minimum,
                     })
                 }
                 "1inch" => {
@@ -350,6 +365,98 @@ fn normalize_step(
             "custom steps are not yet implemented in v1".to_string(),
         )),
     }
+}
+
+/// Compute `amount_out_minimum` for a Uniswap swap from the JSON slippage params.
+///
+/// Precedence:
+/// 1. `min_amount_out` provided → parse with output token decimals, use directly
+/// 2. `price` provided (+ optional `slippage`, default 0.5%) → compute: amount_in_human * price * (1 - slippage/100)
+/// 3. `slippage` without `price` → error
+/// 4. Neither → U256::ZERO + warning
+fn compute_amount_out_minimum(
+    swap: &SwapStep,
+    amount_in: U256,
+    output_token_alias: &str,
+    registry: &RegistryContext,
+    warnings: &mut Vec<String>,
+) -> Result<U256> {
+    // Case 1: Explicit min_amount_out
+    if let Some(ref min_out_str) = swap.min_amount_out {
+        let out_decimals = resolve_asset_decimals(output_token_alias, registry)?;
+        return parse_amount(min_out_str, out_decimals);
+    }
+
+    // Case 2: price provided (with optional slippage)
+    if let Some(ref price_str) = swap.price {
+        let price: f64 = price_str.parse().map_err(|_| {
+            CompileError::InvalidAmount(format!("Invalid price value: {}", price_str))
+        })?;
+
+        if price <= 0.0 {
+            return Err(CompileError::InvalidAmount(
+                "Price must be positive".to_string(),
+            ));
+        }
+
+        let slippage_pct: f64 = match &swap.slippage {
+            Some(s) => s.parse().map_err(|_| {
+                CompileError::InvalidAmount(format!("Invalid slippage value: {}", s))
+            })?,
+            None => 0.5, // Default 0.5%
+        };
+
+        if slippage_pct < 0.0 || slippage_pct >= 100.0 {
+            return Err(CompileError::InvalidAmount(format!(
+                "Slippage must be between 0 and 100, got {}",
+                slippage_pct
+            )));
+        }
+
+        // Convert amount_in (U256) to f64 for calculation.
+        // We need the input token decimals to convert back to human-readable.
+        let in_decimals = resolve_asset_decimals(&swap.from, registry)?;
+        let out_decimals = resolve_asset_decimals(output_token_alias, registry)?;
+
+        // amount_in is in smallest units (e.g., 1000 USDC = 1_000_000_000 with 6 decimals)
+        // Convert to human-readable: amount_in / 10^in_decimals
+        let amount_in_human: f64 =
+            amount_in.to_string().parse::<f64>().unwrap_or(0.0) / 10f64.powi(in_decimals as i32);
+
+        // expected_output = amount_in_human * price
+        // min_output = expected_output * (1 - slippage/100)
+        let min_output = amount_in_human * price * (1.0 - slippage_pct / 100.0);
+
+        // Convert min_output to smallest units of output token (floor for conservative rounding)
+        let min_output_smallest = min_output * 10f64.powi(out_decimals as i32);
+
+        if min_output_smallest < 0.0 {
+            return Ok(U256::ZERO);
+        }
+
+        // Floor to u128 then convert to U256
+        let min_out_u128 = min_output_smallest.floor() as u128;
+        return Ok(U256::from(min_out_u128));
+    }
+
+    // Case 3: slippage without price → error
+    if swap.slippage.is_some() {
+        return Err(CompileError::InvalidAmount(
+            "Slippage requires the 'price' field to be set. \
+             Provide 'price' (output tokens per 1 input token) alongside 'slippage', \
+             or use 'min_amount_out' for an explicit minimum."
+                .to_string(),
+        ));
+    }
+
+    // Case 4: Neither provided → zero with warning
+    warnings.push(
+        "No slippage protection: swap has no 'min_amount_out', 'price', or 'slippage' specified. \
+         The swap will use amountOutMinimum=0, making it vulnerable to sandwich attacks. \
+         Consider adding 'min_amount_out' or 'price'+'slippage' to the swap step."
+            .to_string(),
+    );
+    Ok(U256::ZERO)
 }
 
 /// Resolve an asset alias to its on-chain address.

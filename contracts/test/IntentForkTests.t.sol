@@ -107,7 +107,7 @@ contract IntentLocalTests is Test {
                     recipient: user,
                     deadline: type(uint256).max,
                     amountIn: usdcAmount,
-                    amountOutMinimum: 0,
+                    amountOutMinimum: 1, // Non-zero for slippage protection
                     sqrtPriceLimitX96: 0
                 })
             ),
@@ -253,7 +253,7 @@ contract IntentLocalTests is Test {
                     recipient: address(router),
                     deadline: type(uint256).max,
                     amountIn: usdcAmount,
-                    amountOutMinimum: 0,
+                    amountOutMinimum: 1, // Non-zero for slippage protection
                     sqrtPriceLimitX96: 0
                 })
             ),
@@ -383,7 +383,7 @@ contract IntentLocalTests is Test {
                     recipient: address(router),
                     deadline: type(uint256).max,
                     amountIn: usdcAmount,
-                    amountOutMinimum: 0,
+                    amountOutMinimum: 1, // Non-zero for slippage protection
                     sqrtPriceLimitX96: 0
                 })
             ),

@@ -125,7 +125,7 @@ fn generate_swap_usdc_weth_calldata() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
         ]
     }"#;
 
@@ -154,7 +154,7 @@ fn generate_swap_deposit_borrow_calldata() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH" } },
+            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "0.5" } },
             { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
         ]

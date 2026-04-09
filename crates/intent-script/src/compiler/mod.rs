@@ -31,10 +31,13 @@ pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileResult> {
     let registry = RegistryContext::load(config_dir, &script.network)?;
 
     // Stage B: Normalize — resolve aliases, parse amounts
-    let resolved = normalize::normalize(&script, &registry)?;
+    let norm_result = normalize::normalize(&script, &registry)?;
+    let resolved = norm_result.intent;
+    let mut all_warnings = norm_result.warnings;
 
     // Stage C: Validate — returns warnings for non-fatal issues
     let validation = validate::validate(&resolved, &registry)?;
+    all_warnings.extend(validation.warnings);
 
     // Stage D: Enrich — insert approvals, wraps, track sweep tokens
     let enriched = enrich::enrich(resolved, &registry)?;
@@ -58,6 +61,6 @@ pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileResult> {
 
     Ok(CompileResult {
         output,
-        warnings: validation.warnings,
+        warnings: all_warnings,
     })
 }
