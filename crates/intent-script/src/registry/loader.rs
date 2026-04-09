@@ -1,9 +1,9 @@
-//! Registry loader — reads JSON config files and builds lookup tables.
+//! Registry loader — parses JSON config data and builds lookup tables.
 
-use std::collections::HashMap;
-use std::path::Path;
+use alloc::string::{String, ToString};
 
 use alloy_primitives::Address;
+use hashbrown::HashMap;
 use serde::Deserialize;
 
 use crate::error::{CompileError, Result};
@@ -43,42 +43,32 @@ pub struct RegistryContext {
 }
 
 impl RegistryContext {
-    /// Load registry context for a given network from config files.
+    /// Load registry context for a given network from pre-loaded JSON strings.
     ///
-    /// Expects the following file structure under `config_dir`:
-    /// - `chains.json`
-    /// - `assets/{network}.json`
-    /// - `protocols/{network}.json`
-    pub fn load(config_dir: &Path, network: &str) -> Result<Self> {
-        // Load chains.json
-        let chains_path = config_dir.join("chains.json");
-        let chains_data = std::fs::read_to_string(&chains_path).map_err(|e| {
-            CompileError::Config(format!("Failed to read {}: {}", chains_path.display(), e))
-        })?;
-        let chains: HashMap<String, ChainConfig> = serde_json::from_str(&chains_data)?;
+    /// The caller (CLI binary or frontend) is responsible for reading the files
+    /// and passing the raw JSON strings. This keeps the library no-std compatible.
+    ///
+    /// Arguments:
+    /// - `chains_json`: Contents of `chains.json`
+    /// - `assets_json`: Contents of `assets/{network}.json`
+    /// - `protocols_json`: Contents of `protocols/{network}.json`
+    /// - `network`: Network name (e.g., "ethereum")
+    pub fn load(
+        chains_json: &str,
+        assets_json: &str,
+        protocols_json: &str,
+        network: &str,
+    ) -> Result<Self> {
+        let chains: HashMap<String, ChainConfig> = serde_json::from_str(chains_json)?;
 
         let chain = chains
             .get(network)
             .cloned()
             .ok_or_else(|| CompileError::UnknownNetwork(network.to_string()))?;
 
-        // Load assets/{network}.json
-        let assets_path = config_dir.join("assets").join(format!("{network}.json"));
-        let assets_data = std::fs::read_to_string(&assets_path).map_err(|e| {
-            CompileError::Config(format!("Failed to read {}: {}", assets_path.display(), e))
-        })?;
-        let assets: HashMap<String, AssetConfig> = serde_json::from_str(&assets_data)?;
+        let assets: HashMap<String, AssetConfig> = serde_json::from_str(assets_json)?;
 
-        // Load protocols/{network}.json
-        let protocols_path = config_dir.join("protocols").join(format!("{network}.json"));
-        let protocols_data = std::fs::read_to_string(&protocols_path).map_err(|e| {
-            CompileError::Config(format!(
-                "Failed to read {}: {}",
-                protocols_path.display(),
-                e
-            ))
-        })?;
-        let protocols: HashMap<String, ProtocolConfig> = serde_json::from_str(&protocols_data)?;
+        let protocols: HashMap<String, ProtocolConfig> = serde_json::from_str(protocols_json)?;
 
         Ok(RegistryContext {
             network: network.to_string(),

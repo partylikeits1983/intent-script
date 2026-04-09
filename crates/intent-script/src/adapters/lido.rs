@@ -4,6 +4,10 @@
 //! - `lido.submit(address _referral)` — stake ETH and receive stETH
 //! - `wstETH.wrap(uint256 _stETHAmount)` — wrap stETH into wstETH
 
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
+
 use alloy_primitives::{Bytes, U256};
 use alloy_sol_types::SolCall;
 

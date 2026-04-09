@@ -21,6 +21,19 @@ fn config_dir() -> PathBuf {
         .join("config")
 }
 
+fn load_config() -> (String, String, String) {
+    let dir = config_dir();
+    let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    (chains, assets, protocols)
+}
+
+fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
+    let (c, a, p) = load_config();
+    compile(input, &c, &a, &p)
+}
+
 /// Get the path to the Foundry fixtures directory.
 fn fixtures_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -99,7 +112,7 @@ fn generate_wrap_eth_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("wrap_eth", &output);
 
     println!("Generated calldata for wrap ETH: {:?}", output);
@@ -115,7 +128,7 @@ fn generate_aave_deposit_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("aave_deposit_usdc", &output);
 }
 
@@ -129,7 +142,7 @@ fn generate_swap_usdc_weth_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("swap_usdc_weth", &output);
 }
 
@@ -144,7 +157,7 @@ fn generate_deposit_borrow_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("deposit_borrow", &output);
 }
 
@@ -154,13 +167,13 @@ fn generate_swap_deposit_borrow_calldata() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "0.5" } },
+            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
             { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("swap_deposit_borrow", &output);
 }
 
@@ -174,7 +187,7 @@ fn generate_stake_eth_lido_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("stake_eth_lido", &output);
 }
 
@@ -188,7 +201,7 @@ fn generate_aave_withdraw_calldata() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_calldata("aave_withdraw_usdc", &output);
 }
 
@@ -200,7 +213,7 @@ fn generate_complex_defi_calldata() {
     let input =
         std::fs::read_to_string(&example_path).expect("should read complex_defi.json example file");
 
-    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(&input).expect("compile should succeed");
     write_calldata("complex_defi", &output);
 }
 
@@ -212,6 +225,6 @@ fn generate_stake_lido_wsteth_calldata() {
     let input = std::fs::read_to_string(&example_path)
         .expect("should read stake_lido_wsteth.json example file");
 
-    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(&input).expect("compile should succeed");
     write_calldata("stake_lido_wsteth", &output);
 }

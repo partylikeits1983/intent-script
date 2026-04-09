@@ -23,9 +23,10 @@ generate-calldata:
 generate-fixtures: generate-calldata
 	cargo test -p intent-script --test generate_eip712_fixtures -- --nocapture
 
-# Run Foundry tests (requires: make generate-calldata first)
+# Run Foundry tests excluding fork E2E (requires: make generate-calldata first)
+# Fork E2E tests need --fork-url and are run separately via make test-fork-e2e
 test-foundry:
-	cd contracts && forge test -vvv
+	cd contracts && forge test --no-match-contract IntentForkE2E -vvv
 
 # Full test flow: generate calldata, then run Foundry tests
 test-router: generate-calldata test-foundry

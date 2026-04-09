@@ -53,6 +53,14 @@ contract IntentLocalTests is Test {
         // Set exchange rate for USDC → WETH
         swapRouter.setRate(USDC_WETH_RATE);
 
+        // Whitelist all target contracts (Task 8: allowlist)
+        router.setAllowedTarget(address(weth), true);
+        router.setAllowedTarget(address(usdc), true);
+        router.setAllowedTarget(address(dai), true);
+        router.setAllowedTarget(address(swapRouter), true);
+        router.setAllowedTarget(address(aavePool), true);
+        router.setAllowedTarget(address(lido), true);
+
         // Fund user
         vm.deal(user, 100 ether);
         usdc.mint(user, 10_000 * 1e6); // 10,000 USDC

@@ -3,6 +3,10 @@
 //! Generates calldata for:
 //! - `router.exactInputSingle(ExactInputSingleParams)` — single-hop swap
 
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
+
 use alloy_primitives::{Bytes, U256, Uint};
 use alloy_sol_types::SolCall;
 

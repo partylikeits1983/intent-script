@@ -23,6 +23,9 @@ contract IntentRouterCalldataTest is Test {
         router = new IntentRouter();
         weth = new WETH9();
 
+        // Whitelist WETH as an allowed target (Task 8: allowlist)
+        router.setAllowedTarget(address(weth), true);
+
         // Fund user with 100 ETH
         vm.deal(user, 100 ether);
     }

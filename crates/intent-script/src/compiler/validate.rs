@@ -5,13 +5,24 @@
 //! When balances are absent, produces warnings instead of errors for
 //! rules that depend on on-chain state.
 
-use std::collections::HashSet;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use alloy_primitives::{Address, U256};
+use hashbrown::{HashMap, HashSet};
 
 use crate::error::{CompileError, Result};
-use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep};
+use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_consumes, step_produces};
 use crate::registry::RegistryContext;
+
+/// Maximum number of user-facing steps allowed in a single intent.
+pub const MAX_STEPS: usize = 5;
+
+/// Minimum Aave health factor — below this, borrows are rejected.
+const MIN_HEALTH_FACTOR: f64 = 1.2;
+/// Warning threshold for Aave health factor.
+const WARN_HEALTH_FACTOR: f64 = 1.5;
 
 /// Result of validation: Ok with a list of warnings, or Err on hard failure.
 pub struct ValidationResult {
@@ -26,6 +37,11 @@ pub struct ValidationResult {
 /// 3. Amounts must be positive (> 0)
 /// 4. Asset compatibility (no native ETH into Aave, no swap-to-self)
 /// 5. Protocol existence (already enforced by normalization)
+/// 6. Slippage protection required for swaps (Task 1)
+/// 7. Aave health factor check (Task 3)
+/// 8. Max step count (Task 4)
+/// 9. Cross-step amount flow validation (Task 5)
+/// 10. Send validation (Task 7)
 pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<ValidationResult> {
     let mut warnings = Vec::new();
 
@@ -43,6 +59,15 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
         ));
     }
 
+    // Task 4: Max step count
+    if intent.steps.len() > MAX_STEPS {
+        return Err(CompileError::Validation(format!(
+            "Intent has {} steps but maximum is {}",
+            intent.steps.len(),
+            MAX_STEPS
+        )));
+    }
+
     // Track protocols that have received deposits in this intent
     let mut deposited_protocols: HashSet<Address> = HashSet::new();
 
@@ -52,6 +77,12 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
 
         // Rule 4: Asset compatibility
         validate_asset_compatibility(step)?;
+
+        // Task 1: Slippage protection for swaps
+        validate_slippage(step)?;
+
+        // Task 7: Send validation
+        validate_send(step)?;
 
         match step {
             ResolvedStep::AaveV3Supply { pool, .. } => {
@@ -63,6 +94,8 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
                 if !deposited_protocols.contains(pool) {
                     validate_borrow_feasibility(intent.user_balances.as_ref(), &mut warnings)?;
                 }
+                // Task 3: Aave health factor check
+                validate_health_factor(intent.user_balances.as_ref(), &mut warnings)?;
             }
             ResolvedStep::AaveV3Withdraw { pool, asset, .. } => {
                 // Rule 2: Withdraw requires prior deposit or existing position
@@ -78,7 +111,99 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
         }
     }
 
+    // Task 5: Cross-step amount flow validation
+    validate_amount_flow(&intent.steps)?;
+
     Ok(ValidationResult { warnings })
+}
+
+/// Task 1: Reject swaps with zero slippage protection.
+fn validate_slippage(step: &ResolvedStep) -> Result<()> {
+    if let ResolvedStep::UniswapV3Swap {
+        amount_out_minimum, ..
+    } = step
+    {
+        if *amount_out_minimum == U256::ZERO {
+            return Err(CompileError::InvalidChain(
+                "Swap has no slippage protection (amountOutMinimum = 0). \
+                 Provide 'min_amount_out' or 'price' + 'slippage' on the swap step."
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Task 3: Validate Aave health factor for borrows.
+fn validate_health_factor(
+    balances: Option<&ResolvedBalances>,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    if let Some(b) = balances {
+        if let Some(hf) = b.aave_health_factor {
+            if hf < MIN_HEALTH_FACTOR {
+                return Err(CompileError::InvalidChain(format!(
+                    "Aave health factor is {:.2}, below minimum {:.1}. \
+                     Borrow rejected to prevent liquidation.",
+                    hf, MIN_HEALTH_FACTOR
+                )));
+            }
+            if hf < WARN_HEALTH_FACTOR {
+                warnings.push(format!(
+                    "Aave health factor is {:.2}. Borrowing may increase liquidation risk.",
+                    hf
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Task 5: Cross-step amount flow validation.
+///
+/// Track tokens produced by previous steps. Only validate consumption when
+/// a step uses a token that a prior step produced. Wallet-sourced tokens
+/// are not checked.
+fn validate_amount_flow(steps: &[ResolvedStep]) -> Result<()> {
+    let mut produced: HashMap<Address, U256> = HashMap::new();
+
+    for (i, step) in steps.iter().enumerate() {
+        if let Some((token, required)) = step_consumes(step) {
+            if let Some(available) = produced.get(&token) {
+                if required > *available {
+                    return Err(CompileError::InvalidChain(format!(
+                        "Step {} requires {} of token {} but previous steps only guarantee {}",
+                        i + 1,
+                        required,
+                        token,
+                        available
+                    )));
+                }
+                produced.insert(token, *available - required);
+            }
+        }
+        if let Some((token, guaranteed)) = step_produces(step) {
+            *produced.entry(token).or_insert(U256::ZERO) += guaranteed;
+        }
+    }
+    Ok(())
+}
+
+/// Task 7: Validate send steps.
+fn validate_send(step: &ResolvedStep) -> Result<()> {
+    match step {
+        ResolvedStep::SendErc20 { to, .. }
+        | ResolvedStep::SendEth { to, .. }
+        | ResolvedStep::SendErc721 { to, .. } => {
+            if *to == Address::ZERO {
+                return Err(CompileError::InvalidChain(
+                    "Cannot send to the zero address".to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Rule 1: Validate that a borrow is feasible.
@@ -170,10 +295,13 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         ResolvedStep::LidoStake { amount, .. } => Some(("stake", amount)),
         ResolvedStep::WstETHWrap { amount, .. } => Some(("wrap stETH", amount)),
         ResolvedStep::OneInchSwap { amount_in, .. } => Some(("swap", amount_in)),
-        // Approve, TransferFrom, Permit are auto-generated — skip
+        ResolvedStep::SendErc20 { amount, .. } => Some(("send", amount)),
+        ResolvedStep::SendEth { amount, .. } => Some(("send", amount)),
+        // Approve, TransferFrom, Permit, SendErc721 are auto-generated or don't have amounts
         ResolvedStep::Erc20Approve { .. }
         | ResolvedStep::Erc20TransferFrom { .. }
-        | ResolvedStep::Erc20Permit { .. } => None,
+        | ResolvedStep::Erc20Permit { .. }
+        | ResolvedStep::SendErc721 { .. } => None,
     };
 
     if let Some((action, value)) = amount {
@@ -339,5 +467,182 @@ mod tests {
         // We need a dummy registry — but validate doesn't use it for this check.
         // Use a minimal approach: just test the specific validation.
         assert!(intent.steps.is_empty());
+    }
+
+    // Task 1: Slippage protection tests
+    #[test]
+    fn test_swap_zero_slippage_rejected() {
+        let step = ResolvedStep::UniswapV3Swap {
+            router: address!("E592427A0AEce92De3Edee1F18E0157C05861564"),
+            token_in: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token_out: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            amount_in: U256::from(1_000_000_000u64),
+            fee: 3000,
+            recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+            deadline: U256::MAX,
+            amount_out_minimum: U256::ZERO,
+        };
+        let result = validate_slippage(&step);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("slippage protection")
+        );
+    }
+
+    #[test]
+    fn test_swap_with_slippage_ok() {
+        let step = ResolvedStep::UniswapV3Swap {
+            router: address!("E592427A0AEce92De3Edee1F18E0157C05861564"),
+            token_in: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token_out: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            amount_in: U256::from(1_000_000_000u64),
+            fee: 3000,
+            recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+            deadline: U256::MAX,
+            amount_out_minimum: U256::from(480_000_000_000_000_000u64),
+        };
+        let result = validate_slippage(&step);
+        assert!(result.is_ok());
+    }
+
+    // Task 3: Health factor tests
+    #[test]
+    fn test_health_factor_below_minimum_rejected() {
+        let mut balances = ResolvedBalances::default();
+        balances.aave_health_factor = Some(1.1);
+        let mut warnings = Vec::new();
+        let result = validate_health_factor(Some(&balances), &mut warnings);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("health factor"));
+    }
+
+    #[test]
+    fn test_health_factor_warning_range() {
+        let mut balances = ResolvedBalances::default();
+        balances.aave_health_factor = Some(1.3);
+        let mut warnings = Vec::new();
+        let result = validate_health_factor(Some(&balances), &mut warnings);
+        assert!(result.is_ok());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("health factor"));
+    }
+
+    #[test]
+    fn test_health_factor_above_warning_clean() {
+        let mut balances = ResolvedBalances::default();
+        balances.aave_health_factor = Some(2.0);
+        let mut warnings = Vec::new();
+        let result = validate_health_factor(Some(&balances), &mut warnings);
+        assert!(result.is_ok());
+        assert!(warnings.is_empty());
+    }
+
+    // Task 4: Max step count test
+    #[test]
+    fn test_too_many_steps_rejected() {
+        let steps: Vec<ResolvedStep> = (0..6)
+            .map(|_| ResolvedStep::Wrap {
+                wrapped_token: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                amount: U256::from(1_000_000_000_000_000_000u64),
+            })
+            .collect();
+        let intent = dummy_intent(steps);
+        assert!(intent.steps.len() > MAX_STEPS);
+    }
+
+    // Task 5: Amount flow tests
+    #[test]
+    fn test_amount_flow_swap_deposit_overflow_rejected() {
+        let steps = vec![
+            ResolvedStep::UniswapV3Swap {
+                router: address!("E592427A0AEce92De3Edee1F18E0157C05861564"),
+                token_in: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+                token_out: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                amount_in: U256::from(1_000_000_000u64),
+                fee: 3000,
+                recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+                deadline: U256::MAX,
+                amount_out_minimum: U256::from(480_000_000_000_000_000u64), // 0.48 WETH
+            },
+            ResolvedStep::AaveV3Supply {
+                pool: address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),
+                asset: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                amount: U256::from(1_000_000_000_000_000_000u64), // 1.0 WETH > 0.48 guaranteed
+                on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+            },
+        ];
+        let result = validate_amount_flow(&steps);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires"));
+    }
+
+    #[test]
+    fn test_amount_flow_swap_deposit_ok() {
+        let steps = vec![
+            ResolvedStep::UniswapV3Swap {
+                router: address!("E592427A0AEce92De3Edee1F18E0157C05861564"),
+                token_in: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+                token_out: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                amount_in: U256::from(1_000_000_000u64),
+                fee: 3000,
+                recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+                deadline: U256::MAX,
+                amount_out_minimum: U256::from(1_000_000_000_000_000_000u64), // 1.0 WETH
+            },
+            ResolvedStep::AaveV3Supply {
+                pool: address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),
+                asset: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                amount: U256::from(1_000_000_000_000_000_000u64), // 1.0 WETH == guaranteed
+                on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+            },
+        ];
+        let result = validate_amount_flow(&steps);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_amount_flow_standalone_deposit_ok() {
+        // Standalone deposit — no prior step produces the token, so no flow check
+        let steps = vec![ResolvedStep::AaveV3Supply {
+            pool: address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),
+            asset: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            amount: U256::from(5_000_000_000u64),
+            on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+        }];
+        let result = validate_amount_flow(&steps);
+        assert!(result.is_ok());
+    }
+
+    // Task 7: Send validation tests
+    #[test]
+    fn test_send_to_zero_address_rejected() {
+        let step = ResolvedStep::SendErc20 {
+            token: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            to: Address::ZERO,
+            amount: U256::from(1_000_000u64),
+        };
+        let result = validate_send(&step);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("zero address"));
+    }
+
+    #[test]
+    fn test_send_zero_amount_rejected() {
+        let step = ResolvedStep::SendErc20 {
+            token: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            to: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+            amount: U256::ZERO,
+        };
+        let result = validate_amount(&step);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("greater than zero")
+        );
     }
 }

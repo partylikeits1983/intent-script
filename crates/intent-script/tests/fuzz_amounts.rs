@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use intent_script::compile;
+use intent_script::{CompileResult, compile};
 
 fn config_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -15,6 +15,19 @@ fn config_dir() -> PathBuf {
         .parent()
         .unwrap()
         .join("config")
+}
+
+fn load_config() -> (String, String, String) {
+    let dir = config_dir();
+    let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    (chains, assets, protocols)
+}
+
+fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
+    let (c, a, p) = load_config();
+    compile(input, &c, &a, &p)
 }
 
 /// Helper: compile a wrap intent with the given amount string.
@@ -29,9 +42,7 @@ fn compile_with_amount(amount: &str) -> Result<(), String> {
             ]
         }}"#
     );
-    compile(&input, &config_dir())
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    do_compile(&input).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Helper: compile a deposit intent with the given amount string (USDC, 6 decimals).
@@ -45,9 +56,7 @@ fn compile_usdc_deposit(amount: &str) -> Result<(), String> {
             ]
         }}"#
     );
-    compile(&input, &config_dir())
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    do_compile(&input).map(|_| ()).map_err(|e| e.to_string())
 }
 
 // ─── Valid amounts ─────────────────────────────────────────────────────

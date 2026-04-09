@@ -2,6 +2,7 @@ pub mod aave_v3;
 pub mod erc20;
 pub mod lido;
 pub mod oneinch;
+pub mod send;
 pub mod uniswap_v3;
 pub mod wrap;
 
@@ -24,5 +25,8 @@ pub fn lower_step(step: &ResolvedStep, _registry: &RegistryContext) -> Result<Ve
         ResolvedStep::WstETHWrap { .. } => lido::lower_wsteth_wrap(step),
         ResolvedStep::OneInchSwap { .. } => oneinch::lower_oneinch_swap(step),
         ResolvedStep::Erc20Permit { .. } => erc20::lower_permit(step),
+        ResolvedStep::SendErc20 { .. } => send::lower_send_erc20(step),
+        ResolvedStep::SendEth { .. } => send::lower_send_eth(step),
+        ResolvedStep::SendErc721 { .. } => send::lower_send_erc721(step),
     }
 }

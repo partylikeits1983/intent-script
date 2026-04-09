@@ -5,8 +5,6 @@ pub mod normalize;
 pub mod plan;
 pub mod validate;
 
-use std::path::Path;
-
 use crate::error::Result;
 use crate::output::CompileResult;
 use crate::registry::RegistryContext;
@@ -17,18 +15,26 @@ use crate::schema::IntentScript;
 /// This is the main entry point for the compiler pipeline:
 /// Parse → Normalize → Validate → Enrich → Lower → Plan → Build
 ///
+/// The caller provides pre-loaded config JSON strings (no file I/O in the library).
+///
 /// Returns a `CompileResult` containing the output and any warnings
 /// from validation (e.g., borrow without prior deposit when no balance info).
 ///
 /// When a router address is configured in the registry and the intent
 /// produces multiple calls, they are automatically batched into a single
 /// `router.execute()` transaction.
-pub fn compile(json_input: &str, config_dir: &Path) -> Result<CompileResult> {
+pub fn compile(
+    json_input: &str,
+    chains_json: &str,
+    assets_json: &str,
+    protocols_json: &str,
+) -> Result<CompileResult> {
     // Stage A: Parse JSON into public AST
     let script: IntentScript = serde_json::from_str(json_input)?;
 
     // Load registry for the target network
-    let registry = RegistryContext::load(config_dir, &script.network)?;
+    let registry =
+        RegistryContext::load(chains_json, assets_json, protocols_json, &script.network)?;
 
     // Stage B: Normalize — resolve aliases, parse amounts
     let norm_result = normalize::normalize(&script, &registry)?;

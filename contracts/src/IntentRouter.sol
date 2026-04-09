@@ -24,6 +24,15 @@ contract IntentRouter {
 
     mapping(address => uint256) public nonces;
 
+    // ─── Allowlist (Task 8) ─────────────────────────────────
+    address public owner;
+    mapping(address => bool) public allowedTargets;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
     /// @notice A single call to execute.
     struct Call {
         address target;
@@ -41,6 +50,7 @@ contract IntentRouter {
     }
 
     constructor() {
+        owner = msg.sender;
         DOMAIN_SEPARATOR = keccak256(abi.encode(
             DOMAIN_TYPEHASH,
             keccak256("IntentRouter"),
@@ -48,6 +58,20 @@ contract IntentRouter {
             block.chainid,
             address(this)
         ));
+    }
+
+    // ─── Allowlist management ───────────────────────────────
+
+    /// @notice Set whether a target address is allowed.
+    function setAllowedTarget(address target, bool allowed) external onlyOwner {
+        allowedTargets[target] = allowed;
+    }
+
+    /// @notice Batch-set allowed targets.
+    function setAllowedTargets(address[] calldata targets, bool allowed) external onlyOwner {
+        for (uint256 i = 0; i < targets.length; i++) {
+            allowedTargets[targets[i]] = allowed;
+        }
     }
 
     // ─── Self-execute (user submits tx directly) ────────────
@@ -73,8 +97,8 @@ contract IntentRouter {
         IntentBatch calldata batch,
         bytes calldata signature
     ) external payable {
-        // Verify deadline
-        require(batch.deadline == 0 || block.timestamp <= batch.deadline, "Expired");
+        // Verify deadline (Task 2: require non-zero deadline)
+        require(batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline");
 
         // Verify nonce
         require(batch.nonce == nonces[batch.signer], "Invalid nonce");
@@ -95,6 +119,7 @@ contract IntentRouter {
 
     function _executeCalls(Call[] calldata calls) internal {
         for (uint256 i = 0; i < calls.length; i++) {
+            require(allowedTargets[calls[i].target], "Target not allowed");
             (bool success, bytes memory result) = calls[i].target.call{ value: calls[i].value }(
                 calls[i].callData
             );

@@ -31,9 +31,19 @@ pub fn to_alloy_tx(tx: &UnsignedTx) -> TransactionRequest {
     req
 }
 
+/// Load config files from the workspace config directory.
+pub fn load_config() -> (String, String, String) {
+    let dir = workspace_config_dir();
+    let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    (chains, assets, protocols)
+}
+
 /// Compile an intent JSON and return the result (output + warnings).
 pub fn compile_intent(json: &str) -> intent_script::error::Result<CompileResult> {
-    intent_script::compile(json, &workspace_config_dir())
+    let (c, a, p) = load_config();
+    intent_script::compile(json, &c, &a, &p)
 }
 
 /// Extract all unsigned transactions from a CompileOutput.

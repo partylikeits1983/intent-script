@@ -1,3 +1,6 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
 pub mod adapters;
 pub mod compiler;
 pub mod eip712;

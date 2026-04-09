@@ -18,6 +18,19 @@ fn config_dir() -> PathBuf {
         .join("config")
 }
 
+fn load_config() -> (String, String, String) {
+    let dir = config_dir();
+    let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    (chains, assets, protocols)
+}
+
+fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
+    let (c, a, p) = load_config();
+    compile(input, &c, &a, &p)
+}
+
 #[test]
 fn test_wrap_eth_to_weth() {
     let input = r#"{
@@ -28,7 +41,7 @@ fn test_wrap_eth_to_weth() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Wrap is a single tx
@@ -69,7 +82,7 @@ fn test_aave_deposit_usdc_batched_through_router() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Deposit produces 2 calls (approve + supply) which get batched
@@ -124,7 +137,7 @@ fn test_unwrap_weth() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::SingleTx(tx) => {
@@ -152,7 +165,7 @@ fn test_unknown_network_fails() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
@@ -171,7 +184,7 @@ fn test_unknown_asset_fails() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
@@ -188,7 +201,7 @@ fn test_empty_steps_fails() {
         "steps": []
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err());
 }
 
@@ -200,11 +213,11 @@ fn test_swap_usdc_to_weth() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Swap produces 2 calls (approve + exactInputSingle) batched via router
@@ -254,7 +267,7 @@ fn test_deposit_and_borrow_single_tx() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Deposit + borrow produces 3 calls (approve + supply + borrow) batched via router
@@ -304,13 +317,13 @@ fn test_swap_deposit_borrow_chain() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH" } },
+            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
             { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Should produce batched tx: approve USDC, swap, approve WETH, supply, borrow
@@ -364,11 +377,11 @@ fn test_swap_with_custom_fee_tier() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "fee": "500" } }
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "fee": "500", "min_amount_out": "0.1" } }
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     match output {
@@ -396,11 +409,11 @@ fn test_swap_without_fee_defaults_to_3000() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     match output {
@@ -421,7 +434,7 @@ fn test_swap_via_1inch_with_calldata() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     match output {
@@ -450,7 +463,7 @@ fn test_swap_via_1inch_missing_calldata_fails() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
@@ -469,7 +482,7 @@ fn test_swap_via_unsupported_fails() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
@@ -488,7 +501,7 @@ fn test_wrap_steth_to_wsteth() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Wrap stETH produces 2 calls (approve + wrap) batched via router
@@ -532,7 +545,7 @@ fn test_stake_and_wrap_steth() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Stake + wrap produces batched calldata
@@ -575,7 +588,7 @@ fn test_stake_eth_in_lido() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Stake is a single call (no approval needed for ETH)
@@ -615,7 +628,7 @@ fn test_eip712_nonce_and_deadline() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     match output {
@@ -639,7 +652,7 @@ fn test_aave_withdraw() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     let output = &result.output;
 
     // Withdraw is a single call (no approval needed — user already has aTokens)
@@ -672,7 +685,7 @@ fn test_complex_defi_from_example_file() {
     let input =
         std::fs::read_to_string(&example_path).expect("should read complex_defi.json example file");
 
-    let result = compile(&input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(&input).expect("compile should succeed");
 
     // complex_defi.json: swap USDC→WETH + deposit WETH into Aave + borrow DAI
     // This produces multiple calls batched via router
@@ -732,7 +745,7 @@ fn test_stake_lido_wsteth_from_example_file() {
     let input = std::fs::read_to_string(&example_path)
         .expect("should read stake_lido_wsteth.json example file");
 
-    let result = compile(&input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(&input).expect("compile should succeed");
 
     // stake ETH in Lido + wrap stETH → wstETH produces batched calls
     match &result.output {
@@ -786,7 +799,7 @@ fn test_all_example_files_compile() {
         if path.extension().map_or(false, |ext| ext == "json") {
             let input = std::fs::read_to_string(&path)
                 .unwrap_or_else(|_| panic!("should read {}", path.display()));
-            let result = compile(&input, &config_dir());
+            let result = do_compile(&input);
             assert!(
                 result.is_ok(),
                 "Example {} should compile successfully, but got error: {:?}",
@@ -815,7 +828,7 @@ fn test_missing_network_field_fails() {
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Missing network should fail");
 }
 
@@ -827,7 +840,7 @@ fn test_missing_from_field_fails() {
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Missing from should fail");
 }
 
@@ -837,7 +850,7 @@ fn test_missing_steps_field_fails() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Missing steps should fail");
 }
 
@@ -850,7 +863,7 @@ fn test_invalid_from_address_fails() {
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Invalid from address should fail");
 }
 
@@ -863,7 +876,7 @@ fn test_zero_address_signer_fails() {
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Zero address signer should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -881,7 +894,7 @@ fn test_unknown_step_type_fails() {
             { "fly": { "to": "moon" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Unknown step type should fail");
 }
 
@@ -894,7 +907,7 @@ fn test_deposit_missing_amount_fails() {
             { "deposit": { "asset": "USDC", "into": "aave" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Deposit missing amount should fail");
 }
 
@@ -907,7 +920,7 @@ fn test_deposit_missing_into_fails() {
             { "deposit": { "asset": "USDC", "amount": "100" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Deposit missing into should fail");
 }
 
@@ -920,7 +933,7 @@ fn test_deposit_into_unknown_protocol_fails() {
             { "deposit": { "asset": "USDC", "amount": "100", "into": "compound" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Deposit into unknown protocol should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -938,7 +951,7 @@ fn test_borrow_from_unknown_protocol_fails() {
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "compound" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Borrow from unknown protocol should fail");
 }
 
@@ -951,7 +964,7 @@ fn test_non_numeric_amount_fails() {
             { "wrap": { "asset": "ETH", "amount": "abc" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Non-numeric amount should fail");
 }
 
@@ -964,7 +977,7 @@ fn test_zero_amount_fails() {
             { "wrap": { "asset": "ETH", "amount": "0" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Zero amount should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -982,7 +995,7 @@ fn test_swap_same_asset_fails() {
             { "swap": { "from": "USDC", "amount": "1000", "to": "USDC" } }
         ]
     }"#;
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(result.is_err(), "Swap same asset should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1004,7 +1017,7 @@ fn test_borrow_without_deposit_no_balances_warns() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile (optimistic)");
+    let result = do_compile(input).expect("should compile (optimistic)");
     assert!(
         !result.warnings.is_empty(),
         "Should have warnings about borrow without deposit"
@@ -1035,7 +1048,7 @@ fn test_borrow_with_existing_collateral_no_warning() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile with existing collateral");
+    let result = do_compile(input).expect("should compile with existing collateral");
     assert!(
         result.warnings.is_empty(),
         "Should have no warnings when user has collateral. Warnings: {:?}",
@@ -1061,7 +1074,7 @@ fn test_borrow_without_collateral_with_balances_fails() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(
         result.is_err(),
         "Borrow without collateral should fail when balances provided"
@@ -1084,7 +1097,7 @@ fn test_withdraw_without_deposit_no_balances_warns() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile (optimistic)");
+    let result = do_compile(input).expect("should compile (optimistic)");
     assert!(
         !result.warnings.is_empty(),
         "Should have warnings about withdraw without deposit"
@@ -1114,7 +1127,7 @@ fn test_withdraw_with_existing_position_no_warning() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile with existing position");
+    let result = do_compile(input).expect("should compile with existing position");
     assert!(
         result.warnings.is_empty(),
         "Should have no warnings when user has position. Warnings: {:?}",
@@ -1140,7 +1153,7 @@ fn test_withdraw_without_position_with_balances_fails() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir());
+    let result = do_compile(input);
     assert!(
         result.is_err(),
         "Withdraw without position should fail when balances provided"
@@ -1164,7 +1177,7 @@ fn test_deposit_then_borrow_no_warning() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile");
+    let result = do_compile(input).expect("should compile");
     assert!(
         result.warnings.is_empty(),
         "Deposit then borrow should have no warnings. Warnings: {:?}",
@@ -1183,7 +1196,7 @@ fn test_balances_field_is_optional() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile without balances");
+    let result = do_compile(input).expect("should compile without balances");
     assert!(result.warnings.is_empty());
 }
 
@@ -1196,7 +1209,7 @@ fn test_borrow_existing_collateral_example_compiles() {
     let input = std::fs::read_to_string(&example_path)
         .expect("should read borrow_existing_collateral.json");
 
-    let result = compile(&input, &config_dir()).expect("should compile with existing collateral");
+    let result = do_compile(&input).expect("should compile with existing collateral");
     assert!(
         result.warnings.is_empty(),
         "Example with existing collateral should have no warnings. Warnings: {:?}",
@@ -1215,7 +1228,7 @@ fn test_warnings_in_json_output() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("should compile");
+    let result = do_compile(input).expect("should compile");
     let json_output = CompileOutputJson::from(&result);
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
 
@@ -1243,7 +1256,7 @@ fn test_swap_with_min_amount_out() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     // Should have no slippage warnings
     assert!(
         !result.warnings.iter().any(|w| w.contains("slippage")),
@@ -1274,7 +1287,7 @@ fn test_swap_with_price_and_slippage() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     // Should have no slippage warnings
     assert!(
         !result.warnings.iter().any(|w| w.contains("slippage")),
@@ -1294,7 +1307,7 @@ fn test_swap_with_price_default_slippage() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     // Should have no slippage warnings (price triggers computation with default 0.5%)
     assert!(
         !result.warnings.iter().any(|w| w.contains("slippage")),
@@ -1313,7 +1326,7 @@ fn test_swap_slippage_without_price_fails() {
         ]
     }"#;
 
-    let err = compile(input, &config_dir()).unwrap_err().to_string();
+    let err = do_compile(input).unwrap_err().to_string();
     assert!(
         err.contains("price"),
         "Error should mention that price is required: {err}"
@@ -1321,8 +1334,8 @@ fn test_swap_slippage_without_price_fails() {
 }
 
 #[test]
-fn test_swap_no_slippage_warns() {
-    // When neither min_amount_out nor price/slippage is provided, compiler warns
+fn test_swap_no_slippage_rejected() {
+    // When neither min_amount_out nor price/slippage is provided, compiler rejects
     let input = r#"{
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
@@ -1331,11 +1344,15 @@ fn test_swap_no_slippage_warns() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input);
     assert!(
-        result.warnings.iter().any(|w| w.contains("slippage")),
-        "Should have a slippage warning when no protection is specified: {:?}",
-        result.warnings
+        result.is_err(),
+        "Swap without slippage protection should fail"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("slippage"),
+        "Error should mention slippage: {err}"
     );
 }
 
@@ -1350,7 +1367,7 @@ fn test_swap_min_amount_out_overrides_slippage() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     // Should have no slippage warnings
     assert!(
         !result.warnings.iter().any(|w| w.contains("slippage")),
@@ -1370,7 +1387,7 @@ fn test_swap_1inch_ignores_slippage_params() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
     // 1inch swap should compile fine regardless of slippage params
     match &result.output {
         CompileOutput::Eip712Intent(_) => {}
@@ -1388,7 +1405,7 @@ fn test_swap_negative_slippage_fails() {
         ]
     }"#;
 
-    let err = compile(input, &config_dir()).unwrap_err().to_string();
+    let err = do_compile(input).unwrap_err().to_string();
     assert!(
         err.contains("Slippage must be between"),
         "Error should mention invalid slippage range: {err}"
@@ -1405,7 +1422,7 @@ fn test_swap_invalid_price_fails() {
         ]
     }"#;
 
-    let err = compile(input, &config_dir()).unwrap_err().to_string();
+    let err = do_compile(input).unwrap_err().to_string();
     assert!(
         err.contains("Invalid price"),
         "Error should mention invalid price: {err}"

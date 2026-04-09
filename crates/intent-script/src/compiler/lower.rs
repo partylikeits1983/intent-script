@@ -1,5 +1,7 @@
 //! Stage E: Lower — convert resolved steps into concrete EVM calls.
 
+use alloc::vec::Vec;
+
 use crate::adapters;
 use crate::error::Result;
 use crate::ir::{ConcreteCall, ResolvedIntent};

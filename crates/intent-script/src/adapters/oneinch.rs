@@ -4,6 +4,9 @@
 //! The compiler does not make HTTP calls — the calldata is provided
 //! in the intent JSON by the frontend after querying the 1inch API.
 
+use alloc::string::ToString;
+use alloc::vec;
+
 use alloy_primitives::U256;
 
 use crate::error::{CompileError, Result};

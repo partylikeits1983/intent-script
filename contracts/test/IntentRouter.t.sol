@@ -15,6 +15,9 @@ contract IntentRouterTest is Test {
         router = new IntentRouter();
         weth = new WETH9();
 
+        // Whitelist WETH as an allowed target (Task 8)
+        router.setAllowedTarget(address(weth), true);
+
         // Fund user with 100 ETH
         vm.deal(user, 100 ether);
     }
@@ -224,7 +227,7 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 0 // no expiry
+            deadline: type(uint256).max
         });
 
         // Sign the digest
@@ -265,7 +268,7 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 0
+            deadline: type(uint256).max
         });
 
         // Sign with wrong key
@@ -308,7 +311,7 @@ contract IntentRouterTest is Test {
         bytes memory signature = abi.encodePacked(r, s, v);
 
         vm.deal(address(this), 10 ether);
-        vm.expectRevert("Expired");
+        vm.expectRevert("Expired or missing deadline");
         router.executeSigned{ value: 1 ether }(batch, signature);
     }
 
@@ -333,7 +336,7 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 0
+            deadline: type(uint256).max
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -376,7 +379,7 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 5,
-            deadline: 0
+            deadline: type(uint256).max
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -408,7 +411,7 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 0
+            deadline: type(uint256).max
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -464,7 +467,7 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: sweep,
             nonce: 0,
-            deadline: 0
+            deadline: type(uint256).max
         });
 
         // Random signature should fail ECDSA recovery
@@ -500,5 +503,67 @@ contract IntentRouterTest is Test {
 
         uint256 wethAfter = weth.balanceOf(user);
         assertEq(wethAfter - wethBefore, amount, "User should receive all wrapped WETH via sweep");
+    }
+
+    // ─── Allowlist tests (Task 8) ───────────────────────────────────────
+
+    /// @notice Test: Non-allowed target reverts
+    function test_nonAllowedTarget_reverts() public {
+        // Create a new address that is NOT in the allowlist
+        address notAllowed = makeAddr("notAllowed");
+
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
+        calls[0] = IntentRouter.Call({
+            target: notAllowed,
+            callData: "",
+            value: 0
+        });
+
+        address[] memory tokensToSweep = new address[](0);
+
+        vm.prank(user);
+        vm.expectRevert("Target not allowed");
+        router.executeDirect(calls, tokensToSweep);
+    }
+
+    /// @notice Test: Only owner can set allowed targets
+    function test_setAllowedTarget_onlyOwner() public {
+        address notOwner = makeAddr("notOwner");
+        address target = makeAddr("target");
+
+        vm.prank(notOwner);
+        vm.expectRevert("Not owner");
+        router.setAllowedTarget(target, true);
+    }
+
+    /// @notice Test: executeSigned with zero deadline is rejected
+    function test_executeSigned_zeroDeadline_rejected() public {
+        uint256 signerPk = 0xA11CE;
+        address signer = vm.addr(signerPk);
+
+        IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
+        calls[0] = IntentRouter.Call({
+            target: address(weth),
+            callData: abi.encodeWithSignature("deposit()"),
+            value: 1 ether
+        });
+
+        address[] memory tokensToSweep = new address[](0);
+
+        IntentRouter.IntentBatch memory batch = IntentRouter.IntentBatch({
+            signer: signer,
+            calls: calls,
+            tokensToSweep: tokensToSweep,
+            nonce: 0,
+            deadline: 0 // zero deadline should be rejected
+        });
+
+        bytes32 digest = _buildDigest(batch);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.deal(address(this), 10 ether);
+        vm.expectRevert("Expired or missing deadline");
+        router.executeSigned{ value: 1 ether }(batch, signature);
     }
 }

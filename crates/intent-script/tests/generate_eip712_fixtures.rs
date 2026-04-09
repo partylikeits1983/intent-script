@@ -31,6 +31,19 @@ fn config_dir() -> PathBuf {
         .join("config")
 }
 
+fn load_config() -> (String, String, String) {
+    let dir = config_dir();
+    let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    (chains, assets, protocols)
+}
+
+fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
+    let (c, a, p) = load_config();
+    compile(input, &c, &a, &p)
+}
+
 /// Get the path to the Foundry fixtures directory.
 fn fixtures_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -130,7 +143,7 @@ fn generate_complex_defi_eip712() {
     let input =
         std::fs::read_to_string(&example_path).expect("should read complex_defi.json example file");
 
-    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(&input).expect("compile should succeed");
     write_eip712_fixture("complex_defi", &output);
 }
 
@@ -144,7 +157,7 @@ fn generate_aave_deposit_eip712() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_eip712_fixture("aave_deposit_usdc", &output);
 }
 
@@ -158,7 +171,7 @@ fn generate_swap_usdc_weth_eip712() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_eip712_fixture("swap_usdc_weth", &output);
 }
 
@@ -173,7 +186,7 @@ fn generate_deposit_borrow_eip712() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_eip712_fixture("deposit_borrow", &output);
 }
 
@@ -184,7 +197,7 @@ fn generate_stake_lido_wsteth_eip712() {
     let input = std::fs::read_to_string(&example_path)
         .expect("should read stake_lido_wsteth.json example file");
 
-    let output = compile(&input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(&input).expect("compile should succeed");
     write_eip712_fixture("stake_lido_wsteth", &output);
 }
 
@@ -198,6 +211,6 @@ fn generate_stake_eth_lido_eip712() {
         ]
     }"#;
 
-    let output = compile(input, &config_dir()).expect("compile should succeed");
+    let output = do_compile(input).expect("compile should succeed");
     write_eip712_fixture("stake_eth_lido", &output);
 }

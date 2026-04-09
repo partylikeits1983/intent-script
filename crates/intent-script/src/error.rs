@@ -1,42 +1,51 @@
-use thiserror::Error;
+use alloc::format;
+use alloc::string::String;
+use core::fmt;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum CompileError {
-    #[error("Unknown network: {0}")]
     UnknownNetwork(String),
-
-    #[error("Unknown asset '{asset}' on network '{network}'")]
     UnknownAsset { asset: String, network: String },
-
-    #[error("Unknown protocol '{protocol}' on network '{network}'")]
     UnknownProtocol { protocol: String, network: String },
-
-    #[error("Invalid amount: {0}")]
     InvalidAmount(String),
-
-    #[error("Invalid address: {0}")]
     InvalidAddress(String),
-
-    #[error("Config error: {0}")]
     Config(String),
-
-    #[error("Unsupported step: {0}")]
     UnsupportedStep(String),
-
-    #[error("Validation error: {0}")]
     Validation(String),
-
-    #[error("Invalid intent chain: {0}")]
     InvalidChain(String),
-
-    #[error("Adapter error: {0}")]
     Adapter(String),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("JSON parse error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(String),
 }
 
-pub type Result<T> = std::result::Result<T, CompileError>;
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompileError::UnknownNetwork(s) => write!(f, "Unknown network: {s}"),
+            CompileError::UnknownAsset { asset, network } => {
+                write!(f, "Unknown asset '{asset}' on network '{network}'")
+            }
+            CompileError::UnknownProtocol { protocol, network } => {
+                write!(f, "Unknown protocol '{protocol}' on network '{network}'")
+            }
+            CompileError::InvalidAmount(s) => write!(f, "Invalid amount: {s}"),
+            CompileError::InvalidAddress(s) => write!(f, "Invalid address: {s}"),
+            CompileError::Config(s) => write!(f, "Config error: {s}"),
+            CompileError::UnsupportedStep(s) => write!(f, "Unsupported step: {s}"),
+            CompileError::Validation(s) => write!(f, "Validation error: {s}"),
+            CompileError::InvalidChain(s) => write!(f, "Invalid intent chain: {s}"),
+            CompileError::Adapter(s) => write!(f, "Adapter error: {s}"),
+            CompileError::Json(s) => write!(f, "JSON parse error: {s}"),
+        }
+    }
+}
+
+impl From<serde_json::Error> for CompileError {
+    fn from(e: serde_json::Error) -> Self {
+        CompileError::Json(format!("{e}"))
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for CompileError {}
+
+pub type Result<T> = core::result::Result<T, CompileError>;

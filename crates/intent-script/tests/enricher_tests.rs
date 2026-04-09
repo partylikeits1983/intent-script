@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use intent_script::{CompileOutput, compile};
+use intent_script::{CompileOutput, CompileResult, compile};
 
 fn config_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -15,6 +15,19 @@ fn config_dir() -> PathBuf {
         .parent()
         .unwrap()
         .join("config")
+}
+
+fn load_config() -> (String, String, String) {
+    let dir = config_dir();
+    let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    (chains, assets, protocols)
+}
+
+fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
+    let (c, a, p) = load_config();
+    compile(input, &c, &a, &p)
 }
 
 // ─── Token routing: no duplicate transferFrom ──────────────────────────
@@ -28,12 +41,12 @@ fn test_swap_then_deposit_no_duplicate_transfer() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH" } },
+            { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
             { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } }
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::Eip712Intent(intent) => {
@@ -104,7 +117,7 @@ fn test_deposit_and_borrow_sweep_tokens() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::Eip712Intent(intent) => {
@@ -139,7 +152,7 @@ fn test_single_wrap_produces_single_tx() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::SingleTx(_) => {
@@ -159,7 +172,7 @@ fn test_single_stake_produces_single_tx() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::SingleTx(_) => {
@@ -179,7 +192,7 @@ fn test_single_unwrap_produces_single_tx() {
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::SingleTx(_) => {
@@ -198,11 +211,11 @@ fn test_swap_output_token_in_sweep() {
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
+            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
         ]
     }"#;
 
-    let result = compile(input, &config_dir()).expect("compile should succeed");
+    let result = do_compile(input).expect("compile should succeed");
 
     match &result.output {
         CompileOutput::Eip712Intent(intent) => {

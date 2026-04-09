@@ -1,5 +1,10 @@
 //! Compile output types — the final result of the compiler pipeline.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use alloy_primitives::{Address, Bytes, U256};
 use serde::Serialize;
 
@@ -169,7 +174,7 @@ impl From<&UnsignedTx> for UnsignedTxJson {
         UnsignedTxJson {
             to: format!("{}", tx.to),
             data: format!("0x{}", hex::encode(&tx.data)),
-            value: tx.value.to_string(),
+            value: format!("{}", tx.value),
             chain_id: tx.chain_id,
             from: format!("{}", tx.from),
             description: tx.description.clone(),
@@ -186,60 +191,60 @@ impl From<&Eip712IntentOutput> for Eip712Json {
                 chain_id: output.domain.chain_id,
                 verifying_contract: format!("{}", output.domain.verifying_contract),
             },
-            primary_type: "IntentBatch".to_string(),
+            primary_type: "IntentBatch".into(),
             types: Eip712TypesJson {
                 eip712_domain: vec![
                     Eip712TypeField {
-                        name: "name".to_string(),
-                        type_name: "string".to_string(),
+                        name: "name".into(),
+                        type_name: "string".into(),
                     },
                     Eip712TypeField {
-                        name: "version".to_string(),
-                        type_name: "string".to_string(),
+                        name: "version".into(),
+                        type_name: "string".into(),
                     },
                     Eip712TypeField {
-                        name: "chainId".to_string(),
-                        type_name: "uint256".to_string(),
+                        name: "chainId".into(),
+                        type_name: "uint256".into(),
                     },
                     Eip712TypeField {
-                        name: "verifyingContract".to_string(),
-                        type_name: "address".to_string(),
+                        name: "verifyingContract".into(),
+                        type_name: "address".into(),
                     },
                 ],
                 call: vec![
                     Eip712TypeField {
-                        name: "target".to_string(),
-                        type_name: "address".to_string(),
+                        name: "target".into(),
+                        type_name: "address".into(),
                     },
                     Eip712TypeField {
-                        name: "callData".to_string(),
-                        type_name: "bytes".to_string(),
+                        name: "callData".into(),
+                        type_name: "bytes".into(),
                     },
                     Eip712TypeField {
-                        name: "value".to_string(),
-                        type_name: "uint256".to_string(),
+                        name: "value".into(),
+                        type_name: "uint256".into(),
                     },
                 ],
                 intent_batch: vec![
                     Eip712TypeField {
-                        name: "signer".to_string(),
-                        type_name: "address".to_string(),
+                        name: "signer".into(),
+                        type_name: "address".into(),
                     },
                     Eip712TypeField {
-                        name: "calls".to_string(),
-                        type_name: "Call[]".to_string(),
+                        name: "calls".into(),
+                        type_name: "Call[]".into(),
                     },
                     Eip712TypeField {
-                        name: "tokensToSweep".to_string(),
-                        type_name: "address[]".to_string(),
+                        name: "tokensToSweep".into(),
+                        type_name: "address[]".into(),
                     },
                     Eip712TypeField {
-                        name: "nonce".to_string(),
-                        type_name: "uint256".to_string(),
+                        name: "nonce".into(),
+                        type_name: "uint256".into(),
                     },
                     Eip712TypeField {
-                        name: "deadline".to_string(),
-                        type_name: "uint256".to_string(),
+                        name: "deadline".into(),
+                        type_name: "uint256".into(),
                     },
                 ],
             },
@@ -252,7 +257,7 @@ impl From<&Eip712IntentOutput> for Eip712Json {
                     .map(|c| Eip712CallJson {
                         target: format!("{}", c.target),
                         call_data: format!("0x{}", hex::encode(&c.call_data)),
-                        value: c.value.to_string(),
+                        value: format!("{}", c.value),
                     })
                     .collect(),
                 tokens_to_sweep: output
@@ -261,8 +266,8 @@ impl From<&Eip712IntentOutput> for Eip712Json {
                     .iter()
                     .map(|a| format!("{}", a))
                     .collect(),
-                nonce: output.intent_batch.nonce.to_string(),
-                deadline: output.intent_batch.deadline.to_string(),
+                nonce: format!("{}", output.intent_batch.nonce),
+                deadline: format!("{}", output.intent_batch.deadline),
             },
         }
     }
@@ -272,7 +277,7 @@ impl From<&CompileOutput> for CompileOutputJson {
     fn from(output: &CompileOutput) -> Self {
         match output {
             CompileOutput::SingleTx(tx) => CompileOutputJson {
-                output_type: "single_tx".to_string(),
+                output_type: "single_tx".into(),
                 transactions: Some(vec![UnsignedTxJson::from(tx)]),
                 eip712: None,
                 direct_tx: None,
@@ -281,7 +286,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
             },
             CompileOutput::Eip712Intent(intent) => CompileOutputJson {
-                output_type: "eip712_intent".to_string(),
+                output_type: "eip712_intent".into(),
                 transactions: None,
                 eip712: Some(Eip712Json::from(intent)),
                 direct_tx: Some(UnsignedTxJson::from(&intent.direct_tx)),
@@ -290,7 +295,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
             },
             CompileOutput::TxSequence(txs) => CompileOutputJson {
-                output_type: "tx_sequence".to_string(),
+                output_type: "tx_sequence".into(),
                 transactions: Some(txs.iter().map(UnsignedTxJson::from).collect()),
                 eip712: None,
                 direct_tx: None,
@@ -299,7 +304,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
             },
             CompileOutput::RequiresExecutor { reason } => CompileOutputJson {
-                output_type: "requires_executor".to_string(),
+                output_type: "requires_executor".into(),
                 transactions: None,
                 eip712: None,
                 direct_tx: None,
@@ -322,7 +327,9 @@ impl From<&CompileResult> for CompileOutputJson {
 /// We need hex encoding for Bytes. Using a simple inline implementation
 /// since alloy_primitives::Bytes Display already includes 0x prefix.
 mod hex {
+    use alloc::string::String;
+
     pub fn encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{b:02x}")).collect()
+        data.iter().map(|b| alloc::format!("{b:02x}")).collect()
     }
 }

@@ -3,9 +3,11 @@
 //! All aliases have been resolved to addresses, all amounts to U256,
 //! and all protocol references to concrete deployment addresses.
 
-use std::collections::HashMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use alloy_primitives::{Address, Bytes, U256};
+use hashbrown::HashMap;
 
 /// Fully resolved intent, ready for enrichment and lowering.
 #[derive(Debug, Clone)]
@@ -124,6 +126,60 @@ pub enum ResolvedStep {
         value: U256,
         deadline: U256,
     },
+    /// Send ERC-20 tokens to a recipient
+    SendErc20 {
+        token: Address,
+        to: Address,
+        amount: U256,
+    },
+    /// Send native ETH to a recipient
+    SendEth { to: Address, amount: U256 },
+    /// Send ERC-721 NFT to a recipient
+    SendErc721 {
+        contract: Address,
+        from: Address,
+        to: Address,
+        token_id: U256,
+    },
+}
+
+/// Helper: determine what token and amount a step consumes (if any).
+///
+/// Only returns consumption for user-facing steps (not auto-generated ones).
+/// Used by cross-step amount flow validation and "all" amount resolution.
+pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
+    match step {
+        ResolvedStep::AaveV3Supply { asset, amount, .. } => Some((*asset, *amount)),
+        ResolvedStep::WstETHWrap { steth, amount, .. } => Some((*steth, *amount)),
+        ResolvedStep::UniswapV3Swap {
+            token_in,
+            amount_in,
+            ..
+        } => Some((*token_in, *amount_in)),
+        ResolvedStep::SendErc20 { token, amount, .. } => Some((*token, *amount)),
+        _ => None,
+    }
+}
+
+/// Helper: determine what token and guaranteed amount a step produces (if any).
+///
+/// Used by cross-step amount flow validation and "all" amount resolution.
+pub fn step_produces(step: &ResolvedStep) -> Option<(Address, U256)> {
+    match step {
+        ResolvedStep::UniswapV3Swap {
+            token_out,
+            amount_out_minimum,
+            ..
+        } => Some((*token_out, *amount_out_minimum)),
+        ResolvedStep::AaveV3Borrow { asset, amount, .. } => Some((*asset, *amount)),
+        ResolvedStep::LidoStake { lido, amount, .. } => Some((*lido, *amount)),
+        ResolvedStep::Wrap {
+            wrapped_token,
+            amount,
+            ..
+        } => Some((*wrapped_token, *amount)),
+        _ => None,
+    }
 }
 
 /// A concrete EVM call produced by an adapter.

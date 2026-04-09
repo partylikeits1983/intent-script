@@ -63,10 +63,30 @@ contract IntentForkE2E is Test {
         vm.etch(ROUTER_ADDR, address(impl_).code);
         router = IntentRouter(payable(ROUTER_ADDR));
 
+        // The etched contract has owner = address(0) in storage (etch copies code, not storage).
+        // Directly write allowedTargets mapping entries via vm.store.
+        // Storage layout: slot 0 = nonces, slot 1 = owner, slot 2 = allowedTargets
+        // For mapping(address => bool) at slot 2, the slot for key k is keccak256(abi.encode(k, 2))
+        _allowTarget(WETH);
+        _allowTarget(USDC);
+        _allowTarget(DAI);
+        _allowTarget(STETH);
+        _allowTarget(WSTETH);
+        _allowTarget(AAVE_POOL);
+        _allowTarget(UNI_ROUTER);
+
         // Use the same signer address as the compiler so that transferFrom calls
         // in the compiler-generated calldata reference the correct user.
         user = COMPILER_SIGNER;
         vm.deal(user, 1000 ether);
+    }
+
+    /// @dev Directly write allowedTargets[target] = true via vm.store
+    ///      Bypasses the onlyOwner check (owner is address(0) after vm.etch)
+    function _allowTarget(address target) internal {
+        // allowedTargets is at storage slot 2
+        bytes32 slot = keccak256(abi.encode(target, uint256(2)));
+        vm.store(ROUTER_ADDR, slot, bytes32(uint256(1)));
     }
 
     // ─── Helper: read fixture files ──────────────────────────────────
@@ -448,6 +468,13 @@ contract IntentForkE2E is Test {
     function test_fork_complexDefi_executeSigned() public {
         IntentRouter signedRouter = new IntentRouter();
 
+        // Whitelist all target contracts on the signed router (Task 8: allowlist)
+        signedRouter.setAllowedTarget(WETH, true);
+        signedRouter.setAllowedTarget(USDC, true);
+        signedRouter.setAllowedTarget(DAI, true);
+        signedRouter.setAllowedTarget(AAVE_POOL, true);
+        signedRouter.setAllowedTarget(UNI_ROUTER, true);
+
         uint256 signerPk = 0xA11CE;
         address signer = vm.addr(signerPk);
         vm.deal(signer, 1000 ether);
@@ -474,7 +501,7 @@ contract IntentForkE2E is Test {
             calls: _buildComplexDefiCalls(signer, address(signedRouter), usdcAmount, 2 ether, borrowAmount),
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 0
+            deadline: type(uint256).max
         });
 
         // Sign and submit via relayer

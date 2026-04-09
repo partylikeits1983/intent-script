@@ -3,6 +3,10 @@
 //! - Wrap: calls `WETH.deposit{value: amount}()` — function selector 0xd0e30db0
 //! - Unwrap: calls `WETH.withdraw(uint256)` — function selector 0x2e1a7d4d
 
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
+
 use alloy_primitives::{Bytes, U256};
 use alloy_sol_types::SolCall;
 

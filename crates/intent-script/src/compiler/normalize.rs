@@ -3,14 +3,22 @@
 //! Resolves aliases to addresses, parses human-readable amounts to U256,
 //! and maps protocol names to concrete deployment addresses.
 
-use std::collections::HashMap;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use alloy_primitives::{Address, Bytes, U256};
+use hashbrown::HashMap;
 
 use crate::error::{CompileError, Result};
-use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep};
+use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_produces};
 use crate::registry::RegistryContext;
 use crate::schema::{IntentScript, Step, SwapStep};
+
+/// Default swap deadline: 20 minutes from current_timestamp.
+const DEFAULT_SWAP_DEADLINE_SECS: u64 = 1200;
+/// Default intent deadline: 30 minutes from current_timestamp.
+const DEFAULT_INTENT_DEADLINE_SECS: u64 = 1800;
 
 /// Result of normalization: the resolved intent plus any warnings.
 pub struct NormalizeResult {
@@ -23,9 +31,18 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
     let signer = parse_address(&script.from)?;
     let mut warnings = Vec::new();
 
+    // Compute effective intent deadline (Task 2)
+    let effective_deadline = match script.deadline {
+        Some(d) if d > 0 => d,
+        _ => match script.current_timestamp {
+            Some(ts) => ts + DEFAULT_INTENT_DEADLINE_SECS,
+            None => 0, // backward compat when no timestamp provided
+        },
+    };
+
     let mut steps = Vec::new();
     for step in &script.steps {
-        let resolved = normalize_step(step, signer, registry, &mut warnings)?;
+        let resolved = normalize_step(step, signer, registry, &mut warnings, script, &steps)?;
         steps.push(resolved);
     }
 
@@ -43,7 +60,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             steps,
             tokens_to_sweep: Vec::new(),
             nonce: script.nonce.unwrap_or(0),
-            deadline: script.deadline.unwrap_or(0),
+            deadline: effective_deadline,
             user_balances,
         },
         warnings,
@@ -55,13 +72,22 @@ fn normalize_step(
     signer: Address,
     registry: &RegistryContext,
     warnings: &mut Vec<String>,
+    script: &IntentScript,
+    previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
     match step {
         Step::Wrap(w) => {
             if w.asset == "stETH" {
                 // Wrap stETH → wstETH via wstETH.wrap(uint256)
                 let decimals = resolve_asset_decimals(&w.asset, registry)?;
-                let amount = parse_amount(&w.amount, decimals)?;
+                let amount = resolve_amount_or_all(
+                    &w.amount,
+                    decimals,
+                    Address::ZERO,
+                    previous_steps,
+                    &w.asset,
+                    registry,
+                )?;
 
                 let lido_protocol = registry.protocols.get("lido").ok_or_else(|| {
                     CompileError::UnknownProtocol {
@@ -94,7 +120,14 @@ fn normalize_step(
                 let wrapped_token =
                     resolve_asset_address(&registry.chain.wrapped_native, registry)?;
                 let decimals = resolve_asset_decimals(&w.asset, registry)?;
-                let amount = parse_amount(&w.amount, decimals)?;
+                let amount = resolve_amount_or_all(
+                    &w.amount,
+                    decimals,
+                    wrapped_token,
+                    previous_steps,
+                    &w.asset,
+                    registry,
+                )?;
                 Ok(ResolvedStep::Wrap {
                     wrapped_token,
                     amount,
@@ -105,7 +138,14 @@ fn normalize_step(
             // Unwrap: asset should be WETH or the wrapped native
             let wrapped_token = resolve_asset_address(&u.asset, registry)?;
             let decimals = resolve_asset_decimals(&u.asset, registry)?;
-            let amount = parse_amount(&u.amount, decimals)?;
+            let amount = resolve_amount_or_all(
+                &u.amount,
+                decimals,
+                wrapped_token,
+                previous_steps,
+                &u.asset,
+                registry,
+            )?;
             Ok(ResolvedStep::Unwrap {
                 wrapped_token,
                 amount,
@@ -114,7 +154,14 @@ fn normalize_step(
         Step::Deposit(d) => {
             let asset = resolve_asset_address(&d.asset, registry)?;
             let decimals = resolve_asset_decimals(&d.asset, registry)?;
-            let amount = parse_amount(&d.amount, decimals)?;
+            let amount = resolve_amount_or_all(
+                &d.amount,
+                decimals,
+                asset,
+                previous_steps,
+                &d.asset,
+                registry,
+            )?;
 
             let protocol =
                 registry
@@ -143,7 +190,14 @@ fn normalize_step(
         Step::Borrow(b) => {
             let asset = resolve_asset_address(&b.asset, registry)?;
             let decimals = resolve_asset_decimals(&b.asset, registry)?;
-            let amount = parse_amount(&b.amount, decimals)?;
+            let amount = resolve_amount_or_all(
+                &b.amount,
+                decimals,
+                asset,
+                previous_steps,
+                &b.asset,
+                registry,
+            )?;
 
             let protocol =
                 registry
@@ -173,7 +227,14 @@ fn normalize_step(
         Step::Withdraw(w) => {
             let asset = resolve_asset_address(&w.asset, registry)?;
             let decimals = resolve_asset_decimals(&w.asset, registry)?;
-            let amount = parse_amount(&w.amount, decimals)?;
+            let amount = resolve_amount_or_all(
+                &w.amount,
+                decimals,
+                asset,
+                previous_steps,
+                &w.asset,
+                registry,
+            )?;
 
             let protocol =
                 registry
@@ -202,11 +263,27 @@ fn normalize_step(
         Step::Swap(s) => {
             let token_in = resolve_asset_address(&s.from, registry)?;
             let token_in_decimals = resolve_asset_decimals(&s.from, registry)?;
-            let amount_in = parse_amount(&s.amount, token_in_decimals)?;
+            let amount_in = resolve_amount_or_all(
+                &s.amount,
+                token_in_decimals,
+                token_in,
+                previous_steps,
+                &s.from,
+                registry,
+            )?;
             let token_out = resolve_asset_address(&s.to, registry)?;
 
             // Determine routing provider
             let via = s.via.as_deref().unwrap_or("uniswap");
+
+            // Compute effective deadline for this swap (Task 2)
+            let effective_deadline = match script.deadline {
+                Some(d) if d > 0 => d,
+                _ => match script.current_timestamp {
+                    Some(ts) => ts + DEFAULT_INTENT_DEADLINE_SECS,
+                    None => 0,
+                },
+            };
 
             match via {
                 "uniswap" | "" => {
@@ -252,6 +329,21 @@ fn normalize_step(
                     let amount_out_minimum =
                         compute_amount_out_minimum(s, amount_in, &s.to, registry, warnings)?;
 
+                    // Compute swap deadline (Task 2)
+                    let swap_deadline = match s.deadline {
+                        Some(d) => d,
+                        None => {
+                            if effective_deadline > 0 {
+                                effective_deadline
+                            } else {
+                                match script.current_timestamp {
+                                    Some(ts) => ts + DEFAULT_SWAP_DEADLINE_SECS,
+                                    None => u64::MAX, // backward compat
+                                }
+                            }
+                        }
+                    };
+
                     Ok(ResolvedStep::UniswapV3Swap {
                         router,
                         token_in: effective_token_in,
@@ -259,7 +351,7 @@ fn normalize_step(
                         amount_in,
                         fee,
                         recipient: signer,
-                        deadline: U256::MAX,
+                        deadline: U256::from(swap_deadline),
                         amount_out_minimum,
                     })
                 }
@@ -325,7 +417,14 @@ fn normalize_step(
         }
         Step::Stake(s) => {
             let decimals = resolve_asset_decimals(&s.asset, registry)?;
-            let amount = parse_amount(&s.amount, decimals)?;
+            let amount = resolve_amount_or_all(
+                &s.amount,
+                decimals,
+                Address::ZERO,
+                previous_steps,
+                &s.asset,
+                registry,
+            )?;
 
             let protocol =
                 registry
@@ -361,10 +460,113 @@ fn normalize_step(
                 ))),
             }
         }
+        Step::Send(s) => {
+            let to = parse_address(&s.to)?;
+            let asset_type = s.asset_type.as_deref().unwrap_or("erc20");
+
+            match asset_type {
+                "erc721" => {
+                    // ERC-721 send
+                    let contract_str = s.contract.as_deref().ok_or_else(|| {
+                        CompileError::Validation(
+                            "ERC-721 send requires 'contract' field".to_string(),
+                        )
+                    })?;
+                    let contract = parse_address(contract_str)?;
+
+                    let token_id_str = s.token_id.as_deref().ok_or_else(|| {
+                        CompileError::Validation(
+                            "ERC-721 send requires 'token_id' field".to_string(),
+                        )
+                    })?;
+                    let token_id: u128 = token_id_str.parse().map_err(|_| {
+                        CompileError::InvalidAmount(format!("Invalid token_id: {}", token_id_str))
+                    })?;
+
+                    Ok(ResolvedStep::SendErc721 {
+                        contract,
+                        from: signer,
+                        to,
+                        token_id: U256::from(token_id),
+                    })
+                }
+                _ => {
+                    // ERC-20 or ETH send
+                    let asset_alias = s.asset.as_deref().ok_or_else(|| {
+                        CompileError::Validation(
+                            "Send requires 'asset' field (e.g. 'USDC', 'ETH')".to_string(),
+                        )
+                    })?;
+                    let amount_str = s.amount.as_deref().ok_or_else(|| {
+                        CompileError::Validation("Send requires 'amount' field".to_string())
+                    })?;
+
+                    if registry.is_native(asset_alias) {
+                        // Send ETH
+                        let decimals = resolve_asset_decimals(asset_alias, registry)?;
+                        let amount = resolve_amount_or_all(
+                            amount_str,
+                            decimals,
+                            Address::ZERO,
+                            previous_steps,
+                            asset_alias,
+                            registry,
+                        )?;
+                        Ok(ResolvedStep::SendEth { to, amount })
+                    } else {
+                        // Send ERC-20
+                        let token = resolve_asset_address(asset_alias, registry)?;
+                        let decimals = resolve_asset_decimals(asset_alias, registry)?;
+                        let amount = resolve_amount_or_all(
+                            amount_str,
+                            decimals,
+                            token,
+                            previous_steps,
+                            asset_alias,
+                            registry,
+                        )?;
+                        Ok(ResolvedStep::SendErc20 { token, to, amount })
+                    }
+                }
+            }
+        }
         Step::Custom(_) => Err(CompileError::UnsupportedStep(
             "custom steps are not yet implemented in v1".to_string(),
         )),
     }
+}
+
+/// Resolve an amount string, supporting the "all" keyword.
+///
+/// When `amount_str` is `"all"`, resolves to the guaranteed output of the most
+/// recent previous step that produces the given token. Otherwise, parses as a
+/// normal human-readable amount.
+fn resolve_amount_or_all(
+    amount_str: &str,
+    decimals: u8,
+    token: Address,
+    previous_steps: &[ResolvedStep],
+    _asset_alias: &str,
+    _registry: &RegistryContext,
+) -> Result<U256> {
+    if amount_str == "all" {
+        for step in previous_steps.iter().rev() {
+            if let Some((produced_token, guaranteed)) = step_produces(step) {
+                if produced_token == token {
+                    if guaranteed == U256::ZERO {
+                        return Err(CompileError::InvalidChain(
+                            "Cannot use 'all': previous step has zero guaranteed output".into(),
+                        ));
+                    }
+                    return Ok(guaranteed);
+                }
+            }
+        }
+        return Err(CompileError::InvalidChain(
+            "Cannot use 'all': no previous step produces this token".into(),
+        ));
+    }
+    parse_amount(amount_str, decimals)
 }
 
 /// Compute `amount_out_minimum` for a Uniswap swap from the JSON slippage params.
@@ -420,8 +622,9 @@ fn compute_amount_out_minimum(
 
         // amount_in is in smallest units (e.g., 1000 USDC = 1_000_000_000 with 6 decimals)
         // Convert to human-readable: amount_in / 10^in_decimals
+        let amount_in_str = format!("{}", amount_in);
         let amount_in_human: f64 =
-            amount_in.to_string().parse::<f64>().unwrap_or(0.0) / 10f64.powi(in_decimals as i32);
+            amount_in_str.parse::<f64>().unwrap_or(0.0) / 10f64.powi(in_decimals as i32);
 
         // expected_output = amount_in_human * price
         // min_output = expected_output * (1 - slippage/100)
@@ -589,7 +792,7 @@ pub(crate) fn parse_amount(amount_str: &str, decimals: u8) -> Result<U256> {
 }
 
 /// Decode a hex string into bytes.
-fn hex_decode(hex: &str) -> std::result::Result<Vec<u8>, String> {
+fn hex_decode(hex: &str) -> core::result::Result<Vec<u8>, String> {
     if hex.len() % 2 != 0 {
         return Err("Odd-length hex string".to_string());
     }

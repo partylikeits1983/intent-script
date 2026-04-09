@@ -3,26 +3,23 @@
 //! Implements domain separator and struct hashing that matches
 //! the Solidity IntentRouter contract exactly.
 
+use alloc::vec::Vec;
+
 use alloy_primitives::{Address, Bytes, U256, keccak256};
 
-use std::sync::LazyLock;
-
-/// EIP-712 domain separator type hash.
-/// keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-static DOMAIN_TYPEHASH: LazyLock<[u8; 32]> = LazyLock::new(|| {
+/// Compute type hashes at runtime (these are deterministic keccak256 values).
+fn domain_typehash() -> [u8; 32] {
     keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
         .0
-});
+}
 
-/// Call type hash: keccak256("Call(address target,bytes callData,uint256 value)")
-static CALL_TYPEHASH: LazyLock<[u8; 32]> =
-    LazyLock::new(|| keccak256(b"Call(address target,bytes callData,uint256 value)").0);
+fn call_typehash() -> [u8; 32] {
+    keccak256(b"Call(address target,bytes callData,uint256 value)").0
+}
 
-/// IntentBatch type hash:
-/// keccak256("IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)")
-static INTENT_BATCH_TYPEHASH: LazyLock<[u8; 32]> = LazyLock::new(|| {
+fn intent_batch_typehash() -> [u8; 32] {
     keccak256(b"IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)").0
-});
+}
 
 /// Compute the EIP-712 domain separator.
 pub fn compute_domain_separator(
@@ -36,7 +33,7 @@ pub fn compute_domain_separator(
 
     // abi.encode(DOMAIN_TYPEHASH, nameHash, versionHash, chainId, verifyingContract)
     let mut encoded = Vec::with_capacity(5 * 32);
-    encoded.extend_from_slice(&*DOMAIN_TYPEHASH);
+    encoded.extend_from_slice(&domain_typehash());
     encoded.extend_from_slice(name_hash.as_slice());
     encoded.extend_from_slice(version_hash.as_slice());
     // chainId as uint256 (left-padded to 32 bytes)
@@ -56,7 +53,7 @@ pub fn hash_call(target: Address, calldata: &Bytes, value: U256) -> [u8; 32] {
     let calldata_hash = keccak256(calldata.as_ref());
 
     let mut encoded = Vec::with_capacity(4 * 32);
-    encoded.extend_from_slice(&*CALL_TYPEHASH);
+    encoded.extend_from_slice(&call_typehash());
     // address as bytes32
     let mut addr_bytes = [0u8; 32];
     addr_bytes[12..32].copy_from_slice(target.as_slice());
@@ -101,7 +98,7 @@ pub fn hash_intent_batch(
 
     // abi.encode(INTENT_BATCH_TYPEHASH, signer, callsHash, tokensHash, nonce, deadline)
     let mut encoded = Vec::with_capacity(6 * 32);
-    encoded.extend_from_slice(&*INTENT_BATCH_TYPEHASH);
+    encoded.extend_from_slice(&intent_batch_typehash());
     // signer as bytes32
     let mut signer_bytes = [0u8; 32];
     signer_bytes[12..32].copy_from_slice(signer.as_slice());
@@ -136,23 +133,23 @@ mod tests {
 
     #[test]
     fn test_domain_typehash() {
-        // Verify our constant matches
+        // Verify our function matches
         let computed = keccak256(
             b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
         );
-        assert_eq!(computed.0, *DOMAIN_TYPEHASH);
+        assert_eq!(computed.0, domain_typehash());
     }
 
     #[test]
     fn test_call_typehash() {
         let computed = keccak256(b"Call(address target,bytes callData,uint256 value)");
-        assert_eq!(computed.0, *CALL_TYPEHASH);
+        assert_eq!(computed.0, call_typehash());
     }
 
     #[test]
     fn test_intent_batch_typehash() {
         let computed = keccak256(b"IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)");
-        assert_eq!(computed.0, *INTENT_BATCH_TYPEHASH);
+        assert_eq!(computed.0, intent_batch_typehash());
     }
 
     #[test]

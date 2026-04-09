@@ -1,5 +1,9 @@
 //! Stage G: Build — produce final unsigned transactions from the execution plan.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::SolCall;
 

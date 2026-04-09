@@ -3,8 +3,10 @@
 //! These types are intentionally simple and string-based. The compiler
 //! normalizes them into the canonical IR with resolved addresses and amounts.
 
-use std::collections::HashMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use serde::Deserialize;
 
 /// Top-level intent script document.
@@ -26,6 +28,10 @@ pub struct IntentScript {
     /// When provided, the compiler can check feasibility and produce better warnings.
     #[serde(default)]
     pub balances: Option<UserBalances>,
+    /// Current Unix timestamp in seconds. Required for deadline computation.
+    /// The caller (CLI/frontend) provides this.
+    #[serde(default)]
+    pub current_timestamp: Option<u64>,
 }
 
 /// User's on-chain balance information, provided optionally by the frontend.
@@ -69,6 +75,7 @@ pub enum Step {
     Wrap(WrapStep),
     Unwrap(UnwrapStep),
     Stake(StakeStep),
+    Send(SendStep),
     Custom(serde_json::Value),
 }
 
@@ -101,6 +108,9 @@ pub struct SwapStep {
     /// Requires the price field to be set.
     #[serde(default)]
     pub slippage: Option<String>,
+    /// Optional swap-specific deadline as Unix timestamp.
+    #[serde(default)]
+    pub deadline: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,4 +151,25 @@ pub struct StakeStep {
     pub asset: String,
     pub amount: String,
     pub into: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendStep {
+    /// ERC20/ETH token alias (e.g. "USDC", "ETH")
+    #[serde(default)]
+    pub asset: Option<String>,
+    /// Human-readable amount (e.g. "100.0")
+    #[serde(default)]
+    pub amount: Option<String>,
+    /// Recipient address
+    pub to: String,
+    /// Asset type: "erc20" (default), "erc721"
+    #[serde(default)]
+    pub asset_type: Option<String>,
+    /// NFT contract address (erc721 only)
+    #[serde(default)]
+    pub contract: Option<String>,
+    /// NFT token ID (erc721 only)
+    #[serde(default)]
+    pub token_id: Option<String>,
 }

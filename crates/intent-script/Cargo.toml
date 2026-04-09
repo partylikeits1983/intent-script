@@ -3,10 +3,19 @@ name = "intent-script"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["std"]
+std = ["serde_json/std", "thiserror/std"]
+
 [dependencies]
-alloy-primitives = "1"
-alloy-sol-types = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-clap = { version = "4", features = ["derive"] }
+alloy-primitives = { version = "1", default-features = false }
+alloy-sol-types = { version = "1", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+thiserror = { version = "2", default-features = false }
+hashbrown = { version = "0.15", features = ["serde"] }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[[bin]]
+name = "intent-script"
+required-features = ["std", "clap"]

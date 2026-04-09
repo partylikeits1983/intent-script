@@ -7,9 +7,10 @@
 //! - Tracks which tokens are already in the router to avoid unnecessary transfers
 //! - Tracks which tokens need to be swept back to the signer after execution
 
-use std::collections::HashSet;
+use alloc::vec::Vec;
 
 use alloy_primitives::Address;
+use hashbrown::HashSet;
 
 use crate::error::Result;
 use crate::ir::{ResolvedIntent, ResolvedStep};
@@ -212,7 +213,21 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                     }
                 }
             }
-            // Other steps don't need enrichment (withdraw, unwrap, approve, permit, transferFrom)
+            ResolvedStep::SendErc20 { token, amount, .. } => {
+                // When batching via router, pull tokens from user if not already in router
+                if let Some(router_addr) = router {
+                    if !tokens_in_router.contains(token) {
+                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                            token: *token,
+                            from: signer,
+                            to: router_addr,
+                            amount: *amount,
+                        });
+                    }
+                }
+                enriched_steps.push(step.clone());
+            }
+            // SendEth, SendErc721, and other steps don't need enrichment
             _ => {
                 enriched_steps.push(step.clone());
             }

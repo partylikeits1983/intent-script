@@ -4,6 +4,10 @@
 //! - `token.approve(spender, amount)` calldata
 //! - `token.permit(owner, spender, value, deadline, v, r, s)` calldata
 
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
+
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_sol_types::SolCall;
 
