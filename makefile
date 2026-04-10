@@ -49,3 +49,7 @@ test-all: test-compiler test-router test-anvil
 
 # Run everything including fork E2E (requires ETH_RPC_URL in .env)
 test-e2e: test-all test-fork-e2e
+
+# Compile a JSON intent file (default: examples/test.json)
+compile-intent:
+	cargo run -p intent-script --features clap -- crates/intent-script/examples/test.json --pretty
