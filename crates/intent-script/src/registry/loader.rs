@@ -106,4 +106,52 @@ impl RegistryContext {
             Some(addr)
         }
     }
+
+    /// Resolve an on-chain address back to its symbol alias.
+    ///
+    /// Returns the native asset alias for the zero address, the asset alias for
+    /// known contract addresses, or a truncated hex string fallback (e.g.
+    /// "0xA0b8...eB48") for addresses not in the registry.
+    pub fn symbol_for_address(&self, address: &Address) -> alloc::string::String {
+        use alloc::format;
+
+        if *address == Address::ZERO {
+            return self.chain.native_asset.clone();
+        }
+
+        let target = format!("{:?}", address).to_lowercase();
+        for (alias, config) in &self.assets {
+            if config.address.to_lowercase() == target {
+                return alias.clone();
+            }
+        }
+
+        let full = format!("{:?}", address);
+        if full.len() >= 42 {
+            format!("{}...{}", &full[..6], &full[full.len() - 4..])
+        } else {
+            full
+        }
+    }
+
+    /// Look up decimals for an on-chain address. Defaults to 18 if unknown.
+    pub fn decimals_for_address(&self, address: &Address) -> u8 {
+        use alloc::format;
+
+        if *address == Address::ZERO {
+            // Native asset — fall back through the alias.
+            if let Some(native) = self.assets.get(&self.chain.native_asset) {
+                return native.decimals;
+            }
+            return 18;
+        }
+
+        let target = format!("{:?}", address).to_lowercase();
+        for config in self.assets.values() {
+            if config.address.to_lowercase() == target {
+                return config.decimals;
+            }
+        }
+        18
+    }
 }

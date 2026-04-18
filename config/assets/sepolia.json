@@ -1,0 +1,22 @@
+{
+  "ETH": {
+    "address": "native",
+    "decimals": 18
+  },
+  "WETH": {
+    "address": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+    "decimals": 18
+  },
+  "USDC": {
+    "address": "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8",
+    "decimals": 6
+  },
+  "DAI": {
+    "address": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+    "decimals": 18
+  },
+  "LINK": {
+    "address": "0xf8Fb3713D459D7C1018BD0A49D19b4C44290EBE5",
+    "decimals": 18
+  }
+}

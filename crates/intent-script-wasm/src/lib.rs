@@ -5,8 +5,6 @@ use alloc::string::String;
 
 use wasm_bindgen::prelude::*;
 
-use intent_script::output::CompileOutputJson;
-
 /// Compile an intent-script JSON string into unsigned EVM transactions.
 ///
 /// Arguments are all JSON strings:
@@ -32,7 +30,7 @@ pub fn compile(
         web_log(&format!("⚠ intent-script warning: {warning}"));
     }
 
-    let json_output = CompileOutputJson::from(&result);
+    let json_output = result.to_json();
     let serialized = serde_json::to_string(&json_output)
         .map_err(|e| JsError::new(&format!("Serialization error: {e}")))?;
 

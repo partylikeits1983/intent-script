@@ -156,6 +156,15 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
             amount_in,
             ..
         } => Some((*token_in, *amount_in)),
+        ResolvedStep::OneInchSwap {
+            token_in,
+            amount_in,
+            ..
+        } => Some((*token_in, *amount_in)),
+        ResolvedStep::Unwrap {
+            wrapped_token,
+            amount,
+        } => Some((*wrapped_token, *amount)),
         ResolvedStep::SendErc20 { token, amount, .. } => Some((*token, *amount)),
         _ => None,
     }
@@ -171,13 +180,23 @@ pub fn step_produces(step: &ResolvedStep) -> Option<(Address, U256)> {
             amount_out_minimum,
             ..
         } => Some((*token_out, *amount_out_minimum)),
+        // 1inch calldata is opaque — we use amount_in as a conservative lower bound
+        // on production. The router's sweep will still return whatever arrives.
+        // Downstream `"all"` consumers must not over-consume.
+        ResolvedStep::OneInchSwap {
+            token_out,
+            amount_in,
+            ..
+        } => Some((*token_out, *amount_in)),
         ResolvedStep::AaveV3Borrow { asset, amount, .. } => Some((*asset, *amount)),
+        ResolvedStep::AaveV3Withdraw { asset, amount, .. } => Some((*asset, *amount)),
         ResolvedStep::LidoStake { lido, amount, .. } => Some((*lido, *amount)),
         ResolvedStep::Wrap {
             wrapped_token,
             amount,
             ..
         } => Some((*wrapped_token, *amount)),
+        ResolvedStep::WstETHWrap { wsteth, amount, .. } => Some((*wsteth, *amount)),
         _ => None,
     }
 }

@@ -3,6 +3,7 @@ pub mod enrich;
 pub mod lower;
 pub mod normalize;
 pub mod plan;
+pub mod preview;
 pub mod validate;
 
 use crate::error::Result;
@@ -45,6 +46,10 @@ pub fn compile(
     let validation = validate::validate(&resolved, &registry)?;
     all_warnings.extend(validation.warnings);
 
+    // Build the user-facing preview from the resolved (pre-enrich) steps so
+    // auto-inserted approvals/transferFroms never appear in the summary.
+    let preview = preview::build_preview(&resolved, &registry);
+
     // Stage D: Enrich — insert approvals, wraps, track sweep tokens
     let enriched = enrich::enrich(resolved, &registry)?;
 
@@ -68,5 +73,6 @@ pub fn compile(
     Ok(CompileResult {
         output,
         warnings: all_warnings,
+        preview: Some(preview),
     })
 }

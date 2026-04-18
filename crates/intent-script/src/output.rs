@@ -15,6 +15,31 @@ pub struct CompileResult {
     pub output: CompileOutput,
     /// Non-fatal warnings from validation (e.g., "borrow without prior deposit")
     pub warnings: Vec<String>,
+    /// Structured preview of inputs/outputs/steps for user-facing display.
+    pub preview: Option<Preview>,
+}
+
+/// Net user-facing preview: what the signer is about to send, receive, and do.
+#[derive(Debug, Clone, Default)]
+pub struct Preview {
+    pub inputs: Vec<PreviewToken>,
+    pub outputs: Vec<PreviewToken>,
+    pub steps: Vec<PreviewStepInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewToken {
+    pub symbol: String,
+    pub amount: String,
+    pub amount_raw: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewStepInfo {
+    pub action: String,
+    pub protocol: String,
+    pub description: String,
 }
 
 /// The result of compiling an intent script.
@@ -103,6 +128,55 @@ pub struct CompileOutputJson {
     /// Non-fatal warnings from compilation (omitted when empty)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Structured user-facing preview (inputs/outputs/steps).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewJson>,
+    /// Optional simulation results. The compiler always emits `None`; the frontend
+    /// fills this in after running `eth_call` against the network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub simulation: Option<SimulationJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviewJson {
+    pub inputs: Vec<TokenAmountJson>,
+    pub outputs: Vec<TokenAmountJson>,
+    pub steps: Vec<PreviewStepJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TokenAmountJson {
+    pub token: String,
+    pub amount: String,
+    #[serde(rename = "amountRaw")]
+    pub amount_raw: String,
+    pub address: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviewStepJson {
+    pub action: String,
+    pub protocol: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SimulationJson {
+    pub success: bool,
+    #[serde(rename = "gasEstimate", skip_serializing_if = "Option::is_none")]
+    pub gas_estimate: Option<String>,
+    #[serde(rename = "revertReason", skip_serializing_if = "Option::is_none")]
+    pub revert_reason: Option<String>,
+    #[serde(rename = "balanceChanges", skip_serializing_if = "Vec::is_empty")]
+    pub balance_changes: Vec<BalanceChangeJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BalanceChangeJson {
+    pub token: String,
+    pub before: String,
+    pub after: String,
+    pub change: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -284,6 +358,8 @@ impl From<&CompileOutput> for CompileOutputJson {
                 description: None,
                 reason: None,
                 warnings: Vec::new(),
+                preview: None,
+                simulation: None,
             },
             CompileOutput::Eip712Intent(intent) => CompileOutputJson {
                 output_type: "eip712_intent".into(),
@@ -293,6 +369,8 @@ impl From<&CompileOutput> for CompileOutputJson {
                 description: Some(intent.description.clone()),
                 reason: None,
                 warnings: Vec::new(),
+                preview: None,
+                simulation: None,
             },
             CompileOutput::TxSequence(txs) => CompileOutputJson {
                 output_type: "tx_sequence".into(),
@@ -302,6 +380,8 @@ impl From<&CompileOutput> for CompileOutputJson {
                 description: None,
                 reason: None,
                 warnings: Vec::new(),
+                preview: None,
+                simulation: None,
             },
             CompileOutput::RequiresExecutor { reason } => CompileOutputJson {
                 output_type: "requires_executor".into(),
@@ -311,6 +391,8 @@ impl From<&CompileOutput> for CompileOutputJson {
                 description: None,
                 reason: Some(reason.clone()),
                 warnings: Vec::new(),
+                preview: None,
+                simulation: None,
             },
         }
     }
@@ -320,7 +402,49 @@ impl From<&CompileResult> for CompileOutputJson {
     fn from(result: &CompileResult) -> Self {
         let mut json = CompileOutputJson::from(&result.output);
         json.warnings = result.warnings.clone();
+        json.preview = result.preview.as_ref().map(PreviewJson::from);
         json
+    }
+}
+
+impl From<&Preview> for PreviewJson {
+    fn from(p: &Preview) -> Self {
+        PreviewJson {
+            inputs: p.inputs.iter().map(TokenAmountJson::from).collect(),
+            outputs: p.outputs.iter().map(TokenAmountJson::from).collect(),
+            steps: p.steps.iter().map(PreviewStepJson::from).collect(),
+        }
+    }
+}
+
+impl From<&PreviewToken> for TokenAmountJson {
+    fn from(t: &PreviewToken) -> Self {
+        TokenAmountJson {
+            token: t.symbol.clone(),
+            amount: t.amount.clone(),
+            amount_raw: t.amount_raw.clone(),
+            address: t.address.clone(),
+        }
+    }
+}
+
+impl From<&PreviewStepInfo> for PreviewStepJson {
+    fn from(s: &PreviewStepInfo) -> Self {
+        PreviewStepJson {
+            action: s.action.clone(),
+            protocol: s.protocol.clone(),
+            description: s.description.clone(),
+        }
+    }
+}
+
+impl CompileResult {
+    /// Convert this compile result into its JSON-serializable form.
+    ///
+    /// Prefer this over constructing `CompileOutputJson` directly so callers
+    /// (including the WASM binding) share a single conversion path.
+    pub fn to_json(&self) -> CompileOutputJson {
+        CompileOutputJson::from(self)
     }
 }
 

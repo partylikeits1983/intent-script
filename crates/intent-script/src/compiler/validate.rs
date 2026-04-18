@@ -17,7 +17,7 @@ use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_consumes, s
 use crate::registry::RegistryContext;
 
 /// Maximum number of user-facing steps allowed in a single intent.
-pub const MAX_STEPS: usize = 5;
+pub const MAX_STEPS: usize = 3;
 
 /// Minimum Aave health factor — below this, borrows are rejected.
 const MIN_HEALTH_FACTOR: f64 = 1.2;
@@ -71,7 +71,7 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
     // Track protocols that have received deposits in this intent
     let mut deposited_protocols: HashSet<Address> = HashSet::new();
 
-    for step in &intent.steps {
+    for (step_index, step) in intent.steps.iter().enumerate() {
         // Rule 3: Amount validation — all amounts must be positive
         validate_amount(step)?;
 
@@ -79,7 +79,7 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
         validate_asset_compatibility(step)?;
 
         // Task 1: Slippage protection for swaps
-        validate_slippage(step)?;
+        validate_slippage(step, step_index)?;
 
         // Task 7: Send validation
         validate_send(step)?;
@@ -118,17 +118,16 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
 }
 
 /// Task 1: Reject swaps with zero slippage protection.
-fn validate_slippage(step: &ResolvedStep) -> Result<()> {
+fn validate_slippage(step: &ResolvedStep, step_index: usize) -> Result<()> {
     if let ResolvedStep::UniswapV3Swap {
         amount_out_minimum, ..
     } = step
     {
         if *amount_out_minimum == U256::ZERO {
-            return Err(CompileError::InvalidChain(
-                "Swap has no slippage protection (amountOutMinimum = 0). \
-                 Provide 'min_amount_out' or 'price' + 'slippage' on the swap step."
-                    .to_string(),
-            ));
+            return Err(CompileError::SlippageTooLow {
+                step_index,
+                current: "0".to_string(),
+            });
         }
     }
     Ok(())
@@ -142,11 +141,10 @@ fn validate_health_factor(
     if let Some(b) = balances {
         if let Some(hf) = b.aave_health_factor {
             if hf < MIN_HEALTH_FACTOR {
-                return Err(CompileError::InvalidChain(format!(
-                    "Aave health factor is {:.2}, below minimum {:.1}. \
-                     Borrow rejected to prevent liquidation.",
-                    hf, MIN_HEALTH_FACTOR
-                )));
+                return Err(CompileError::HealthFactorRisk {
+                    current: hf,
+                    threshold: MIN_HEALTH_FACTOR,
+                });
             }
             if hf < WARN_HEALTH_FACTOR {
                 warnings.push(format!(
@@ -482,7 +480,7 @@ mod tests {
             deadline: U256::MAX,
             amount_out_minimum: U256::ZERO,
         };
-        let result = validate_slippage(&step);
+        let result = validate_slippage(&step, 0);
         assert!(result.is_err());
         assert!(
             result
@@ -504,7 +502,7 @@ mod tests {
             deadline: U256::MAX,
             amount_out_minimum: U256::from(480_000_000_000_000_000u64),
         };
-        let result = validate_slippage(&step);
+        let result = validate_slippage(&step, 0);
         assert!(result.is_ok());
     }
 
@@ -543,7 +541,7 @@ mod tests {
     // Task 4: Max step count test
     #[test]
     fn test_too_many_steps_rejected() {
-        let steps: Vec<ResolvedStep> = (0..6)
+        let steps: Vec<ResolvedStep> = (0..4)
             .map(|_| ResolvedStep::Wrap {
                 wrapped_token: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
                 amount: U256::from(1_000_000_000_000_000_000u64),

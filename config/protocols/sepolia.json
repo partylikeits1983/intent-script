@@ -1,0 +1,17 @@
+{
+  "aave": {
+    "type": "lending",
+    "version": "v3",
+    "contracts": {
+      "pool": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"
+    }
+  },
+  "uniswap": {
+    "type": "dex",
+    "version": "v3",
+    "contracts": {
+      "router": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+      "quoter": "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3"
+    }
+  }
+}

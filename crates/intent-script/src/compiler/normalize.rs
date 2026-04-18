@@ -10,10 +10,17 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, U256};
 use hashbrown::HashMap;
 
-use crate::error::{CompileError, Result};
+use crate::error::{CompileError, Result, closest_match};
 use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_produces};
 use crate::registry::RegistryContext;
 use crate::schema::{IntentScript, Step, SwapStep};
+
+/// Collect the list of known protocol aliases for inclusion in `UnknownProtocol` errors.
+fn known_protocols(registry: &RegistryContext) -> Vec<String> {
+    let mut out: Vec<String> = registry.protocols.keys().cloned().collect();
+    out.sort();
+    out
+}
 
 /// Default swap deadline: 20 minutes from current_timestamp.
 const DEFAULT_SWAP_DEADLINE_SECS: u64 = 1200;
@@ -39,6 +46,14 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             None => 0, // backward compat when no timestamp provided
         },
     };
+    if effective_deadline == 0 {
+        warnings.push(
+            "Intent has no deadline: neither 'deadline' nor 'current_timestamp' was provided. \
+             Batched intents will be rejected by the router (deadline > 0 required). \
+             Set 'current_timestamp' to the current Unix timestamp to auto-compute a 30-minute deadline."
+                .to_string(),
+        );
+    }
 
     let mut steps = Vec::new();
     for step in &script.steps {
@@ -79,20 +94,11 @@ fn normalize_step(
         Step::Wrap(w) => {
             if w.asset == "stETH" {
                 // Wrap stETH → wstETH via wstETH.wrap(uint256)
-                let decimals = resolve_asset_decimals(&w.asset, registry)?;
-                let amount = resolve_amount_or_all(
-                    &w.amount,
-                    decimals,
-                    Address::ZERO,
-                    previous_steps,
-                    &w.asset,
-                    registry,
-                )?;
-
                 let lido_protocol = registry.protocols.get("lido").ok_or_else(|| {
                     CompileError::UnknownProtocol {
                         protocol: "lido".to_string(),
                         network: registry.network.clone(),
+                        available: known_protocols(registry),
                     }
                 })?;
 
@@ -109,6 +115,17 @@ fn normalize_step(
                     )
                 })?;
                 let steth = parse_address(steth_addr)?;
+
+                // "all" resolves against the stETH address (the thing being consumed).
+                let decimals = resolve_asset_decimals(&w.asset, registry)?;
+                let amount = resolve_amount_or_all(
+                    &w.amount,
+                    decimals,
+                    steth,
+                    previous_steps,
+                    &w.asset,
+                    registry,
+                )?;
 
                 Ok(ResolvedStep::WstETHWrap {
                     wsteth,
@@ -170,6 +187,7 @@ fn normalize_step(
                     .ok_or_else(|| CompileError::UnknownProtocol {
                         protocol: d.into.clone(),
                         network: registry.network.clone(),
+                        available: known_protocols(registry),
                     })?;
 
             let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
@@ -206,6 +224,7 @@ fn normalize_step(
                     .ok_or_else(|| CompileError::UnknownProtocol {
                         protocol: b.from.clone(),
                         network: registry.network.clone(),
+                        available: known_protocols(registry),
                     })?;
 
             let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
@@ -243,6 +262,7 @@ fn normalize_step(
                     .ok_or_else(|| CompileError::UnknownProtocol {
                         protocol: w.from.clone(),
                         network: registry.network.clone(),
+                        available: known_protocols(registry),
                     })?;
 
             let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
@@ -300,6 +320,7 @@ fn normalize_step(
                         CompileError::UnknownProtocol {
                             protocol: "uniswap".to_string(),
                             network: registry.network.clone(),
+                            available: known_protocols(registry),
                         }
                     })?;
 
@@ -378,6 +399,7 @@ fn normalize_step(
                         CompileError::UnknownProtocol {
                             protocol: "1inch".to_string(),
                             network: registry.network.clone(),
+                            available: known_protocols(registry),
                         }
                     })?;
 
@@ -433,6 +455,7 @@ fn normalize_step(
                     .ok_or_else(|| CompileError::UnknownProtocol {
                         protocol: s.into.clone(),
                         network: registry.network.clone(),
+                        available: known_protocols(registry),
                     })?;
 
             let contract_key = match s.into.as_str() {
@@ -591,55 +614,69 @@ fn compute_amount_out_minimum(
 
     // Case 2: price provided (with optional slippage)
     if let Some(ref price_str) = swap.price {
-        let price: f64 = price_str.parse().map_err(|_| {
+        let in_decimals = resolve_asset_decimals(&swap.from, registry)?;
+        let out_decimals = resolve_asset_decimals(output_token_alias, registry)?;
+
+        // Parse price as a fixed-point integer scaled to `out_decimals` fractional digits.
+        // This avoids f64 precision loss on large amounts.
+        let price_scaled = parse_amount(price_str, out_decimals).map_err(|_| {
             CompileError::InvalidAmount(format!("Invalid price value: {}", price_str))
         })?;
-
-        if price <= 0.0 {
+        if price_scaled == U256::ZERO {
             return Err(CompileError::InvalidAmount(
                 "Price must be positive".to_string(),
             ));
         }
 
-        let slippage_pct: f64 = match &swap.slippage {
-            Some(s) => s.parse().map_err(|_| {
-                CompileError::InvalidAmount(format!("Invalid slippage value: {}", s))
-            })?,
-            None => 0.5, // Default 0.5%
+        // Parse slippage as basis points (1% = 100 bps, 0.5% = 50 bps).
+        // Scale is 10000 bps = 100%, so parse the percent string with 2 decimals.
+        let slippage_bps_u256 = match &swap.slippage {
+            Some(s) => {
+                if s.starts_with('-') {
+                    return Err(CompileError::InvalidAmount(format!(
+                        "Slippage must be between 0 and 100, got {}",
+                        s
+                    )));
+                }
+                parse_amount(s, 2).map_err(|_| {
+                    CompileError::InvalidAmount(format!(
+                        "Slippage must be between 0 and 100, got {}",
+                        s
+                    ))
+                })?
+            }
+            None => U256::from(50u64), // 0.5% = 50 bps
         };
-
-        if slippage_pct < 0.0 || slippage_pct >= 100.0 {
+        let slippage_bps: u64 = slippage_bps_u256.try_into().map_err(|_| {
+            CompileError::InvalidAmount(format!(
+                "Slippage must be between 0 and 100, got {}",
+                swap.slippage.as_deref().unwrap_or("?")
+            ))
+        })?;
+        if slippage_bps >= 10_000 {
             return Err(CompileError::InvalidAmount(format!(
                 "Slippage must be between 0 and 100, got {}",
-                slippage_pct
+                swap.slippage.as_deref().unwrap_or("?")
             )));
         }
 
-        // Convert amount_in (U256) to f64 for calculation.
-        // We need the input token decimals to convert back to human-readable.
-        let in_decimals = resolve_asset_decimals(&swap.from, registry)?;
-        let out_decimals = resolve_asset_decimals(output_token_alias, registry)?;
+        // expected_output_smallest = amount_in * price_scaled / 10^in_decimals
+        //   where price_scaled is price * 10^out_decimals.
+        // This yields the expected output in the output token's smallest units.
+        let scale_in = U256::from(10u128).pow(U256::from(in_decimals as u64));
+        let expected = amount_in.checked_mul(price_scaled).ok_or_else(|| {
+            CompileError::InvalidAmount("Overflow computing expected output".to_string())
+        })? / scale_in;
 
-        // amount_in is in smallest units (e.g., 1000 USDC = 1_000_000_000 with 6 decimals)
-        // Convert to human-readable: amount_in / 10^in_decimals
-        let amount_in_str = format!("{}", amount_in);
-        let amount_in_human: f64 =
-            amount_in_str.parse::<f64>().unwrap_or(0.0) / 10f64.powi(in_decimals as i32);
+        // min_output = expected * (10000 - slippage_bps) / 10000
+        let numerator = U256::from(10_000u64 - slippage_bps);
+        let denominator = U256::from(10_000u64);
+        let min_output = expected
+            .checked_mul(numerator)
+            .ok_or_else(|| CompileError::InvalidAmount("Overflow applying slippage".to_string()))?
+            / denominator;
 
-        // expected_output = amount_in_human * price
-        // min_output = expected_output * (1 - slippage/100)
-        let min_output = amount_in_human * price * (1.0 - slippage_pct / 100.0);
-
-        // Convert min_output to smallest units of output token (floor for conservative rounding)
-        let min_output_smallest = min_output * 10f64.powi(out_decimals as i32);
-
-        if min_output_smallest < 0.0 {
-            return Ok(U256::ZERO);
-        }
-
-        // Floor to u128 then convert to U256
-        let min_out_u128 = min_output_smallest.floor() as u128;
-        return Ok(U256::from(min_out_u128));
+        return Ok(min_output);
     }
 
     // Case 3: slippage without price → error
@@ -670,6 +707,7 @@ fn resolve_asset_address(alias: &str, registry: &RegistryContext) -> Result<Addr
         .ok_or_else(|| CompileError::UnknownAsset {
             asset: alias.to_string(),
             network: registry.network.clone(),
+            suggestion: closest_match(alias, registry.assets.keys().map(|s| s.as_str())),
         })?;
 
     if config.address == "native" {
@@ -690,6 +728,7 @@ fn resolve_asset_decimals(alias: &str, registry: &RegistryContext) -> Result<u8>
         .ok_or_else(|| CompileError::UnknownAsset {
             asset: alias.to_string(),
             network: registry.network.clone(),
+            suggestion: closest_match(alias, registry.assets.keys().map(|s| s.as_str())),
         })?;
     Ok(config.decimals)
 }
