@@ -25,7 +25,11 @@ import { IERC20 } from "../src/interfaces/IERC20.sol";
 /// This is a known compiler limitation — see plans/test-improvement-plan.md.
 contract IntentForkE2E is Test {
     // ─── Mainnet addresses ───────────────────────────────────────────
-    address constant ROUTER_ADDR = 0x1111111254EEB25477B68fb85Ed929f73A960582;
+    // Must match the `intent_router.router` address in
+    // config/protocols/ethereum.json — compiler-generated calldata bakes this
+    // address into transferFrom/swap-recipient fields, and the fork test etches
+    // IntentRouter bytecode at this same address so the calls line up.
+    address constant ROUTER_ADDR = 0x5bCC3154698bBC205ABF09351A52DD2d1A39F608;
     address constant WETH        = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant USDC        = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant DAI         = 0x6B175474E89094C44Da98b954EedeAC495271d0F;

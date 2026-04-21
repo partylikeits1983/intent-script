@@ -89,11 +89,9 @@ fn test_aave_deposit_usdc_batched_through_router() {
     // into an Eip712Intent since a router is configured.
     match output {
         CompileOutput::Eip712Intent(intent) => {
-            // Direct tx target should be the IntentRouter
-            assert_eq!(
-                format!("{}", intent.direct_tx.to),
-                "0x1111111254EEB25477B68fb85Ed929f73A960582"
-            );
+            // Direct tx target should be the IntentRouter — the EIP-712
+            // verifying contract is the router by construction.
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
             // No direct ETH value (approve + supply are both 0-value)
             assert_eq!(intent.direct_tx.value.to_string(), "0");
             // Calldata should start with executeDirect() selector
@@ -124,7 +122,14 @@ fn test_aave_deposit_usdc_batched_through_router() {
 
     assert!(json_str.contains("eip712_intent"));
     assert!(json_str.contains("IntentRouter"));
-    assert!(json_str.contains("0x1111111254EEB25477B68fb85Ed929f73A960582"));
+    // The router address should appear in the JSON — resolve it from the
+    // compiled output so tests stay correct if the config-deployed router
+    // address changes.
+    let router_addr = match &result.output {
+        CompileOutput::Eip712Intent(intent) => format!("{}", intent.domain.verifying_contract),
+        _ => unreachable!("matched Eip712Intent above"),
+    };
+    assert!(json_str.contains(&router_addr));
 }
 
 #[test]
@@ -224,10 +229,7 @@ fn test_swap_usdc_to_weth() {
     match output {
         CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter (batched)
-            assert_eq!(
-                format!("{}", intent.direct_tx.to),
-                "0x1111111254EEB25477B68fb85Ed929f73A960582"
-            );
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
             assert!(
                 intent.direct_tx.data.len() > 4,
                 "Should have calldata for router.executeDirect()"
@@ -274,10 +276,7 @@ fn test_deposit_and_borrow_single_tx() {
     match output {
         CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter
-            assert_eq!(
-                format!("{}", intent.direct_tx.to),
-                "0x1111111254EEB25477B68fb85Ed929f73A960582"
-            );
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
             assert!(
                 intent.direct_tx.data.len() > 4,
                 "Should have calldata for router.executeDirect()"
@@ -329,10 +328,7 @@ fn test_swap_deposit_borrow_chain() {
     // Should produce batched tx: approve USDC, swap, approve WETH, supply, borrow
     match output {
         CompileOutput::Eip712Intent(intent) => {
-            assert_eq!(
-                format!("{}", intent.direct_tx.to),
-                "0x1111111254EEB25477B68fb85Ed929f73A960582"
-            );
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
             assert!(
                 intent.direct_tx.data.len() > 4,
                 "Should have calldata for router.executeDirect()"
@@ -508,10 +504,7 @@ fn test_wrap_steth_to_wsteth() {
     match output {
         CompileOutput::Eip712Intent(intent) => {
             // Target should be the IntentRouter (batched)
-            assert_eq!(
-                format!("{}", intent.direct_tx.to),
-                "0x1111111254EEB25477B68fb85Ed929f73A960582"
-            );
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
             assert!(
                 intent.direct_tx.data.len() > 4,
                 "Should have calldata for router.executeDirect()"
@@ -551,10 +544,7 @@ fn test_stake_and_wrap_steth() {
     // Stake + wrap produces batched calldata
     match output {
         CompileOutput::Eip712Intent(intent) => {
-            assert_eq!(
-                format!("{}", intent.direct_tx.to),
-                "0x1111111254EEB25477B68fb85Ed929f73A960582"
-            );
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
             assert!(
                 intent.description.contains("Batched"),
                 "Description should mention batching: {}",
@@ -1167,10 +1157,13 @@ fn test_withdraw_without_position_with_balances_fails() {
 
 #[test]
 fn test_deposit_then_borrow_no_warning() {
-    // Deposit then borrow in same intent → should compile without warning
+    // Deposit then borrow in same intent → should compile without warning.
+    // `current_timestamp` is set because deposit+borrow batches via the
+    // router, and batched intents need a deadline to be signable.
     let input = r#"{
         "network": "ethereum",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1712344000,
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
             { "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }

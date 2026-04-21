@@ -2,16 +2,27 @@
 -include .env
 export
 
+# Default mainnet RPC URL for Anvil-fork and Foundry-fork tests.
+# `?=` only sets it when not already defined, so .env or a shell-exported
+# value still takes precedence.
+ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
+
+.PHONY: format build test test-compiler generate-calldata generate-fixtures \
+	test-foundry test-router e2e-test test-anvil test-fork-e2e \
+	test-fork-local test-all compile-intent
+
 format:
 	cargo fmt --all
 
 build:
 	cargo build --release --workspace
 
-test:
-	cargo test --workspace
+# Primary offline test target: everything that does NOT need an RPC/fork.
+# Runs the Rust compiler tests, then (after fixture generation) the Foundry
+# tests that don't hit the fork.
+test: test-compiler generate-calldata test-foundry
 
-# Run only the Rust compiler tests (no Anvil fork needed)
+# Rust compiler tests only — no network, no fork, no Foundry.
 test-compiler:
 	cargo test -p intent-script
 
@@ -31,7 +42,15 @@ test-foundry:
 # Full test flow: generate calldata, then run Foundry tests
 test-router: generate-calldata test-foundry
 
-# Run Foundry fork E2E tests against mainnet (requires ETH_RPC_URL in .env)
+# Primary end-to-end target: everything that requires an Anvil fork.
+# Uses ETH_RPC_URL (defaulted above to the public node).
+e2e-test: generate-fixtures test-anvil test-fork-e2e
+
+# Run Anvil fork tests (defaults to the public node via ETH_RPC_URL)
+test-anvil:
+	cargo test -p evm-testing -- --nocapture
+
+# Run Foundry fork E2E tests against mainnet
 # These deploy IntentRouter on a fork and execute against real protocols
 test-fork-e2e: generate-fixtures
 	cd contracts && forge test --mc IntentForkE2E --fork-url $(ETH_RPC_URL) -vvv
@@ -40,15 +59,8 @@ test-fork-e2e: generate-fixtures
 test-fork-local:
 	cd contracts && forge test --mc IntentLocalTests -vvv
 
-# Run Anvil fork tests (requires ETH_RPC_URL or uses public node)
-test-anvil:
-	cargo test -p evm-testing -- --nocapture
-
 # Run all tests: compiler + foundry + anvil (no fork needed)
 test-all: test-compiler test-router test-anvil
-
-# Run everything including fork E2E (requires ETH_RPC_URL in .env)
-test-e2e: test-all test-fork-e2e
 
 # Compile a JSON intent file (default: examples/test.json)
 compile-intent:

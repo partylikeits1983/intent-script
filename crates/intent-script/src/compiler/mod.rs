@@ -7,7 +7,7 @@ pub mod preview;
 pub mod validate;
 
 use crate::error::Result;
-use crate::output::CompileResult;
+use crate::output::{CompileOutput, CompileResult};
 use crate::registry::RegistryContext;
 use crate::schema::IntentScript;
 
@@ -69,6 +69,20 @@ pub fn compile(
         enriched.nonce,
         enriched.deadline,
     );
+
+    // Only batched (Eip712Intent) outputs need a deadline — `executeSigned`
+    // rejects `deadline == 0`. `executeDirect` (the single-tx path) does not
+    // check the deadline, so warning there would just be noise.
+    let has_deadline_source =
+        script.deadline.unwrap_or(0) > 0 || script.current_timestamp.is_some();
+    if matches!(output, CompileOutput::Eip712Intent(_)) && !has_deadline_source {
+        all_warnings.push(
+            "Intent has no deadline: neither 'deadline' nor 'current_timestamp' was provided. \
+             Batched intents will be rejected by the router (deadline > 0 required). \
+             Set 'current_timestamp' to the current Unix timestamp to auto-compute a 30-minute deadline."
+                .into(),
+        );
+    }
 
     Ok(CompileResult {
         output,

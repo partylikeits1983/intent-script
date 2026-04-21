@@ -38,7 +38,11 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
     let signer = parse_address(&script.from)?;
     let mut warnings = Vec::new();
 
-    // Compute effective intent deadline (Task 2)
+    // Compute effective intent deadline (Task 2).
+    // A deadline of 0 is only a problem when the intent is ultimately batched
+    // and relayed via `executeSigned` (which rejects expired/missing deadlines).
+    // The warning is emitted in the top-level `compile()` after planning so it
+    // doesn't fire spuriously on single-tx outputs.
     let effective_deadline = match script.deadline {
         Some(d) if d > 0 => d,
         _ => match script.current_timestamp {
@@ -46,14 +50,6 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             None => 0, // backward compat when no timestamp provided
         },
     };
-    if effective_deadline == 0 {
-        warnings.push(
-            "Intent has no deadline: neither 'deadline' nor 'current_timestamp' was provided. \
-             Batched intents will be rejected by the router (deadline > 0 required). \
-             Set 'current_timestamp' to the current Unix timestamp to auto-compute a 30-minute deadline."
-                .to_string(),
-        );
-    }
 
     let mut steps = Vec::new();
     for step in &script.steps {

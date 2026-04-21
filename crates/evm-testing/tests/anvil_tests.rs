@@ -218,7 +218,8 @@ async fn test_aave_deposit_usdc_produces_batched_tx() -> eyre::Result<()> {
     let anvil = Anvil::new().fork(fork_url()).try_spawn()?;
 
     let signer = anvil.addresses()[0];
-    let router_addr = address!("1111111254EEB25477B68fb85Ed929f73A960582");
+    // Deployed IntentRouter address — sourced from config/protocols/ethereum.json
+    let router_addr = address!("5bCC3154698bBC205ABF09351A52DD2d1A39F608");
 
     // Compile the deposit intent
     let intent_json = format!(
