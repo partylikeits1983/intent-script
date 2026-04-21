@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use intent_script::output::CompileOutputJson;
-use intent_script::{CompileOutput, CompileResult, compile};
+use intent_script::{CompileOutput, CompileResult, compile, compile_with_allowances};
 
 /// Get the path to the config directory at the workspace root.
 fn config_dir() -> PathBuf {
@@ -1704,4 +1704,209 @@ fn test_sepolia_unknown_asset_error() {
         err.contains("Unknown asset"),
         "should surface unknown asset error on sepolia; got: {err}"
     );
+}
+
+// ─── Prerequisite approvals (UI-provided allowances) ──────────────────
+
+fn do_compile_with_allowances(
+    input: &str,
+    allowances_json: Option<&str>,
+) -> Result<CompileResult, intent_script::error::CompileError> {
+    let (c, a, p) = load_config();
+    compile_with_allowances(input, &c, &a, &p, allowances_json)
+}
+
+/// A USDC deposit triggers a `transferFrom(user, router, 5000e6)` inner call.
+/// With zero allowance reported, the compiler must emit exactly one
+/// `approve(router, 5000e6)` prerequisite tx.
+#[test]
+fn test_allowances_zero_emits_approve_for_usdc_deposit() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
+        ]
+    }"#;
+    let allowances = r#"{ "tokens": { "USDC": "0" } }"#;
+
+    let result = do_compile_with_allowances(input, Some(allowances)).expect("compile ok");
+
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert_eq!(
+                intent.prerequisite_approvals.len(),
+                1,
+                "expected exactly one prerequisite approve"
+            );
+            let approve_tx = &intent.prerequisite_approvals[0];
+            // Tx target is the USDC token itself
+            assert_eq!(
+                format!("{}", approve_tx.to),
+                "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            );
+            // approve(address,uint256) selector is 0x095ea7b3
+            assert_eq!(&approve_tx.data[..4], &[0x09, 0x5e, 0xa7, 0xb3]);
+            // Spender (bytes 4..36, right-aligned) should be the router
+            let router_addr = format!("{}", intent.domain.verifying_contract).to_lowercase();
+            let spender_hex = format!(
+                "0x{}",
+                alloy_primitives::hex::encode(&approve_tx.data[4 + 12..4 + 32])
+            );
+            assert_eq!(spender_hex, router_addr);
+            // Amount (bytes 36..68) must equal 5000 USDC in base units = 5_000_000_000
+            let mut amount_bytes = [0u8; 32];
+            amount_bytes.copy_from_slice(&approve_tx.data[4 + 32..4 + 64]);
+            let amount = alloy_primitives::U256::from_be_bytes(amount_bytes);
+            assert_eq!(amount.to_string(), "5000000000");
+            // Approve tx carries no ETH value
+            assert_eq!(approve_tx.value.to_string(), "0");
+        }
+        other => panic!("Expected Eip712Intent, got {other:?}"),
+    }
+
+    // JSON shape includes prerequisiteApprovals
+    let json_str = serde_json::to_string(&CompileOutputJson::from(&result)).unwrap();
+    assert!(
+        json_str.contains("prerequisiteApprovals"),
+        "JSON missing prerequisiteApprovals: {json_str}"
+    );
+}
+
+/// When the caller reports a sufficient current allowance, the compiler must
+/// suppress the approve prereq entirely. The JSON output stays free of the
+/// `prerequisiteApprovals` key (empty vec + skip_serializing_if).
+#[test]
+fn test_allowances_sufficient_emits_no_approve() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
+        ]
+    }"#;
+    // MaxUint256 in decimal
+    let allowances = r#"{ "tokens": { "USDC": "115792089237316195423570985008687907853269984665640564039457584007913129639935" } }"#;
+
+    let result = do_compile_with_allowances(input, Some(allowances)).expect("compile ok");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.prerequisite_approvals.is_empty(),
+                "expected no approvals, got {}",
+                intent.prerequisite_approvals.len()
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {other:?}"),
+    }
+
+    let json_str = serde_json::to_string(&CompileOutputJson::from(&result)).unwrap();
+    assert!(
+        !json_str.contains("prerequisiteApprovals"),
+        "JSON should omit prerequisiteApprovals when empty: {json_str}"
+    );
+}
+
+/// Calling the legacy 4-arg `compile()` (no allowances) must still succeed
+/// and produce exactly today's JSON shape — no `prerequisiteApprovals` key.
+#[test]
+fn test_no_allowances_arg_backcompat() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile ok");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.prerequisite_approvals.is_empty(),
+                "legacy compile() must not emit approvals"
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {other:?}"),
+    }
+
+    let json_str = serde_json::to_string(&CompileOutputJson::from(&result)).unwrap();
+    assert!(
+        !json_str.contains("prerequisiteApprovals"),
+        "legacy output must not carry the new JSON field: {json_str}"
+    );
+}
+
+/// A swap+deposit batched through the router pulls USDC twice under the hood
+/// (once for the swap output going through the router, once for the deposit).
+/// But the enricher marks USDC as already-in-router after the swap, so only
+/// the input token (WETH) is pulled from the user. With a high WETH allowance
+/// and 0 USDC allowance, the compiler should emit no approvals (USDC was
+/// never pulled from user; WETH was pulled but allowance is sufficient).
+#[test]
+fn test_multi_token_only_user_pulls_counted() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "WETH", "amount": "1.0", "to": "USDC", "min_amount_out": "2000" } },
+            { "deposit": { "asset": "USDC", "amount": "2000", "into": "aave" } }
+        ]
+    }"#;
+    // Sufficient WETH, zero USDC — USDC shouldn't matter because the swap
+    // deposits output into the router (no transferFrom for USDC).
+    let allowances = r#"{
+        "tokens": {
+            "WETH": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+            "USDC": "0"
+        }
+    }"#;
+
+    let result = do_compile_with_allowances(input, Some(allowances)).expect("compile ok");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.prerequisite_approvals.is_empty(),
+                "expected zero approvals (WETH sufficient, USDC never pulled from user); got {}",
+                intent.prerequisite_approvals.len()
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {other:?}"),
+    }
+}
+
+/// Same swap+deposit, but this time WETH allowance is zero. Exactly one
+/// approval tx for WETH, amount == 1e18 (the swap's amount_in).
+#[test]
+fn test_multi_step_emits_one_approve_for_pulled_token() {
+    let input = r#"{
+        "network": "ethereum",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "WETH", "amount": "1.0", "to": "USDC", "min_amount_out": "2000" } },
+            { "deposit": { "asset": "USDC", "amount": "2000", "into": "aave" } }
+        ]
+    }"#;
+    let allowances = r#"{ "tokens": { "WETH": "0" } }"#;
+
+    let result = do_compile_with_allowances(input, Some(allowances)).expect("compile ok");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert_eq!(
+                intent.prerequisite_approvals.len(),
+                1,
+                "expected a single WETH approval"
+            );
+            let tx = &intent.prerequisite_approvals[0];
+            assert_eq!(
+                format!("{}", tx.to),
+                "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+            );
+            let mut amount_bytes = [0u8; 32];
+            amount_bytes.copy_from_slice(&tx.data[4 + 32..4 + 64]);
+            let amount = alloy_primitives::U256::from_be_bytes(amount_bytes);
+            assert_eq!(amount.to_string(), "1000000000000000000");
+        }
+        other => panic!("Expected Eip712Intent, got {other:?}"),
+    }
 }

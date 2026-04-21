@@ -9,8 +9,8 @@
 
 use alloc::vec::Vec;
 
-use alloy_primitives::Address;
-use hashbrown::HashSet;
+use alloy_primitives::{Address, U256};
+use hashbrown::{HashMap, HashSet};
 
 use crate::error::Result;
 use crate::ir::{ResolvedIntent, ResolvedStep};
@@ -30,6 +30,10 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
     // When a step produces tokens into the router (e.g., swap with recipient=router),
     // subsequent steps that consume those tokens don't need a transferFrom.
     let mut tokens_in_router: HashSet<Address> = HashSet::new();
+    // Aggregate per-token totals pulled from the signer into the router during
+    // the batch. Consumed downstream by the builder to decide which
+    // `approve(router, amount)` prerequisite txs to emit.
+    let mut required_pulls: HashMap<Address, U256> = HashMap::new();
 
     for step in &intent.steps {
         match step {
@@ -48,6 +52,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                             to: router_addr,
                             amount: *amount,
                         });
+                        *required_pulls.entry(*asset).or_insert(U256::ZERO) += *amount;
                     }
                 }
                 // Insert ERC-20 approve before supply.
@@ -89,6 +94,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                             to: router_addr,
                             amount: *amount_in,
                         });
+                        *required_pulls.entry(*token_in).or_insert(U256::ZERO) += *amount_in;
                     }
                     // Approve swap router to spend token_in
                     enriched_steps.push(ResolvedStep::Erc20Approve {
@@ -161,6 +167,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                             to: router_addr,
                             amount: *amount,
                         });
+                        *required_pulls.entry(*steth).or_insert(U256::ZERO) += *amount;
                     }
                 }
                 // Insert ERC-20 approve for stETH → wstETH before the wrap
@@ -195,6 +202,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                             to: router_addr,
                             amount: *amount_in,
                         });
+                        *required_pulls.entry(*token_in).or_insert(U256::ZERO) += *amount_in;
                     }
                 }
                 // Insert ERC-20 approve for token_in → 1inch router before swap
@@ -223,6 +231,7 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                             to: router_addr,
                             amount: *amount,
                         });
+                        *required_pulls.entry(*token).or_insert(U256::ZERO) += *amount;
                     }
                 }
                 enriched_steps.push(step.clone());
@@ -236,5 +245,11 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
 
     intent.steps = enriched_steps;
     intent.tokens_to_sweep = sweep_tokens;
+
+    // Sort by token address for stable output (tests + UI rely on it).
+    let mut required_pulls_vec: Vec<(Address, U256)> = required_pulls.into_iter().collect();
+    required_pulls_vec.sort_by_key(|(addr, _)| *addr);
+    intent.required_pulls = required_pulls_vec;
+
     Ok(intent)
 }

@@ -33,7 +33,7 @@
     "type": "router",
     "version": "v1",
     "contracts": {
-      "router": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      "router": "0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120"
     }
   }
 }

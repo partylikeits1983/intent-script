@@ -45,6 +45,24 @@ pub struct UserBalances {
     pub aave_positions: Option<AavePositions>,
 }
 
+/// User's current ERC-20 allowances against the IntentRouter.
+///
+/// Assembled by the UI (never by the LLM) from a multicall of
+/// `allowance(user, router)` across its top-tokens list and passed into the
+/// compiler as a *separate* JSON argument (not a field on `IntentScript`).
+/// When present, the compiler emits a prepended `approve(router, amount)`
+/// UnsignedTx for any ERC-20 the user is spending whose current allowance is
+/// below the aggregate amount pulled into the router.
+#[derive(Debug, Deserialize, Default)]
+pub struct AllowancesInput {
+    /// Token alias → current allowance in base units as a decimal string
+    /// (e.g. "USDT" → "0" or "USDC" → "115792...639935"). Missing keys are
+    /// treated as 0 (no allowance). The spender is implicit — there is one
+    /// router per chain, configured in the protocol registry.
+    #[serde(default)]
+    pub tokens: HashMap<String, String>,
+}
+
 /// Aave V3 position information for balance-aware validation.
 #[derive(Debug, Deserialize, Default)]
 pub struct AavePositions {

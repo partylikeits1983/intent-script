@@ -73,6 +73,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             nonce: script.nonce.unwrap_or(0),
             deadline: effective_deadline,
             user_balances,
+            required_pulls: Vec::new(),
         },
         warnings,
     })

@@ -10,5 +10,5 @@ pub mod output;
 pub mod registry;
 pub mod schema;
 
-pub use compiler::compile;
+pub use compiler::{compile, compile_with_allowances};
 pub use output::{CompileOutput, CompileOutputJson, CompileResult};

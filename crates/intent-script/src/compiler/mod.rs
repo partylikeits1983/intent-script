@@ -6,10 +6,15 @@ pub mod plan;
 pub mod preview;
 pub mod validate;
 
+use alloc::string::ToString;
+
+use alloy_primitives::{Address, U256};
+use hashbrown::HashMap;
+
 use crate::error::Result;
 use crate::output::{CompileOutput, CompileResult};
 use crate::registry::RegistryContext;
-use crate::schema::IntentScript;
+use crate::schema::{AllowancesInput, IntentScript};
 
 /// Compile an intent script JSON string into unsigned transactions.
 ///
@@ -30,6 +35,30 @@ pub fn compile(
     assets_json: &str,
     protocols_json: &str,
 ) -> Result<CompileResult> {
+    compile_with_allowances(json_input, chains_json, assets_json, protocols_json, None)
+}
+
+/// Same as [`compile`], but additionally accepts the user's current on-chain
+/// ERC-20 allowances for the router as a separate JSON blob.
+///
+/// The JSON shape is `{ "tokens": { "<symbol>": "<base-units>", ... } }`.
+/// When `allowances_json` is `Some(_)`, the compiler compares each token's
+/// current allowance against the aggregate amount that will be pulled from
+/// the signer into the router during batched execution, and emits an
+/// `approve(router, amount)` prerequisite tx in
+/// `Eip712IntentOutput::prerequisite_approvals` for each under-allowanced
+/// token. Missing symbols are treated as 0 (always emits an approve).
+///
+/// When `None`, behavior is identical to [`compile`] — no prerequisite
+/// approvals are emitted, and the JSON output does not even carry a
+/// `prerequisiteApprovals` field.
+pub fn compile_with_allowances(
+    json_input: &str,
+    chains_json: &str,
+    assets_json: &str,
+    protocols_json: &str,
+    allowances_json: Option<&str>,
+) -> Result<CompileResult> {
     // Stage A: Parse JSON into public AST
     let script: IntentScript = serde_json::from_str(json_input)?;
 
@@ -37,10 +66,46 @@ pub fn compile(
     let registry =
         RegistryContext::load(chains_json, assets_json, protocols_json, &script.network)?;
 
+    // Parse the optional allowances blob into a (token_address → allowance) map.
+    // Unknown symbols are dropped with a warning; malformed numeric values bubble
+    // up as a parse error (bad UI data is a bug, not silently ignorable).
+    let mut parse_warnings: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+    let current_allowances: Option<HashMap<Address, U256>> = match allowances_json {
+        Some(raw) if !raw.is_empty() => {
+            let input: AllowancesInput = serde_json::from_str(raw)?;
+            let mut map: HashMap<Address, U256> = HashMap::new();
+            for (alias, base_units) in input.tokens.iter() {
+                match registry.assets.get(alias) {
+                    Some(cfg) if cfg.address != "native" => {
+                        let addr: Address = cfg.address.parse().map_err(|_| {
+                            crate::error::CompileError::Adapter(alloc::format!(
+                                "Invalid address in asset config for '{}'",
+                                alias
+                            ))
+                        })?;
+                        let amount = U256::from_str_radix(base_units, 10).map_err(|_| {
+                            crate::error::CompileError::InvalidAmount(base_units.to_string())
+                        })?;
+                        map.insert(addr, amount);
+                    }
+                    _ => {
+                        parse_warnings.push(alloc::format!(
+                            "Allowance entry for unknown asset '{}' ignored",
+                            alias
+                        ));
+                    }
+                }
+            }
+            Some(map)
+        }
+        _ => None,
+    };
+
     // Stage B: Normalize — resolve aliases, parse amounts
     let norm_result = normalize::normalize(&script, &registry)?;
     let resolved = norm_result.intent;
     let mut all_warnings = norm_result.warnings;
+    all_warnings.extend(parse_warnings);
 
     // Stage C: Validate — returns warnings for non-fatal issues
     let validation = validate::validate(&resolved, &registry)?;
@@ -68,6 +133,8 @@ pub fn compile(
         enriched.signer,
         enriched.nonce,
         enriched.deadline,
+        current_allowances.as_ref(),
+        &enriched.required_pulls,
     );
 
     // Only batched (Eip712Intent) outputs need a deadline — `executeSigned`

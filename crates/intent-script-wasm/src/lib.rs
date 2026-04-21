@@ -25,16 +25,49 @@ pub fn compile(
     let result = intent_script::compile(json_input, chains_json, assets_json, protocols_json)
         .map_err(|e| JsError::new(&format!("{e}")))?;
 
-    // Print warnings to console (if available)
+    emit_output(result)
+}
+
+/// Same as [`compile`] but with an extra `allowances_json` string describing
+/// the user's current on-chain ERC-20 allowances for the router. When empty
+/// or whitespace, behavior is identical to [`compile`]; otherwise the
+/// compiler emits `prerequisiteApprovals` for any under-allowanced token.
+///
+/// Shape: `{ "tokens": { "<symbol>": "<base-units>", ... } }`.
+#[wasm_bindgen]
+pub fn compile_with_allowances(
+    json_input: &str,
+    chains_json: &str,
+    assets_json: &str,
+    protocols_json: &str,
+    allowances_json: &str,
+) -> Result<String, JsError> {
+    let trimmed = allowances_json.trim();
+    let allowances = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    let result = intent_script::compile_with_allowances(
+        json_input,
+        chains_json,
+        assets_json,
+        protocols_json,
+        allowances,
+    )
+    .map_err(|e| JsError::new(&format!("{e}")))?;
+
+    emit_output(result)
+}
+
+fn emit_output(result: intent_script::CompileResult) -> Result<String, JsError> {
     for warning in &result.warnings {
         web_log(&format!("⚠ intent-script warning: {warning}"));
     }
 
     let json_output = result.to_json();
-    let serialized = serde_json::to_string(&json_output)
-        .map_err(|e| JsError::new(&format!("Serialization error: {e}")))?;
-
-    Ok(serialized)
+    serde_json::to_string(&json_output)
+        .map_err(|e| JsError::new(&format!("Serialization error: {e}")))
 }
 
 /// Log to the browser console via web_sys-free approach.

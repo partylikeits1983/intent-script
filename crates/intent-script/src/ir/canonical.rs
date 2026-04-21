@@ -24,6 +24,13 @@ pub struct ResolvedIntent {
     pub deadline: u64,
     /// Optional user balance information for enhanced validation.
     pub user_balances: Option<ResolvedBalances>,
+    /// Aggregate ERC-20 amounts that will be pulled from the signer into the
+    /// router during batched execution, keyed by token address. Populated by
+    /// the enricher each time it emits a `Erc20TransferFrom { from: signer, ... }`
+    /// pulling user-held tokens into the router. Used by the builder to decide
+    /// which `approve(router, amount)` prerequisite txs to emit when the caller
+    /// supplied `current_allowances`. Order is stable (sorted by address).
+    pub required_pulls: Vec<(Address, U256)>,
 }
 
 /// Resolved user balance information with concrete addresses and U256 amounts.

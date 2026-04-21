@@ -363,6 +363,7 @@ mod tests {
             nonce: 0,
             deadline: 0,
             user_balances: None,
+            required_pulls: Vec::new(),
         }
     }
 

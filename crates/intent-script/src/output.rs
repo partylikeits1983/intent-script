@@ -79,6 +79,13 @@ pub struct Eip712IntentOutput {
     pub description: String,
     /// The unsigned tx for self-execution (calls executeDirect)
     pub direct_tx: UnsignedTx,
+    /// ERC-20 `approve(router, amount)` txs the caller must sign and broadcast
+    /// *before* `direct_tx` / the EIP-712 signed path. Only populated when the
+    /// caller supplied `current_allowances` to the compiler **and** at least
+    /// one token's current allowance is below the aggregate pulled-from-user
+    /// amount for this batch. Empty by default, so older callers who don't
+    /// pass allowances see byte-identical output to today.
+    pub prerequisite_approvals: Vec<UnsignedTx>,
 }
 
 /// EIP-712 domain parameters.
@@ -135,6 +142,15 @@ pub struct CompileOutputJson {
     /// fills this in after running `eth_call` against the network.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulation: Option<SimulationJson>,
+    /// ERC-20 `approve(router, amount)` txs the UI should broadcast before the
+    /// main intent tx. Emitted only for `Eip712Intent` outputs when the caller
+    /// passed an `allowances` JSON and at least one token was under-allowanced.
+    /// Omitted entirely when empty to keep the legacy JSON shape byte-stable.
+    #[serde(
+        rename = "prerequisiteApprovals",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub prerequisite_approvals: Vec<UnsignedTxJson>,
 }
 
 #[derive(Debug, Serialize)]
@@ -360,6 +376,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
                 preview: None,
                 simulation: None,
+                prerequisite_approvals: Vec::new(),
             },
             CompileOutput::Eip712Intent(intent) => CompileOutputJson {
                 output_type: "eip712_intent".into(),
@@ -371,6 +388,11 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
                 preview: None,
                 simulation: None,
+                prerequisite_approvals: intent
+                    .prerequisite_approvals
+                    .iter()
+                    .map(UnsignedTxJson::from)
+                    .collect(),
             },
             CompileOutput::TxSequence(txs) => CompileOutputJson {
                 output_type: "tx_sequence".into(),
@@ -382,6 +404,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
                 preview: None,
                 simulation: None,
+                prerequisite_approvals: Vec::new(),
             },
             CompileOutput::RequiresExecutor { reason } => CompileOutputJson {
                 output_type: "requires_executor".into(),
@@ -393,6 +416,7 @@ impl From<&CompileOutput> for CompileOutputJson {
                 warnings: Vec::new(),
                 preview: None,
                 simulation: None,
+                prerequisite_approvals: Vec::new(),
             },
         }
     }
