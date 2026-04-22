@@ -1,0 +1,39 @@
+{
+  "aave": {
+    "type": "lending",
+    "version": "v3",
+    "contracts": {
+      "pool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+    }
+  },
+  "uniswap": {
+    "type": "dex",
+    "version": "v3",
+    "contracts": {
+      "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+    }
+  },
+  "lido": {
+    "type": "staking",
+    "version": "v1",
+    "contracts": {
+      "steth": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+      "wsteth": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+    }
+  },
+  "1inch": {
+    "type": "dex_aggregator",
+    "version": "v6",
+    "contracts": {
+      "router": "0x111111125421cA6dc452d289314280a0f8842A65"
+    }
+  },
+  "intent_router": {
+    "type": "router",
+    "version": "v1",
+    "contracts": {
+      "router": "0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120"
+    }
+  }
+}

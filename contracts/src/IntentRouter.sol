@@ -2,13 +2,15 @@
 pragma solidity ^0.8.20;
 
 import { IERC20 } from "./interfaces/IERC20.sol";
+import { IERC721Receiver } from "./interfaces/IERC721Receiver.sol";
+import { ReentrancyGuard } from "./utils/ReentrancyGuard.sol";
 
 /// @title IntentRouter
 /// @notice Executes batched calls and sweeps tokens back to the caller/signer.
 /// @dev Supports two execution modes:
 ///      - `executeDirect`: User submits tx directly (uses msg.sender)
 ///      - `executeSigned`: Relayer submits on behalf of signer (EIP-712 signature)
-contract IntentRouter {
+contract IntentRouter is ReentrancyGuard {
     // ─── EIP-712 ────────────────────────────────────────────
     bytes32 public constant DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -27,6 +29,20 @@ contract IntentRouter {
     // ─── Allowlist (Task 8) ─────────────────────────────────
     address public owner;
     mapping(address => bool) public allowedTargets;
+
+    // ─── Fees ───────────────────────────────────────────────
+    uint16 public constant MAX_FEE_BPS = 100;   // 1.00% hard cap
+    uint256 public constant FEE_TIMELOCK = 1 days;
+
+    uint16  public feeBps;              // active rate
+    address public feeRecipient;        // active recipient
+    uint16  public pendingFeeBps;       // queued rate
+    address public pendingFeeRecipient; // queued recipient
+    uint64  public pendingFeeApplyAt;   // earliest timestamp at which queued fee may be applied; 0 = none queued
+
+    event FeeQueued(uint16 bps, address recipient, uint64 applyAt);
+    event FeeApplied(uint16 bps, address recipient);
+    event FeeCollected(address indexed token, address indexed recipient, uint256 amount);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
@@ -74,6 +90,39 @@ contract IntentRouter {
         }
     }
 
+    // ─── Fee governance ─────────────────────────────────────
+
+    /// @notice Queue a new fee rate + recipient. The new fee can be activated by
+    ///         calling `applyFee()` after `FEE_TIMELOCK` has elapsed.
+    /// @dev    Queueing again before apply overwrites the previous queue (and resets the timelock).
+    function queueFee(uint16 newBps, address newRecipient) external onlyOwner {
+        require(newBps <= MAX_FEE_BPS, "fee > max");
+        pendingFeeBps = newBps;
+        pendingFeeRecipient = newRecipient;
+        pendingFeeApplyAt = uint64(block.timestamp + FEE_TIMELOCK);
+        emit FeeQueued(newBps, newRecipient, pendingFeeApplyAt);
+    }
+
+    /// @notice Apply a previously queued fee once the timelock has expired.
+    ///         Permissionless by design: any party can finalize the queued value.
+    function applyFee() external {
+        require(pendingFeeApplyAt != 0, "no pending fee");
+        require(block.timestamp >= pendingFeeApplyAt, "timelock");
+        feeBps = pendingFeeBps;
+        feeRecipient = pendingFeeRecipient;
+        pendingFeeApplyAt = 0;
+        emit FeeApplied(feeBps, feeRecipient);
+    }
+
+    // ─── ERC721 receiver ────────────────────────────────────
+
+    /// @notice Accept ERC-721 safe transfers into the router. No custody logic — NFTs that
+    ///         land here should be swept out by a follow-up call in the same or next batch.
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external pure returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
     // ─── Self-execute (user submits tx directly) ────────────
 
     /// @notice Execute a batch of calls and sweep tokens back to the caller.
@@ -82,7 +131,7 @@ contract IntentRouter {
     function executeDirect(
         Call[] calldata calls,
         address[] calldata tokensToSweep
-    ) external payable {
+    ) external payable nonReentrant {
         _executeCalls(calls);
         _sweep(tokensToSweep, msg.sender);
         _refundETH(msg.sender);
@@ -96,7 +145,7 @@ contract IntentRouter {
     function executeSigned(
         IntentBatch calldata batch,
         bytes calldata signature
-    ) external payable {
+    ) external payable nonReentrant {
         // Verify deadline (Task 2: require non-zero deadline)
         require(batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline");
 
@@ -133,21 +182,34 @@ contract IntentRouter {
     }
 
     function _sweep(address[] calldata tokens, address recipient) internal {
+        uint256 bps = feeBps;
+        address feeTo = feeRecipient;
+        bool feesOn = bps > 0 && feeTo != address(0);
         for (uint256 i = 0; i < tokens.length; i++) {
             uint256 balance = IERC20(tokens[i]).balanceOf(address(this));
-            if (balance > 0) {
-                bool success = IERC20(tokens[i]).transfer(recipient, balance);
-                require(success, "Token sweep failed");
+            if (balance == 0) continue;
+            uint256 fee = feesOn ? (balance * bps) / 10_000 : 0;
+            if (fee > 0) {
+                require(IERC20(tokens[i]).transfer(feeTo, fee), "fee xfer fail");
+                emit FeeCollected(tokens[i], feeTo, fee);
             }
+            require(IERC20(tokens[i]).transfer(recipient, balance - fee), "Token sweep failed");
         }
     }
 
     function _refundETH(address recipient) internal {
         uint256 ethBalance = address(this).balance;
-        if (ethBalance > 0) {
-            (bool sent,) = recipient.call{ value: ethBalance }("");
-            require(sent, "ETH refund failed");
+        if (ethBalance == 0) return;
+        uint256 bps = feeBps;
+        address feeTo = feeRecipient;
+        uint256 fee = (bps > 0 && feeTo != address(0)) ? (ethBalance * bps) / 10_000 : 0;
+        if (fee > 0) {
+            (bool feeOk,) = feeTo.call{ value: fee }("");
+            require(feeOk, "fee eth fail");
+            emit FeeCollected(address(0), feeTo, fee);
         }
+        (bool sent,) = recipient.call{ value: ethBalance - fee }("");
+        require(sent, "ETH refund failed");
     }
 
     function _hashTypedData(IntentBatch calldata batch) internal view returns (bytes32) {
