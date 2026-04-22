@@ -57,6 +57,14 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
         steps.push(resolved);
     }
 
+    // Defense in depth against a common LLM error: emitting `wrap ETH→WETH`
+    // right before a step that already accepts native ETH (Lido submit,
+    // Uniswap V3 SwapRouter with tokenIn=WETH). The wrap is pure waste —
+    // it costs gas, creates a redundant msg.value hop, and the wrapped WETH
+    // ends up orphaned because the next step consumes ETH, not WETH. We
+    // rewrite the pair in place rather than erroring, so chats keep flowing.
+    elide_wasteful_wraps(&mut steps, registry, &mut warnings)?;
+
     // Parse optional user balances
     let user_balances = if let Some(ref balances) = script.balances {
         Some(normalize_balances(balances, registry)?)
@@ -328,9 +336,15 @@ fn normalize_step(
                     })?;
                     let router = parse_address(router_addr)?;
 
-                    // If swapping from native ETH, use WETH address as token_in
-                    // (Uniswap V3 router wraps ETH internally)
-                    let effective_token_in = if token_in == Address::ZERO {
+                    // If swapping from native ETH, put the wrapped-native
+                    // address in the calldata (that's what SwapRouter expects
+                    // for tokenIn). The `native_input` flag below tells the
+                    // rest of the pipeline to pay `amount_in` as msg.value
+                    // instead of emitting an ERC-20 transferFrom/approve —
+                    // the SwapRouter's `pay()` helper wraps msg.value ETH
+                    // into WETH on the fly when tokenIn == WETH9.
+                    let native_input = token_in == Address::ZERO;
+                    let effective_token_in = if native_input {
                         resolve_asset_address(&registry.chain.wrapped_native, registry)?
                     } else {
                         token_in
@@ -371,6 +385,7 @@ fn normalize_step(
                         recipient: signer,
                         deadline: U256::from(swap_deadline),
                         amount_out_minimum,
+                        native_input,
                     })
                 }
                 "1inch" => {
@@ -554,6 +569,75 @@ fn normalize_step(
             "custom steps are not yet implemented in v1".to_string(),
         )),
     }
+}
+
+/// Post-normalization pass: elide `Wrap ETH→WETH` steps that immediately
+/// precede a step which already takes native ETH.
+///
+/// Two safe rewrites:
+/// 1. `Wrap { WETH, X }` + `LidoStake { X }` → drop the wrap. Lido's
+///    `submit()` is payable and takes ETH as msg.value directly.
+/// 2. `Wrap { WETH, X }` + `UniswapV3Swap { token_in: WETH, amount_in: X,
+///    native_input: false }` → drop the wrap and set `native_input: true`.
+///    The SwapRouter's internal `pay()` helper auto-wraps msg.value.
+///
+/// Both rewrites require the amounts to match exactly; mismatched amounts
+/// suggest the user actually wants to keep some wrapped WETH, so we leave
+/// things untouched.
+fn elide_wasteful_wraps(
+    steps: &mut Vec<ResolvedStep>,
+    registry: &RegistryContext,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let weth = resolve_asset_address(&registry.chain.wrapped_native, registry)?;
+
+    let mut i = 0;
+    while i + 1 < steps.len() {
+        // Read the wrap amount without holding a borrow into the later match.
+        let wrap_amount = match &steps[i] {
+            ResolvedStep::Wrap {
+                wrapped_token,
+                amount,
+            } if *wrapped_token == weth => *amount,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        let mut elided_kind: Option<&'static str> = None;
+        match &mut steps[i + 1] {
+            ResolvedStep::LidoStake {
+                amount: stake_amt, ..
+            } if *stake_amt == wrap_amount => {
+                elided_kind = Some("stake");
+            }
+            ResolvedStep::UniswapV3Swap {
+                token_in,
+                amount_in,
+                native_input,
+                ..
+            } if *token_in == weth && *amount_in == wrap_amount && !*native_input => {
+                *native_input = true;
+                elided_kind = Some("swap");
+            }
+            _ => {}
+        }
+
+        if let Some(kind) = elided_kind {
+            warnings.push(format!(
+                "Elided redundant 'wrap ETH→WETH' before '{kind}': the destination \
+                 accepts native ETH directly. This costs no extra wallet prompts \
+                 and saves gas."
+            ));
+            steps.remove(i);
+            // Don't advance `i` — the step now at position i is the rewritten
+            // consumer (the stake/swap), not another wrap candidate.
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Resolve an amount string, supporting the "all" keyword.

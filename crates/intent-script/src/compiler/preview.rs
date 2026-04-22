@@ -169,11 +169,23 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
             token_out,
             amount_in,
             amount_out_minimum,
+            native_input,
             ..
         } => {
-            let in_sym = registry.symbol_for_address(token_in);
+            // For native-input swaps, the calldata carries WETH but the user
+            // is actually paying the native asset — surface that in the UI.
+            let (in_sym, in_dec) = if *native_input {
+                (
+                    registry.chain.native_asset.clone(),
+                    registry.decimals_for_address(&Address::ZERO),
+                )
+            } else {
+                (
+                    registry.symbol_for_address(token_in),
+                    registry.decimals_for_address(token_in),
+                )
+            };
             let out_sym = registry.symbol_for_address(token_out);
-            let in_dec = registry.decimals_for_address(token_in);
             let out_dec = registry.decimals_for_address(token_out);
             Some(PreviewStepInfo {
                 action: "swap".into(),

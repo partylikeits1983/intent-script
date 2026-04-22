@@ -20,8 +20,8 @@ fn config_dir() -> PathBuf {
 fn load_config() -> (String, String, String) {
     let dir = config_dir();
     let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
-    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
-    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/anvil.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/anvil.json")).unwrap();
     (chains, assets, protocols)
 }
 
@@ -38,7 +38,7 @@ fn test_swap_then_deposit_no_duplicate_transfer() {
     // WETH is already in the router from the swap output, so the enricher
     // should NOT insert a transferFrom for WETH.
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
@@ -109,7 +109,7 @@ fn test_swap_then_deposit_no_duplicate_transfer() {
 fn test_deposit_and_borrow_sweep_tokens() {
     // Deposit USDC, borrow DAI — DAI should be in sweep tokens
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
@@ -145,7 +145,7 @@ fn test_deposit_and_borrow_sweep_tokens() {
 #[test]
 fn test_single_wrap_produces_single_tx() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
@@ -165,7 +165,7 @@ fn test_single_wrap_produces_single_tx() {
 #[test]
 fn test_single_stake_produces_single_tx() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "stake": { "asset": "ETH", "amount": "1.0", "into": "lido" } }
@@ -185,7 +185,7 @@ fn test_single_stake_produces_single_tx() {
 #[test]
 fn test_single_unwrap_produces_single_tx() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "unwrap": { "asset": "WETH", "amount": "1.0" } }
@@ -208,7 +208,7 @@ fn test_single_unwrap_produces_single_tx() {
 fn test_swap_output_token_in_sweep() {
     // Swap USDC→WETH — WETH should be in sweep tokens
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }

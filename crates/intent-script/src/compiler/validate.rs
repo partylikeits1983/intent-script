@@ -405,6 +405,7 @@ mod tests {
             recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             deadline: U256::MAX,
             amount_out_minimum: U256::ZERO,
+            native_input: false,
         };
         let result = validate_asset_compatibility(&step);
         assert!(result.is_err());
@@ -480,6 +481,7 @@ mod tests {
             recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             deadline: U256::MAX,
             amount_out_minimum: U256::ZERO,
+            native_input: false,
         };
         let result = validate_slippage(&step, 0);
         assert!(result.is_err());
@@ -502,6 +504,7 @@ mod tests {
             recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             deadline: U256::MAX,
             amount_out_minimum: U256::from(480_000_000_000_000_000u64),
+            native_input: false,
         };
         let result = validate_slippage(&step, 0);
         assert!(result.is_ok());
@@ -565,6 +568,7 @@ mod tests {
                 recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
                 deadline: U256::MAX,
                 amount_out_minimum: U256::from(480_000_000_000_000_000u64), // 0.48 WETH
+                native_input: false,
             },
             ResolvedStep::AaveV3Supply {
                 pool: address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),
@@ -590,6 +594,7 @@ mod tests {
                 recipient: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
                 deadline: U256::MAX,
                 amount_out_minimum: U256::from(1_000_000_000_000_000_000u64), // 1.0 WETH
+                native_input: false,
             },
             ResolvedStep::AaveV3Supply {
                 pool: address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),

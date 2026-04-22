@@ -35,8 +35,8 @@ pub fn to_alloy_tx(tx: &UnsignedTx) -> TransactionRequest {
 pub fn load_config() -> (String, String, String) {
     let dir = workspace_config_dir();
     let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
-    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
-    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/anvil.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/anvil.json")).unwrap();
     (chains, assets, protocols)
 }
 

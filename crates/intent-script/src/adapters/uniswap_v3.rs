@@ -39,6 +39,7 @@ pub fn lower_swap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         recipient,
         deadline,
         amount_out_minimum,
+        native_input,
     } = step
     else {
         return Err(CompileError::Adapter(
@@ -59,10 +60,18 @@ pub fn lower_swap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
 
     let calldata = exactInputSingleCall { params }.abi_encode();
 
+    // Native-input swaps pay `amount_in` as msg.value; the SwapRouter's
+    // internal `pay()` wraps it into WETH when tokenIn == WETH9.
+    let value = if *native_input {
+        *amount_in
+    } else {
+        U256::ZERO
+    };
+
     Ok(vec![ConcreteCall {
         to: *router,
         calldata: Bytes::from(calldata),
-        value: U256::ZERO, // ERC-20 swap, no ETH value
+        value,
         description: format!(
             "Swap {} wei of {} → {} via Uniswap V3 (fee tier {})",
             amount_in, token_in, token_out, fee

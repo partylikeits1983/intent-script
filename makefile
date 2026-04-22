@@ -9,7 +9,7 @@ ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
 
 .PHONY: format build test test-compiler generate-calldata generate-fixtures \
 	test-foundry test-router e2e-test test-anvil test-fork-e2e \
-	test-fork-local test-all compile-intent
+	test-fork-local test-all compile-intent start-anvil
 
 format:
 	cargo fmt --all
@@ -65,3 +65,7 @@ test-all: test-compiler test-router test-anvil
 # Compile a JSON intent file (default: examples/test.json)
 compile-intent:
 	cargo run -p intent-script --features clap -- crates/intent-script/examples/test.json --pretty
+
+# Start a local anvil node forking Ethereum L1 with chain id 31337
+start-anvil:
+	./scripts/start-anvil.sh

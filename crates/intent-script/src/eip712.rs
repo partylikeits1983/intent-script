@@ -36,10 +36,12 @@ pub fn compute_domain_separator(
     encoded.extend_from_slice(&domain_typehash());
     encoded.extend_from_slice(name_hash.as_slice());
     encoded.extend_from_slice(version_hash.as_slice());
+
     // chainId as uint256 (left-padded to 32 bytes)
     let mut chain_id_bytes = [0u8; 32];
     chain_id_bytes[24..32].copy_from_slice(&chain_id.to_be_bytes());
     encoded.extend_from_slice(&chain_id_bytes);
+
     // address as bytes32 (left-padded to 32 bytes)
     let mut addr_bytes = [0u8; 32];
     addr_bytes[12..32].copy_from_slice(verifying_contract.as_slice());
@@ -54,12 +56,15 @@ pub fn hash_call(target: Address, calldata: &Bytes, value: U256) -> [u8; 32] {
 
     let mut encoded = Vec::with_capacity(4 * 32);
     encoded.extend_from_slice(&call_typehash());
+
     // address as bytes32
     let mut addr_bytes = [0u8; 32];
     addr_bytes[12..32].copy_from_slice(target.as_slice());
     encoded.extend_from_slice(&addr_bytes);
+
     // keccak256(callData)
     encoded.extend_from_slice(calldata_hash.as_slice());
+
     // value as uint256
     encoded.extend_from_slice(&value.to_be_bytes::<32>());
 
@@ -99,16 +104,19 @@ pub fn hash_intent_batch(
     // abi.encode(INTENT_BATCH_TYPEHASH, signer, callsHash, tokensHash, nonce, deadline)
     let mut encoded = Vec::with_capacity(6 * 32);
     encoded.extend_from_slice(&intent_batch_typehash());
+
     // signer as bytes32
     let mut signer_bytes = [0u8; 32];
     signer_bytes[12..32].copy_from_slice(signer.as_slice());
     encoded.extend_from_slice(&signer_bytes);
     encoded.extend_from_slice(&calls_hash);
     encoded.extend_from_slice(tokens_hash.as_slice());
+
     // nonce as uint256
     let mut nonce_bytes = [0u8; 32];
     nonce_bytes[24..32].copy_from_slice(&nonce.to_be_bytes());
     encoded.extend_from_slice(&nonce_bytes);
+
     // deadline as uint256
     let mut deadline_bytes = [0u8; 32];
     deadline_bytes[24..32].copy_from_slice(&deadline.to_be_bytes());
@@ -168,6 +176,7 @@ mod tests {
     fn test_hash_empty_calls() {
         let calls: Vec<(Address, Bytes, U256)> = vec![];
         let hash = hash_calls(&calls);
+
         // keccak256("") for empty encodePacked
         let expected = keccak256(&[]);
         assert_eq!(hash, expected.0);
@@ -178,6 +187,7 @@ mod tests {
         let domain = [1u8; 32];
         let struct_hash = [2u8; 32];
         let result = compute_typed_data_hash(&domain, &struct_hash);
+
         // Should be keccak256("\x19\x01" || domain || structHash)
         let mut expected_input = vec![0x19, 0x01];
         expected_input.extend_from_slice(&domain);

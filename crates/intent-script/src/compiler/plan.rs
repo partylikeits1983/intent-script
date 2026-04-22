@@ -4,11 +4,9 @@
 //! - N calls + router available → Batched (single tx through IntentRouter)
 //! - N calls + no router → TxSequence (EOA signs each separately)
 
-use alloc::vec::Vec;
-
-use alloy_primitives::Address;
-
 use crate::ir::ConcreteCall;
+use alloc::vec::Vec;
+use alloy_primitives::Address;
 
 /// Execution strategy decided by the planner.
 pub enum ExecutionPlan {

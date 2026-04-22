@@ -1,5 +1,5 @@
 {
-  "ethereum": {
+  "anvil": {
     "chain_id": 31337,
     "native_asset": "ETH",
     "wrapped_native": "WETH"

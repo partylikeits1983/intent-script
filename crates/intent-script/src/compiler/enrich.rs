@@ -24,6 +24,11 @@ use crate::registry::RegistryContext;
 pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<ResolvedIntent> {
     let router = registry.router_address();
     let signer = intent.signer;
+    // When there's only one user step, the planner will emit a direct SingleTx
+    // that bypasses the intent router. In that case we must not redirect the
+    // swap recipient to the router (it would strand the output there with no
+    // sweep to recover it).
+    let is_single_user_step = intent.steps.len() == 1;
     let mut enriched_steps = Vec::new();
     let mut sweep_tokens: Vec<Address> = Vec::new();
     // Track tokens that are already in the router from previous steps.
@@ -83,25 +88,37 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 fee,
                 deadline,
                 amount_out_minimum,
+                native_input,
                 ..
             } => {
-                if let Some(router_addr) = router {
-                    // Pull token_in from user if not already in router
-                    if !tokens_in_router.contains(token_in) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                // A native-input swap that's the only user step compiles to a
+                // direct SingleTx (no intent router in the flow). For that
+                // shape, emit the step as-is — no transferFrom, no approval,
+                // and recipient stays as the signer so the user receives the
+                // output tokens straight from the swap router.
+                if *native_input && is_single_user_step {
+                    enriched_steps.push(step.clone());
+                } else if let Some(router_addr) = router {
+                    // For native-input swaps the user pays with msg.value and
+                    // the SwapRouter auto-wraps — no ERC-20 pull or approval
+                    // is needed. For ERC-20 inputs, pull tokens into the router
+                    // (if not already there) and approve the swap router.
+                    if !*native_input {
+                        if !tokens_in_router.contains(token_in) {
+                            enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                                token: *token_in,
+                                from: signer,
+                                to: router_addr,
+                                amount: *amount_in,
+                            });
+                            *required_pulls.entry(*token_in).or_insert(U256::ZERO) += *amount_in;
+                        }
+                        enriched_steps.push(ResolvedStep::Erc20Approve {
                             token: *token_in,
-                            from: signer,
-                            to: router_addr,
+                            spender: *swap_router,
                             amount: *amount_in,
                         });
-                        *required_pulls.entry(*token_in).or_insert(U256::ZERO) += *amount_in;
                     }
-                    // Approve swap router to spend token_in
-                    enriched_steps.push(ResolvedStep::Erc20Approve {
-                        token: *token_in,
-                        spender: *swap_router,
-                        amount: *amount_in,
-                    });
                     // Redirect recipient to router so output tokens stay in router
                     enriched_steps.push(ResolvedStep::UniswapV3Swap {
                         router: *swap_router,
@@ -112,12 +129,17 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                         recipient: router_addr,
                         deadline: *deadline,
                         amount_out_minimum: *amount_out_minimum,
+                        native_input: *native_input,
                     });
                     // Track output token as being in the router
                     tokens_in_router.insert(*token_out);
                     if !sweep_tokens.contains(token_out) {
                         sweep_tokens.push(*token_out);
                     }
+                } else if *native_input {
+                    // No router and native input: emit the swap directly with
+                    // recipient=signer (already set by normalize).
+                    enriched_steps.push(step.clone());
                 } else {
                     // No router — standard approve + swap
                     enriched_steps.push(ResolvedStep::Erc20Approve {

@@ -105,7 +105,7 @@ async fn test_wrap_eth_on_anvil() -> eyre::Result<()> {
     // Compile the wrap intent
     let intent_json = format!(
         r#"{{
-            "network": "ethereum",
+            "network": "anvil",
             "from": "{}",
             "steps": [
                 {{ "wrap": {{ "asset": "ETH", "amount": "1.5" }} }}
@@ -156,7 +156,7 @@ async fn test_unwrap_weth_on_anvil() -> eyre::Result<()> {
     // Wrap 5 ETH first via compiled intent (properly updates all WETH state)
     let wrap_json = format!(
         r#"{{
-            "network": "ethereum",
+            "network": "anvil",
             "from": "{}",
             "steps": [
                 {{ "wrap": {{ "asset": "ETH", "amount": "5.0" }} }}
@@ -179,7 +179,7 @@ async fn test_unwrap_weth_on_anvil() -> eyre::Result<()> {
     // Now compile and submit unwrap intent for 2 WETH
     let unwrap_json = format!(
         r#"{{
-            "network": "ethereum",
+            "network": "anvil",
             "from": "{}",
             "steps": [
                 {{ "unwrap": {{ "asset": "WETH", "amount": "2.0" }} }}
@@ -218,13 +218,13 @@ async fn test_aave_deposit_usdc_produces_batched_tx() -> eyre::Result<()> {
     let anvil = Anvil::new().fork(fork_url()).try_spawn()?;
 
     let signer = anvil.addresses()[0];
-    // Deployed IntentRouter address — sourced from config/protocols/ethereum.json
+    // Deployed IntentRouter address — sourced from config/protocols/anvil.json
     let router_addr = address!("5bCC3154698bBC205ABF09351A52DD2d1A39F608");
 
     // Compile the deposit intent
     let intent_json = format!(
         r#"{{
-            "network": "ethereum",
+            "network": "anvil",
             "from": "{}",
             "steps": [
                 {{ "deposit": {{ "asset": "USDC", "amount": "100", "into": "aave" }} }}

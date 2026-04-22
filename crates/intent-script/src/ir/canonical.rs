@@ -94,7 +94,14 @@ pub enum ResolvedStep {
         amount: U256,
         to: Address,
     },
-    /// Uniswap V3 exactInputSingle swap
+    /// Uniswap V3 exactInputSingle swap.
+    ///
+    /// `native_input` is true when the user's intent specified the chain's
+    /// native asset (e.g. "ETH") as the input: `token_in` still holds the
+    /// wrapped-native address because that's what the SwapRouter expects in
+    /// the calldata, but the call must carry `amount_in` as msg.value so the
+    /// router auto-wraps via its internal `pay()` path. Downstream code must
+    /// NOT insert an ERC-20 transferFrom/approve for a native-input swap.
     UniswapV3Swap {
         router: Address,
         token_in: Address,
@@ -104,6 +111,7 @@ pub enum ResolvedStep {
         recipient: Address,
         deadline: U256,
         amount_out_minimum: U256,
+        native_input: bool,
     },
     /// Lido stETH staking via submit()
     LidoStake {
@@ -161,8 +169,18 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
         ResolvedStep::UniswapV3Swap {
             token_in,
             amount_in,
+            native_input,
             ..
-        } => Some((*token_in, *amount_in)),
+        } => {
+            // Native-input swaps spend the chain's native asset, not WETH.
+            // Surface that to the preview/flow code so users see "ETH in".
+            let consumed = if *native_input {
+                Address::ZERO
+            } else {
+                *token_in
+            };
+            Some((consumed, *amount_in))
+        }
         ResolvedStep::OneInchSwap {
             token_in,
             amount_in,

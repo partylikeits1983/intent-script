@@ -24,8 +24,8 @@ fn config_dir() -> PathBuf {
 fn load_config() -> (String, String, String) {
     let dir = config_dir();
     let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
-    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
-    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/anvil.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/anvil.json")).unwrap();
     (chains, assets, protocols)
 }
 
@@ -105,7 +105,7 @@ fn hex_encode(data: &[u8]) -> String {
 #[test]
 fn generate_wrap_eth_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
@@ -121,7 +121,7 @@ fn generate_wrap_eth_calldata() {
 #[test]
 fn generate_aave_deposit_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "100", "into": "aave" } }
@@ -135,7 +135,7 @@ fn generate_aave_deposit_calldata() {
 #[test]
 fn generate_swap_usdc_weth_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
@@ -149,7 +149,7 @@ fn generate_swap_usdc_weth_calldata() {
 #[test]
 fn generate_deposit_borrow_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
@@ -164,7 +164,7 @@ fn generate_deposit_borrow_calldata() {
 #[test]
 fn generate_swap_deposit_borrow_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
@@ -180,7 +180,7 @@ fn generate_swap_deposit_borrow_calldata() {
 #[test]
 fn generate_stake_eth_lido_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } }
@@ -194,7 +194,7 @@ fn generate_stake_eth_lido_calldata() {
 #[test]
 fn generate_aave_withdraw_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }

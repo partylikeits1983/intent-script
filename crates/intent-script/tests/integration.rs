@@ -21,8 +21,8 @@ fn config_dir() -> PathBuf {
 fn load_config() -> (String, String, String) {
     let dir = config_dir();
     let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
-    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
-    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/anvil.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/anvil.json")).unwrap();
     (chains, assets, protocols)
 }
 
@@ -34,7 +34,7 @@ fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::Compil
 #[test]
 fn test_wrap_eth_to_weth() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.5" } }
@@ -54,8 +54,8 @@ fn test_wrap_eth_to_weth() {
             );
             // Value should be 1.5 ETH in wei
             assert_eq!(tx.value.to_string(), "1500000000000000000");
-            // Chain ID should be 1 (ethereum mainnet)
-            assert_eq!(tx.chain_id, 1);
+            // Chain ID should be 31337 (Anvil local chain)
+            assert_eq!(tx.chain_id, 31337);
             // Calldata should be deposit() selector: 0xd0e30db0
             assert_eq!(tx.data.len(), 4);
             assert_eq!(&tx.data[..4], &[0xd0, 0xe3, 0x0d, 0xb0]);
@@ -75,7 +75,7 @@ fn test_wrap_eth_to_weth() {
 #[test]
 fn test_aave_deposit_usdc_batched_through_router() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
@@ -107,7 +107,7 @@ fn test_aave_deposit_usdc_batched_through_router() {
             );
             // Should have EIP-712 domain
             assert_eq!(intent.domain.name, "IntentRouter");
-            assert_eq!(intent.domain.chain_id, 1);
+            assert_eq!(intent.domain.chain_id, 31337);
         }
         other => panic!(
             "Expected Eip712Intent (batched via router), got {:?}",
@@ -135,7 +135,7 @@ fn test_aave_deposit_usdc_batched_through_router() {
 #[test]
 fn test_unwrap_weth() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "unwrap": { "asset": "WETH", "amount": "2.0" } }
@@ -182,7 +182,7 @@ fn test_unknown_network_fails() {
 #[test]
 fn test_unknown_asset_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "SHIB", "amount": "1000" } }
@@ -201,7 +201,7 @@ fn test_unknown_asset_fails() {
 #[test]
 fn test_empty_steps_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": []
     }"#;
@@ -215,7 +215,7 @@ fn test_empty_steps_fails() {
 #[test]
 fn test_swap_usdc_to_weth() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
@@ -258,10 +258,57 @@ fn test_swap_usdc_to_weth() {
     assert!(json_str.contains("eip712_intent"));
 }
 
+/// Regression: a standalone "swap from ETH" must pay `amount_in` as msg.value
+/// and go direct to the SwapRouter with recipient=signer (no intent-router
+/// redirection, no ERC-20 transferFrom/approve). Previously the compiler
+/// silently rewrote tokenIn to WETH while leaving value=0, which either
+/// reverted or swapped whatever leftover WETH the user happened to hold.
+#[test]
+fn test_swap_native_eth_to_usdc_sends_msg_value() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "swap": { "from": "ETH", "to": "USDC", "amount": "50", "price": "2344", "slippage": "0.5" } }
+        ],
+        "current_timestamp": 1776824820
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::SingleTx(tx) => {
+            // Must carry 50 ETH as msg.value (50 * 10^18).
+            let expected = alloy_primitives::U256::from(50u128)
+                * alloy_primitives::U256::from(10u128).pow(alloy_primitives::U256::from(18u64));
+            assert_eq!(
+                tx.value, expected,
+                "native swap must pay amount_in as msg.value"
+            );
+            // Must target the Uniswap V3 SwapRouter directly, NOT the IntentRouter.
+            assert_eq!(
+                format!("{:?}", tx.to).to_lowercase(),
+                "0xe592427a0aece92de3edee1f18e0157c05861564",
+                "native single-swap should go direct to SwapRouter"
+            );
+            // Calldata's `recipient` (slot 3 after the 4-byte selector) must
+            // be the signer, not any intermediary router.
+            let data = &tx.data;
+            assert!(data.len() >= 4 + 32 * 8, "unexpected calldata length");
+            let recipient =
+                alloy_primitives::Address::from_slice(&data[4 + 32 * 3 + 12..4 + 32 * 4]);
+            assert_eq!(
+                recipient, tx.from,
+                "recipient in calldata must be the signer"
+            );
+        }
+        other => panic!("expected SingleTx for a standalone native swap, got {other:?}"),
+    }
+}
+
 #[test]
 fn test_deposit_and_borrow_single_tx() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
@@ -313,7 +360,7 @@ fn test_deposit_and_borrow_single_tx() {
 #[test]
 fn test_swap_deposit_borrow_chain() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
@@ -370,7 +417,7 @@ fn test_swap_deposit_borrow_chain() {
 #[test]
 fn test_swap_with_custom_fee_tier() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "fee": "500", "min_amount_out": "0.1" } }
@@ -402,7 +449,7 @@ fn test_swap_with_custom_fee_tier() {
 #[test]
 fn test_swap_without_fee_defaults_to_3000() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
@@ -423,7 +470,7 @@ fn test_swap_without_fee_defaults_to_3000() {
 #[test]
 fn test_swap_via_1inch_with_calldata() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef" } }
@@ -452,7 +499,7 @@ fn test_swap_via_1inch_with_calldata() {
 #[test]
 fn test_swap_via_1inch_missing_calldata_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch" } }
@@ -471,7 +518,7 @@ fn test_swap_via_1inch_missing_calldata_fails() {
 #[test]
 fn test_swap_via_unsupported_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "paraswap" } }
@@ -490,7 +537,7 @@ fn test_swap_via_unsupported_fails() {
 #[test]
 fn test_wrap_steth_to_wsteth() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "stETH", "amount": "10.0" } }
@@ -530,7 +577,7 @@ fn test_wrap_steth_to_wsteth() {
 #[test]
 fn test_stake_and_wrap_steth() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } },
@@ -571,7 +618,7 @@ fn test_stake_and_wrap_steth() {
 #[test]
 fn test_stake_eth_in_lido() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } }
@@ -609,7 +656,7 @@ fn test_stake_eth_in_lido() {
 #[test]
 fn test_eip712_nonce_and_deadline() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "nonce": 5,
         "deadline": 1712345678,
@@ -635,7 +682,7 @@ fn test_eip712_nonce_and_deadline() {
 #[test]
 fn test_aave_withdraw() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
@@ -711,7 +758,7 @@ fn test_complex_defi_from_example_file() {
             );
             // EIP-712 domain should be set
             assert_eq!(intent.domain.name, "IntentRouter");
-            assert_eq!(intent.domain.chain_id, 1);
+            assert_eq!(intent.domain.chain_id, 31337);
         }
         other => panic!(
             "Expected Eip712Intent (batched via router), got {:?}",
@@ -825,7 +872,7 @@ fn test_missing_network_field_fails() {
 #[test]
 fn test_missing_from_field_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
         ]
@@ -837,7 +884,7 @@ fn test_missing_from_field_fails() {
 #[test]
 fn test_missing_steps_field_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
     }"#;
     let result = do_compile(input);
@@ -847,7 +894,7 @@ fn test_missing_steps_field_fails() {
 #[test]
 fn test_invalid_from_address_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "not-a-hex-address",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
@@ -860,7 +907,7 @@ fn test_invalid_from_address_fails() {
 #[test]
 fn test_zero_address_signer_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0x0000000000000000000000000000000000000000",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
@@ -878,7 +925,7 @@ fn test_zero_address_signer_fails() {
 #[test]
 fn test_unknown_step_type_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "fly": { "to": "moon" } }
@@ -891,7 +938,7 @@ fn test_unknown_step_type_fails() {
 #[test]
 fn test_deposit_missing_amount_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "into": "aave" } }
@@ -904,7 +951,7 @@ fn test_deposit_missing_amount_fails() {
 #[test]
 fn test_deposit_missing_into_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "100" } }
@@ -917,7 +964,7 @@ fn test_deposit_missing_into_fails() {
 #[test]
 fn test_deposit_into_unknown_protocol_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "100", "into": "compound" } }
@@ -935,7 +982,7 @@ fn test_deposit_into_unknown_protocol_fails() {
 #[test]
 fn test_borrow_from_unknown_protocol_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "compound" } }
@@ -948,7 +995,7 @@ fn test_borrow_from_unknown_protocol_fails() {
 #[test]
 fn test_non_numeric_amount_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "abc" } }
@@ -961,7 +1008,7 @@ fn test_non_numeric_amount_fails() {
 #[test]
 fn test_zero_amount_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "0" } }
@@ -979,7 +1026,7 @@ fn test_zero_amount_fails() {
 #[test]
 fn test_swap_same_asset_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "USDC" } }
@@ -1000,7 +1047,7 @@ fn test_swap_same_asset_fails() {
 fn test_borrow_without_deposit_no_balances_warns() {
     // Borrow without deposit and no balance info → should compile with warning
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
@@ -1023,7 +1070,7 @@ fn test_borrow_without_deposit_no_balances_warns() {
 fn test_borrow_with_existing_collateral_no_warning() {
     // Borrow with balance info showing existing collateral → should compile without warning
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "balances": {
             "tokens": { "USDC": "50000.0" },
@@ -1050,7 +1097,7 @@ fn test_borrow_with_existing_collateral_no_warning() {
 fn test_borrow_without_collateral_with_balances_fails() {
     // Borrow with balance info showing NO collateral → should fail
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "balances": {
             "tokens": { "USDC": "50000.0" },
@@ -1080,7 +1127,7 @@ fn test_borrow_without_collateral_with_balances_fails() {
 fn test_withdraw_without_deposit_no_balances_warns() {
     // Withdraw without deposit and no balance info → should compile with warning
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
@@ -1103,7 +1150,7 @@ fn test_withdraw_without_deposit_no_balances_warns() {
 fn test_withdraw_with_existing_position_no_warning() {
     // Withdraw with balance info showing existing position → should compile without warning
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "balances": {
             "tokens": {},
@@ -1129,7 +1176,7 @@ fn test_withdraw_with_existing_position_no_warning() {
 fn test_withdraw_without_position_with_balances_fails() {
     // Withdraw with balance info showing NO position for this asset → should fail
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "balances": {
             "tokens": {},
@@ -1161,7 +1208,7 @@ fn test_deposit_then_borrow_no_warning() {
     // `current_timestamp` is set because deposit+borrow batches via the
     // router, and batched intents need a deadline to be signable.
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "current_timestamp": 1712344000,
         "steps": [
@@ -1182,7 +1229,7 @@ fn test_deposit_then_borrow_no_warning() {
 fn test_balances_field_is_optional() {
     // Existing intent without balances field should still work
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap": { "asset": "ETH", "amount": "1.0" } }
@@ -1214,7 +1261,7 @@ fn test_borrow_existing_collateral_example_compiles() {
 fn test_warnings_in_json_output() {
     // Verify warnings appear in JSON output
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
@@ -1242,7 +1289,7 @@ fn test_warnings_in_json_output() {
 #[test]
 fn test_swap_with_min_amount_out() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }
@@ -1273,7 +1320,7 @@ fn test_swap_with_min_amount_out() {
 #[test]
 fn test_swap_with_price_and_slippage() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005", "slippage": "1.0" } }
@@ -1293,7 +1340,7 @@ fn test_swap_with_price_and_slippage() {
 fn test_swap_with_price_default_slippage() {
     // When price is provided but slippage is omitted, default 0.5% is used
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005" } }
@@ -1312,7 +1359,7 @@ fn test_swap_with_price_default_slippage() {
 #[test]
 fn test_swap_slippage_without_price_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "slippage": "0.5" } }
@@ -1330,7 +1377,7 @@ fn test_swap_slippage_without_price_fails() {
 fn test_swap_no_slippage_rejected() {
     // When neither min_amount_out nor price/slippage is provided, compiler rejects
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH" } }
@@ -1353,7 +1400,7 @@ fn test_swap_no_slippage_rejected() {
 fn test_swap_min_amount_out_overrides_slippage() {
     // When both min_amount_out and price/slippage are provided, min_amount_out wins
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48", "price": "0.0005", "slippage": "1.0" } }
@@ -1373,7 +1420,7 @@ fn test_swap_min_amount_out_overrides_slippage() {
 fn test_swap_1inch_ignores_slippage_params() {
     // 1inch swaps use pre-fetched calldata — slippage params are ignored
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef", "min_amount_out": "0.48" } }
@@ -1391,7 +1438,7 @@ fn test_swap_1inch_ignores_slippage_params() {
 #[test]
 fn test_swap_negative_slippage_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005", "slippage": "-1.0" } }
@@ -1408,7 +1455,7 @@ fn test_swap_negative_slippage_fails() {
 #[test]
 fn test_swap_invalid_price_fails() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "abc" } }
@@ -1427,7 +1474,7 @@ fn test_swap_invalid_price_fails() {
 #[test]
 fn test_all_after_uniswap_swap() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "current_timestamp": 1712344000,
         "steps": [
@@ -1441,7 +1488,7 @@ fn test_all_after_uniswap_swap() {
 #[test]
 fn test_all_after_oneinch_swap() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef" } },
@@ -1455,7 +1502,7 @@ fn test_all_after_oneinch_swap() {
 #[test]
 fn test_all_after_wsteth_wrap() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } },
@@ -1471,7 +1518,7 @@ fn test_all_after_wsteth_wrap() {
 #[test]
 fn test_all_after_aave_withdraw() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "balances": {
             "aave_positions": {
@@ -1495,7 +1542,7 @@ fn test_oneinch_consumption_flow_validated() {
     // Without OneInchSwap in step_consumes, cross-step flow validation would
     // silently accept this.
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "current_timestamp": 1712344000,
         "steps": [
@@ -1516,7 +1563,7 @@ fn test_missing_timestamp_emits_deadline_warning() {
     // Single-tx path still succeeds, but a warning must be emitted so the UI
     // can prompt for a timestamp before trying the batched/Eip712 path.
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "100", "into": "aave" } }
@@ -1540,7 +1587,7 @@ fn test_slippage_precision_large_amount() {
     // Min with 1% slippage: 1,980,000,000 USDC (= 1_980_000_000_000_000 with 6 decimals).
     // f64 math would lose precision here (>15 significant digits).
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "current_timestamp": 1712344000,
         "steps": [
@@ -1568,7 +1615,7 @@ fn test_unwrap_consumption_flow_validated() {
     // Unwrap should be visible to cross-step flow validation via step_consumes.
     // Here we consume more WETH than the wrap step produces.
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "wrap":   { "asset": "ETH",  "amount": "1.0" } },
@@ -1652,7 +1699,7 @@ fn test_sepolia_swap_usdc_to_weth() {
 #[test]
 fn test_preview_swap_inputs_outputs() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": {
@@ -1722,7 +1769,7 @@ fn do_compile_with_allowances(
 #[test]
 fn test_allowances_zero_emits_approve_for_usdc_deposit() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
@@ -1779,7 +1826,7 @@ fn test_allowances_zero_emits_approve_for_usdc_deposit() {
 #[test]
 fn test_allowances_sufficient_emits_no_approve() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
@@ -1812,7 +1859,7 @@ fn test_allowances_sufficient_emits_no_approve() {
 #[test]
 fn test_no_allowances_arg_backcompat() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
@@ -1846,7 +1893,7 @@ fn test_no_allowances_arg_backcompat() {
 #[test]
 fn test_multi_token_only_user_pulls_counted() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "WETH", "amount": "1.0", "to": "USDC", "min_amount_out": "2000" } },
@@ -1880,7 +1927,7 @@ fn test_multi_token_only_user_pulls_counted() {
 #[test]
 fn test_multi_step_emits_one_approve_for_pulled_token() {
     let input = r#"{
-        "network": "ethereum",
+        "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "WETH", "amount": "1.0", "to": "USDC", "min_amount_out": "2000" } },

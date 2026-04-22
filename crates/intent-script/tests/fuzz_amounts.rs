@@ -20,8 +20,8 @@ fn config_dir() -> PathBuf {
 fn load_config() -> (String, String, String) {
     let dir = config_dir();
     let chains = std::fs::read_to_string(dir.join("chains.json")).unwrap();
-    let assets = std::fs::read_to_string(dir.join("assets/ethereum.json")).unwrap();
-    let protocols = std::fs::read_to_string(dir.join("protocols/ethereum.json")).unwrap();
+    let assets = std::fs::read_to_string(dir.join("assets/anvil.json")).unwrap();
+    let protocols = std::fs::read_to_string(dir.join("protocols/anvil.json")).unwrap();
     (chains, assets, protocols)
 }
 
@@ -35,7 +35,7 @@ fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::Compil
 fn compile_with_amount(amount: &str) -> Result<(), String> {
     let input = format!(
         r#"{{
-            "network": "ethereum",
+            "network": "anvil",
             "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
             "steps": [
                 {{ "wrap": {{ "asset": "ETH", "amount": "{amount}" }} }}
@@ -49,7 +49,7 @@ fn compile_with_amount(amount: &str) -> Result<(), String> {
 fn compile_usdc_deposit(amount: &str) -> Result<(), String> {
     let input = format!(
         r#"{{
-            "network": "ethereum",
+            "network": "anvil",
             "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
             "steps": [
                 {{ "deposit": {{ "asset": "USDC", "amount": "{amount}", "into": "aave" }} }}
