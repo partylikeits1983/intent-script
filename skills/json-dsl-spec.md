@@ -116,16 +116,19 @@ Each step is a JSON object with exactly one key (the action name) mapping to its
 
 The normalizer detects `"stETH"` and produces `WstETHWrap` instead of `Wrap`.
 
-### `unwrap` — Unwrap WETH
+### `unwrap` — Unwrap WETH or wstETH
 
 ```json
-{ "unwrap": { "asset": "WETH", "amount": "2.0" } }
+{ "unwrap": { "asset": "WETH",   "amount": "2.0" } }
+{ "unwrap": { "asset": "wstETH", "amount": "1.0" } }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `asset` | string | ✅ | Wrapped token alias (e.g., `"WETH"`) |
+| `asset` | string | ✅ | `"WETH"` (→ ETH) or `"wstETH"` (→ stETH) |
 | `amount` | string | ✅ | Human-readable amount, or `"all"` |
+
+Normalizer branches on `asset`: `"wstETH"` produces `WstETHUnwrap` (calls `wstETH.unwrap(uint256)` which burns wstETH and returns stETH).
 
 ### `stake` — Lido Staking
 
@@ -138,6 +141,159 @@ The normalizer detects `"stETH"` and produces `WstETHWrap` instead of `Wrap`.
 | `asset` | string | ✅ | Asset to stake (e.g., `"ETH"`) |
 | `amount` | string | ✅ | Human-readable amount, or `"all"` |
 | `into` | string | ✅ | Protocol name (e.g., `"lido"`) |
+
+### `request_withdrawal` — Lido Withdrawal Queue Request
+
+Burns stETH or wstETH and mints one NFT per requested amount. Claim with `claim_withdrawal` once the withdrawal is finalized on the Lido queue.
+
+```json
+{ "request_withdrawal": { "asset": "stETH",  "amounts": ["5.0", "3.0"], "from": "lido" } }
+{ "request_withdrawal": { "asset": "wstETH", "amounts": ["1.0"],         "from": "lido" } }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `asset` | string | ✅ | `"stETH"` or `"wstETH"` |
+| `amounts` | string[] | ✅ | One amount per NFT to mint; each element is human-readable |
+| `from` | string | ✅ | Protocol name (must be `"lido"`) |
+
+Each amount must be at least `MIN_STETH_WITHDRAWAL_AMOUNT = 100 wei` and at most `MAX_STETH_WITHDRAWAL_AMOUNT = 1000 stETH` (Lido protocol limits). The NFTs are minted to the signer, not the router.
+
+### `claim_withdrawal` — Lido Withdrawal Queue Claim
+
+Burns withdrawal NFTs and sends ETH back to the signer. Requires that the queue has finalized the requests (off-chain polling) and that `hints` are obtained via `WithdrawalQueue.findCheckpointHints(requestIds, firstIndex, lastIndex)`.
+
+```json
+{
+  "claim_withdrawal": {
+    "protocol": "lido",
+    "request_ids": [12345, 12346],
+    "hints":       [42,    42]
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol` | string | ✅ | Protocol name (must be `"lido"`) |
+| `request_ids` | number[] | ✅ | NFT ids returned by a prior `request_withdrawal` |
+| `hints` | number[] | ✅ | Checkpoint hints, same length as `request_ids` |
+
+The caller (signer or router) must own the NFTs. ETH is sent to the caller, not `onBehalfOf`.
+
+### `lp_mint` — Uniswap V3 LP Mint
+
+Mints a new concentrated-liquidity position NFT via the `NonfungiblePositionManager`.
+
+```json
+{
+  "lp_mint": {
+    "protocol": "uniswap",
+    "token0": "USDC",
+    "token1": "WETH",
+    "fee": "3000",
+    "tick_lower": -887220,
+    "tick_upper":  887220,
+    "amount0": "1000",
+    "amount1": "0.5",
+    "min_amount0": "990",
+    "min_amount1": "0.495"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol` | string | ✅ | Must be `"uniswap"` in v1 |
+| `token0` | string | ✅ | First token alias — must be the lexicographically smaller address |
+| `token1` | string | ✅ | Second token alias — the larger address |
+| `fee` | string | ✅ | Uniswap V3 fee tier: `"500"`, `"3000"`, or `"10000"` |
+| `tick_lower` | number | ✅ | Lower price bound; must be a multiple of the tick spacing |
+| `tick_upper` | number | ✅ | Upper price bound; must be `> tick_lower` and `≤ MAX_TICK` |
+| `amount0` | string | ✅ | Desired token0 deposit (human-readable) |
+| `amount1` | string | ✅ | Desired token1 deposit (human-readable) |
+| `min_amount0` | string | ✅ | Minimum token0 to deposit (slippage protection) |
+| `min_amount1` | string | ✅ | Minimum token1 to deposit (slippage protection) |
+| `deadline` | number | ❌ | Swap-specific deadline as Unix timestamp |
+
+**Token ordering constraint:** Uniswap V3 requires `token0 < token1` by address. If the user provides them in the wrong order the normalizer swaps them along with their amounts/mins and emits a warning.
+
+**Tick spacing** per fee tier: 500→10, 3000→60, 10000→200. `MAX_TICK` is `887272`; `MIN_TICK` is `-887272`. Full-range positions typically use `±887220` (a multiple of 60).
+
+### `lp_increase` — Uniswap V3 LP Increase Liquidity
+
+Adds liquidity to an existing NFT position.
+
+```json
+{
+  "lp_increase": {
+    "position_id": "12345",
+    "token0": "USDC",
+    "token1": "WETH",
+    "amount0": "500",
+    "amount1": "0.25",
+    "min_amount0": "495",
+    "min_amount1": "0.247"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position_id` | string | ✅ | NFT token id as a decimal string |
+| `token0` | string | ✅ | Position's token0 alias (must match on-chain) |
+| `token1` | string | ✅ | Position's token1 alias |
+| `amount0`, `amount1` | string | ✅ | Desired deposits (human-readable) |
+| `min_amount0`, `min_amount1` | string | ✅ | Minimum deposits (slippage protection) |
+| `deadline` | number | ❌ | Deadline as Unix timestamp |
+
+`token0`/`token1` are required because the compiler has no RPC to introspect the position's metadata. The user must declare the correct pair so enrichment can emit approvals for the right ERC-20s.
+
+### `lp_decrease` — Uniswap V3 LP Decrease Liquidity
+
+Burns part (or all) of a position's liquidity. Proceeds accumulate as owed tokens on the position — use `lp_collect` to withdraw them.
+
+```json
+{
+  "lp_decrease": {
+    "position_id": "12345",
+    "token0": "USDC",
+    "token1": "WETH",
+    "liquidity": "1000000",
+    "min_amount0": "495",
+    "min_amount1": "0.247"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position_id` | string | ✅ | NFT token id |
+| `token0` | string | ✅ | Position's token0 alias (needed to parse `min_amount0` with the correct decimals) |
+| `token1` | string | ✅ | Position's token1 alias |
+| `liquidity` | string | ✅ | u128 liquidity amount to remove, or `"all"` |
+| `min_amount0`, `min_amount1` | string | ✅ | Minimum token amounts returned (slippage protection) |
+| `deadline` | number | ❌ | Deadline as Unix timestamp |
+
+### `lp_collect` — Uniswap V3 LP Collect
+
+Collects all owed tokens (accumulated fees + proceeds from `lp_decrease`) from a position. Always uses `type(uint128).max` for both amounts to mean "all owed".
+
+```json
+{
+  "lp_collect": {
+    "position_id": "12345",
+    "token0": "USDC",
+    "token1": "WETH"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position_id` | string | ✅ | NFT token id |
+| `token0` | string | ✅ | Position's token0 alias (needed so enrich can add the pair to sweep) |
+| `token1` | string | ✅ | Position's token1 alias |
 
 ### `send` — Transfer Tokens/ETH/NFTs
 
@@ -274,6 +430,78 @@ Implemented in `crates/intent-script/src/compiler/validate.rs`:
   "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
   "steps": [
     { "send": { "asset": "USDC", "amount": "100", "to": "0x1234567890abcdef1234567890abcdef12345678" } }
+  ]
+}
+```
+
+### Lido Withdrawal Queue Round-Trip
+```json
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    { "request_withdrawal": { "asset": "stETH", "amounts": ["5.0"], "from": "lido" } }
+  ]
+}
+```
+
+```json
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    { "claim_withdrawal": { "protocol": "lido", "request_ids": [12345], "hints": [42] } }
+  ]
+}
+```
+
+### Uniswap V3 LP Mint (Full Range)
+```json
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    {
+      "lp_mint": {
+        "protocol": "uniswap",
+        "token0": "USDC",
+        "token1": "WETH",
+        "fee": "3000",
+        "tick_lower": -887220,
+        "tick_upper":  887220,
+        "amount0": "1000",
+        "amount1": "0.3",
+        "min_amount0": "990",
+        "min_amount1": "0.297"
+      }
+    }
+  ]
+}
+```
+
+### LP Decrease + Collect
+```json
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    {
+      "lp_decrease": {
+        "position_id": "12345",
+        "token0": "USDC",
+        "token1": "WETH",
+        "liquidity": "all",
+        "min_amount0": "950",
+        "min_amount1": "0.28"
+      }
+    },
+    {
+      "lp_collect": {
+        "position_id": "12345",
+        "token0": "USDC",
+        "token1": "WETH"
+      }
+    }
   ]
 }
 ```

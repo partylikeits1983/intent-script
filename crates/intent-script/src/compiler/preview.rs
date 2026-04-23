@@ -24,7 +24,7 @@ pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Pre
         if let Some((token, amount)) = step_consumes(step) {
             *inputs.entry(token).or_insert(U256::ZERO) += amount;
         }
-        if let Some((token, amount)) = step_produces(step) {
+        if let Some((token, amount)) = step_produces(step, intent.fee_bps) {
             *outputs.entry(token).or_insert(U256::ZERO) += amount;
         }
     }
@@ -268,6 +268,118 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
             protocol: "lido".into(),
             description: format!("Wrap {} stETH to wstETH", format_amount(*amount, 18)),
         }),
+        ResolvedStep::WstETHUnwrap { amount, .. } => Some(PreviewStepInfo {
+            action: "unwrap".into(),
+            protocol: "lido".into(),
+            description: format!("Unwrap {} wstETH to stETH", format_amount(*amount, 18)),
+        }),
+        ResolvedStep::LidoRequestWithdrawal {
+            amounts, is_wsteth, ..
+        } => {
+            let label = if *is_wsteth { "wstETH" } else { "stETH" };
+            let total = amounts
+                .iter()
+                .copied()
+                .fold(U256::ZERO, |acc, a| acc.saturating_add(a));
+            Some(PreviewStepInfo {
+                action: "request_withdrawal".into(),
+                protocol: "lido".into(),
+                description: format!(
+                    "Request Lido withdrawal of {} {} ({} NFT{})",
+                    format_amount(total, 18),
+                    label,
+                    amounts.len(),
+                    if amounts.len() == 1 { "" } else { "s" }
+                ),
+            })
+        }
+        ResolvedStep::LidoClaimWithdrawal { request_ids, .. } => Some(PreviewStepInfo {
+            action: "claim_withdrawal".into(),
+            protocol: "lido".into(),
+            description: format!(
+                "Claim {} Lido withdrawal NFT{}",
+                request_ids.len(),
+                if request_ids.len() == 1 { "" } else { "s" }
+            ),
+        }),
+        ResolvedStep::UniswapV3LpMint {
+            token0,
+            token1,
+            fee,
+            amount0,
+            amount1,
+            ..
+        } => {
+            let sym0 = registry.symbol_for_address(token0);
+            let sym1 = registry.symbol_for_address(token1);
+            let dec0 = registry.decimals_for_address(token0);
+            let dec1 = registry.decimals_for_address(token1);
+            Some(PreviewStepInfo {
+                action: "lp_mint".into(),
+                protocol: "uniswap".into(),
+                description: format!(
+                    "Mint Uniswap V3 LP {}/{} ({}bp): {} {} + {} {}",
+                    sym0,
+                    sym1,
+                    fee,
+                    format_amount(*amount0, dec0),
+                    sym0,
+                    format_amount(*amount1, dec1),
+                    sym1
+                ),
+            })
+        }
+        ResolvedStep::UniswapV3LpIncrease {
+            token0,
+            token1,
+            token_id,
+            amount0,
+            amount1,
+            ..
+        } => {
+            let sym0 = registry.symbol_for_address(token0);
+            let sym1 = registry.symbol_for_address(token1);
+            let dec0 = registry.decimals_for_address(token0);
+            let dec1 = registry.decimals_for_address(token1);
+            Some(PreviewStepInfo {
+                action: "lp_increase".into(),
+                protocol: "uniswap".into(),
+                description: format!(
+                    "Increase Uniswap V3 LP #{}: +{} {} +{} {}",
+                    token_id,
+                    format_amount(*amount0, dec0),
+                    sym0,
+                    format_amount(*amount1, dec1),
+                    sym1
+                ),
+            })
+        }
+        ResolvedStep::UniswapV3LpDecrease {
+            token_id,
+            liquidity,
+            ..
+        } => Some(PreviewStepInfo {
+            action: "lp_decrease".into(),
+            protocol: "uniswap".into(),
+            description: format!(
+                "Decrease Uniswap V3 LP #{} by {} liquidity units",
+                token_id, liquidity
+            ),
+        }),
+        ResolvedStep::UniswapV3LpCollect {
+            token0,
+            token1,
+            token_id,
+            ..
+        } => {
+            let sym0 = registry.symbol_for_address(token0);
+            let sym1 = registry.symbol_for_address(token1);
+            Some(PreviewStepInfo {
+                action: "lp_collect".into(),
+                protocol: "uniswap".into(),
+                description: format!("Collect Uniswap V3 LP #{} ({}/{})", token_id, sym0, sym1),
+            })
+        }
         ResolvedStep::SendErc20 { token, amount, to } => {
             let sym = registry.symbol_for_address(token);
             let dec = registry.decimals_for_address(token);

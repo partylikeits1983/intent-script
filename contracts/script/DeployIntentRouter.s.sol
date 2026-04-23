@@ -19,7 +19,7 @@ contract DeployIntentRouter is Script {
 
         // Mainnet addresses — kept in sync with
         // intentOS-ui/lib/config/{assets,protocols}-ethereum.json.
-        address[] memory targets = new address[](10);
+        address[] memory targets = new address[](12);
         // Tokens (approve / transfer targets)
         targets[0] = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2; // WETH
         targets[1] = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48; // USDC
@@ -32,6 +32,8 @@ contract DeployIntentRouter is Script {
         targets[7] = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2; // Aave V3 Pool
         targets[8] = 0xE592427A0AEce92De3Edee1F18E0157C05861564; // Uniswap V3 Router
         targets[9] = 0x111111125421cA6dc452d289314280a0f8842A65; // 1inch v6 Router
+        targets[10] = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88; // Uniswap V3 NonfungiblePositionManager
+        targets[11] = 0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1; // Lido Withdrawal Queue
 
         r.setAllowedTargets(targets, true);
 

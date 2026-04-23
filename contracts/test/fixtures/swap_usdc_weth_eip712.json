@@ -114,8 +114,8 @@
     "outputs": [
       {
         "token": "WETH",
-        "amount": "0.1",
-        "amountRaw": "100000000000000000",
+        "amount": "0.0999",
+        "amountRaw": "99900000000000000",
         "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
       }
     ],

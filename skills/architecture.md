@@ -96,7 +96,8 @@ crates/intent-script/
 │       ├── erc20.rs               # approve, transferFrom, permit
 │       ├── aave_v3.rs             # supply, borrow, withdraw
 │       ├── uniswap_v3.rs          # exactInputSingle
-│       ├── lido.rs                # submit (stake), wstETH.wrap
+│       ├── uniswap_v3_lp.rs       # NPM mint / increaseLiquidity / decreaseLiquidity / collect
+│       ├── lido.rs                # submit, wstETH.wrap/unwrap, WithdrawalQueue request/claim
 │       ├── oneinch.rs             # Calldata passthrough
 │       └── send.rs                # ERC-20 transfer, ETH send, ERC-721 safeTransferFrom
 ├── tests/
@@ -106,17 +107,19 @@ crates/intent-script/
 │   ├── generate_calldata.rs       # Fixture generators for Foundry tests
 │   └── generate_eip712_fixtures.rs # EIP-712 batch fixture generators
 └── examples/
-    ├── aave_borrow.json           # deposit USDC + borrow DAI
-    ├── aave_deposit.json          # deposit USDC into Aave
-    ├── aave_withdraw.json         # withdraw USDC from Aave
+    ├── aave_borrow.json                # deposit USDC + borrow DAI
+    ├── aave_deposit.json               # deposit USDC into Aave
+    ├── aave_withdraw.json              # withdraw USDC from Aave
     ├── borrow_existing_collateral.json # borrow with existing collateral
-    ├── complex_defi.json          # swap USDC→WETH + deposit WETH + borrow DAI
-    ├── stake_lido.json            # stake ETH in Lido
-    ├── stake_lido_wsteth.json     # stake ETH + wrap stETH→wstETH
-    ├── swap_1inch.json            # swap via 1inch (needs calldata)
-    ├── swap_uniswap.json          # swap USDC→WETH via Uniswap
-    ├── swap_uniswap_slippage.json # swap with price+slippage params
-    └── wrap_eth.json              # wrap ETH→WETH
+    ├── complex_defi.json               # swap USDC→wstETH + deposit + borrow DAI
+    ├── lido_request_withdrawal.json    # request stETH unstake from Lido queue
+    ├── lp_mint_usdc_weth.json          # Uniswap V3 LP full-range USDC/WETH mint
+    ├── stake_lido.json                 # stake ETH in Lido
+    ├── stake_lido_wsteth.json          # stake ETH + wrap stETH→wstETH
+    ├── swap_1inch.json                 # swap via 1inch (needs calldata)
+    ├── swap_uniswap.json               # swap USDC→WETH via Uniswap
+    ├── swap_uniswap_slippage.json      # swap with price+slippage params
+    └── wrap_eth.json                   # wrap ETH→WETH
 ```
 
 ### Solidity Router
@@ -155,7 +158,12 @@ pub struct IntentScript {
 pub enum Step {
     Swap(SwapStep), Deposit(DepositStep), Borrow(BorrowStep),
     Withdraw(WithdrawStep), Wrap(WrapStep), Unwrap(UnwrapStep),
-    Stake(StakeStep), Send(SendStep), Custom(serde_json::Value),
+    Stake(StakeStep),
+    RequestWithdrawal(RequestWithdrawalStep),   // Lido queue request
+    ClaimWithdrawal(ClaimWithdrawalStep),       // Lido queue claim
+    LpMint(LpMintStep), LpIncrease(LpIncreaseStep),
+    LpDecrease(LpDecreaseStep), LpCollect(LpCollectStep),  // Uniswap V3 LP
+    Send(SendStep), Custom(serde_json::Value),
 }
 ```
 
@@ -181,8 +189,15 @@ pub enum ResolvedStep {
     AaveV3Borrow { pool, asset, amount, rate_mode, on_behalf_of },
     AaveV3Withdraw { pool, asset, amount, to },
     UniswapV3Swap { router, token_in, token_out, amount_in, fee, recipient, deadline, amount_out_minimum },
-    LidoStake { lido, amount, referral },
-    WstETHWrap { wsteth, steth, amount },
+    LidoStake { steth, amount, referral },             // submit(referral) on stETH
+    WstETHWrap { wsteth, steth, amount },              // stETH → wstETH
+    WstETHUnwrap { wsteth, steth, amount },            // wstETH → stETH
+    LidoRequestWithdrawal { queue, token, is_wsteth, amounts, owner },
+    LidoClaimWithdrawal   { queue, request_ids, hints },
+    UniswapV3LpMint       { nfpm, token0, token1, fee, tick_lower, tick_upper, amount0, amount1, min_amount0, min_amount1, recipient, deadline },
+    UniswapV3LpIncrease   { nfpm, position_id, amount0, amount1, min_amount0, min_amount1, deadline },
+    UniswapV3LpDecrease   { nfpm, position_id, liquidity, min_amount0, min_amount1, deadline },
+    UniswapV3LpCollect    { nfpm, position_id, recipient },
     OneInchSwap { router, token_in, token_out, amount_in, calldata },
     Erc20Permit { token, owner, spender, value, deadline },
     SendErc20 { token, to, amount },

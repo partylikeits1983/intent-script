@@ -11,7 +11,8 @@
     "version": "v3",
     "contracts": {
       "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
-      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+      "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
+      "position_manager": "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
     }
   },
   "lido": {
@@ -19,7 +20,8 @@
     "version": "v1",
     "contracts": {
       "steth": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
-      "wsteth": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+      "wsteth": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "withdrawal_queue": "0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1"
     }
   },
   "1inch": {
@@ -34,6 +36,7 @@
     "version": "v1",
     "contracts": {
       "router": "0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120"
-    }
+    },
+    "fee_bps": 10
   }
 }

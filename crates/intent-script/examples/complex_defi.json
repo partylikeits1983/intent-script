@@ -2,8 +2,8 @@
   "network": "anvil",
   "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
   "steps": [
-    { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
-    { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+    { "swap": { "from": "USDC", "amount": "5000", "to": "wstETH", "min_amount_out": "1.0", "fee": "500" } },
+    { "deposit": { "asset": "wstETH", "amount": "all", "into": "aave" } },
     { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
   ]
 }
