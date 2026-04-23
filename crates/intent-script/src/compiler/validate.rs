@@ -112,7 +112,7 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
     }
 
     // Task 5: Cross-step amount flow validation
-    validate_amount_flow(&intent.steps)?;
+    validate_amount_flow(&intent.steps, intent.fee_bps)?;
 
     Ok(ValidationResult { warnings })
 }
@@ -162,7 +162,7 @@ fn validate_health_factor(
 /// Track tokens produced by previous steps. Only validate consumption when
 /// a step uses a token that a prior step produced. Wallet-sourced tokens
 /// are not checked.
-fn validate_amount_flow(steps: &[ResolvedStep]) -> Result<()> {
+fn validate_amount_flow(steps: &[ResolvedStep], fee_bps: u16) -> Result<()> {
     let mut produced: HashMap<Address, U256> = HashMap::new();
 
     for (i, step) in steps.iter().enumerate() {
@@ -180,7 +180,7 @@ fn validate_amount_flow(steps: &[ResolvedStep]) -> Result<()> {
                 produced.insert(token, *available - required);
             }
         }
-        if let Some((token, guaranteed)) = step_produces(step) {
+        if let Some((token, guaranteed)) = step_produces(step, fee_bps) {
             *produced.entry(token).or_insert(U256::ZERO) += guaranteed;
         }
     }
@@ -292,9 +292,95 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         ResolvedStep::UniswapV3Swap { amount_in, .. } => Some(("swap", amount_in)),
         ResolvedStep::LidoStake { amount, .. } => Some(("stake", amount)),
         ResolvedStep::WstETHWrap { amount, .. } => Some(("wrap stETH", amount)),
+        ResolvedStep::WstETHUnwrap { amount, .. } => Some(("unwrap wstETH", amount)),
         ResolvedStep::OneInchSwap { amount_in, .. } => Some(("swap", amount_in)),
         ResolvedStep::SendErc20 { amount, .. } => Some(("send", amount)),
         ResolvedStep::SendEth { amount, .. } => Some(("send", amount)),
+        // Multi-amount variants and auto-generated steps are validated separately.
+        ResolvedStep::LidoRequestWithdrawal { amounts, .. } => {
+            if amounts.is_empty() {
+                return Err(CompileError::InvalidChain(
+                    "request_withdrawal requires at least one amount".to_string(),
+                ));
+            }
+            for a in amounts {
+                if *a == U256::ZERO {
+                    return Err(CompileError::InvalidChain(
+                        "request_withdrawal amounts must all be greater than zero".to_string(),
+                    ));
+                }
+            }
+            None
+        }
+        ResolvedStep::LidoClaimWithdrawal {
+            request_ids, hints, ..
+        } => {
+            if request_ids.is_empty() {
+                return Err(CompileError::InvalidChain(
+                    "claim_withdrawal requires at least one request_id".to_string(),
+                ));
+            }
+            if request_ids.len() != hints.len() {
+                return Err(CompileError::InvalidChain(format!(
+                    "claim_withdrawal hints length {} does not match request_ids length {}",
+                    hints.len(),
+                    request_ids.len()
+                )));
+            }
+            None
+        }
+        ResolvedStep::UniswapV3LpMint {
+            amount0,
+            amount1,
+            amount0_min,
+            amount1_min,
+            ..
+        }
+        | ResolvedStep::UniswapV3LpIncrease {
+            amount0,
+            amount1,
+            amount0_min,
+            amount1_min,
+            ..
+        } => {
+            if *amount0 == U256::ZERO && *amount1 == U256::ZERO {
+                return Err(CompileError::InvalidChain(
+                    "LP mint/increase requires a non-zero amount on at least one side".to_string(),
+                ));
+            }
+            // Slippage protection: at least one min must be > 0 (the
+            // other may legitimately be zero for single-sided out-of-range
+            // liquidity deposits).
+            if *amount0_min == U256::ZERO && *amount1_min == U256::ZERO {
+                return Err(CompileError::InvalidChain(
+                    "LP mint/increase requires slippage protection: min_amount0 or min_amount1 must be > 0"
+                        .to_string(),
+                ));
+            }
+            None
+        }
+        ResolvedStep::UniswapV3LpDecrease {
+            liquidity,
+            amount0_min,
+            amount1_min,
+            ..
+        } => {
+            if *liquidity == 0 {
+                return Err(CompileError::InvalidChain(
+                    "LP decrease liquidity must be greater than zero".to_string(),
+                ));
+            }
+            if *amount0_min == U256::ZERO && *amount1_min == U256::ZERO {
+                return Err(CompileError::InvalidChain(
+                    "LP decrease requires slippage protection: min_amount0 or min_amount1 must be > 0"
+                        .to_string(),
+                ));
+            }
+            None
+        }
+        // Collect has no amount fields to range-check here; validity is
+        // covered by normalize (token_id / position sanity).
+        ResolvedStep::UniswapV3LpCollect { .. } => None,
         // Approve, TransferFrom, Permit, SendErc721 are auto-generated or don't have amounts
         ResolvedStep::Erc20Approve { .. }
         | ResolvedStep::Erc20TransferFrom { .. }
@@ -364,6 +450,7 @@ mod tests {
             deadline: 0,
             user_balances: None,
             required_pulls: Vec::new(),
+            fee_bps: 0,
         }
     }
 
@@ -577,7 +664,7 @@ mod tests {
                 on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             },
         ];
-        let result = validate_amount_flow(&steps);
+        let result = validate_amount_flow(&steps, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires"));
     }
@@ -603,7 +690,7 @@ mod tests {
                 on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             },
         ];
-        let result = validate_amount_flow(&steps);
+        let result = validate_amount_flow(&steps, 0);
         assert!(result.is_ok());
     }
 
@@ -616,7 +703,7 @@ mod tests {
             amount: U256::from(5_000_000_000u64),
             on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
         }];
-        let result = validate_amount_flow(&steps);
+        let result = validate_amount_flow(&steps, 0);
         assert!(result.is_ok());
     }
 

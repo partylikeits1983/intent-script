@@ -119,8 +119,8 @@
     "outputs": [
       {
         "token": "DAI",
-        "amount": "2000",
-        "amountRaw": "2000000000000000000000",
+        "amount": "1998",
+        "amountRaw": "1998000000000000000000",
         "address": "0x6b175474e89094c44da98b954eedeac495271d0f"
       }
     ],

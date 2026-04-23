@@ -93,6 +93,12 @@ pub enum Step {
     Wrap(WrapStep),
     Unwrap(UnwrapStep),
     Stake(StakeStep),
+    RequestWithdrawal(RequestWithdrawalStep),
+    ClaimWithdrawal(ClaimWithdrawalStep),
+    LpMint(LpMintStep),
+    LpIncrease(LpIncreaseStep),
+    LpDecrease(LpDecreaseStep),
+    LpCollect(LpCollectStep),
     Send(SendStep),
     Custom(serde_json::Value),
 }
@@ -169,6 +175,88 @@ pub struct StakeStep {
     pub asset: String,
     pub amount: String,
     pub into: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequestWithdrawalStep {
+    /// "stETH" or "wstETH".
+    pub asset: String,
+    /// One amount per withdrawal NFT to mint (each bounded by protocol-side limits).
+    pub amounts: Vec<String>,
+    /// Protocol key; must be "lido".
+    pub from: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClaimWithdrawalStep {
+    /// Protocol key; must be "lido".
+    pub protocol: String,
+    /// NFT token ids returned by a prior `request_withdrawal`.
+    pub request_ids: Vec<u64>,
+    /// `findCheckpointHints(...)` results from the queue, one per request id.
+    pub hints: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LpMintStep {
+    /// Protocol key; must be "uniswap" in v1.
+    pub protocol: String,
+    pub token0: String,
+    pub token1: String,
+    /// Fee tier in hundredths of a bip: "500" | "3000" | "10000".
+    pub fee: String,
+    pub tick_lower: i32,
+    pub tick_upper: i32,
+    pub amount0: String,
+    pub amount1: String,
+    pub min_amount0: String,
+    pub min_amount1: String,
+    #[serde(default)]
+    pub deadline: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LpIncreaseStep {
+    /// NFT position token id as a decimal string (matches Solidity uint256).
+    pub position_id: String,
+    /// Pool's token0 alias (must match the position's actual token0).
+    /// Required because the compiler has no RPC to introspect the NFT's
+    /// metadata — the user must declare it so enrich can emit approvals
+    /// for the correct ERC-20s.
+    pub token0: String,
+    pub token1: String,
+    pub amount0: String,
+    pub amount1: String,
+    pub min_amount0: String,
+    pub min_amount1: String,
+    #[serde(default)]
+    pub deadline: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LpDecreaseStep {
+    pub position_id: String,
+    /// Pool's token0 alias. Required so the compiler can parse
+    /// `min_amount0` with the correct decimals.
+    pub token0: String,
+    pub token1: String,
+    /// Liquidity amount to remove as a decimal string, or "all" for the
+    /// full on-chain liquidity. Liquidity is a u128 in Uniswap V3.
+    pub liquidity: String,
+    pub min_amount0: String,
+    pub min_amount1: String,
+    #[serde(default)]
+    pub deadline: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LpCollectStep {
+    pub position_id: String,
+    /// Pool's token0 alias (must match the position's actual token0).
+    /// Required because the compiler has no RPC to introspect the NFT —
+    /// enrich needs these to list the pair for sweep.
+    pub token0: String,
+    pub token1: String,
 }
 
 #[derive(Debug, Deserialize)]

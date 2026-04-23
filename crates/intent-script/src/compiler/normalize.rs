@@ -82,6 +82,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             deadline: effective_deadline,
             user_balances,
             required_pulls: Vec::new(),
+            fee_bps: registry.fee_bps(),
         },
         warnings,
     })
@@ -157,21 +158,63 @@ fn normalize_step(
             }
         }
         Step::Unwrap(u) => {
-            // Unwrap: asset should be WETH or the wrapped native
-            let wrapped_token = resolve_asset_address(&u.asset, registry)?;
-            let decimals = resolve_asset_decimals(&u.asset, registry)?;
-            let amount = resolve_amount_or_all(
-                &u.amount,
-                decimals,
-                wrapped_token,
-                previous_steps,
-                &u.asset,
-                registry,
-            )?;
-            Ok(ResolvedStep::Unwrap {
-                wrapped_token,
-                amount,
-            })
+            if u.asset == "wstETH" {
+                // Unwrap wstETH → stETH via wstETH.unwrap(uint256)
+                let lido_protocol = registry.protocols.get("lido").ok_or_else(|| {
+                    CompileError::UnknownProtocol {
+                        protocol: "lido".to_string(),
+                        network: registry.network.clone(),
+                        available: known_protocols(registry),
+                    }
+                })?;
+
+                let wsteth_addr = lido_protocol.contracts.get("wsteth").ok_or_else(|| {
+                    CompileError::Adapter(
+                        "Protocol 'lido' has no 'wsteth' contract configured".to_string(),
+                    )
+                })?;
+                let wsteth = parse_address(wsteth_addr)?;
+
+                let steth_addr = lido_protocol.contracts.get("steth").ok_or_else(|| {
+                    CompileError::Adapter(
+                        "Protocol 'lido' has no 'steth' contract configured".to_string(),
+                    )
+                })?;
+                let steth = parse_address(steth_addr)?;
+
+                // "all" resolves against the wstETH address (the thing being consumed).
+                let decimals = resolve_asset_decimals(&u.asset, registry)?;
+                let amount = resolve_amount_or_all(
+                    &u.amount,
+                    decimals,
+                    wsteth,
+                    previous_steps,
+                    &u.asset,
+                    registry,
+                )?;
+
+                Ok(ResolvedStep::WstETHUnwrap {
+                    wsteth,
+                    steth,
+                    amount,
+                })
+            } else {
+                // Unwrap: asset should be WETH or the wrapped native
+                let wrapped_token = resolve_asset_address(&u.asset, registry)?;
+                let decimals = resolve_asset_decimals(&u.asset, registry)?;
+                let amount = resolve_amount_or_all(
+                    &u.amount,
+                    decimals,
+                    wrapped_token,
+                    previous_steps,
+                    &u.asset,
+                    registry,
+                )?;
+                Ok(ResolvedStep::Unwrap {
+                    wrapped_token,
+                    amount,
+                })
+            }
         }
         Step::Deposit(d) => {
             let asset = resolve_asset_address(&d.asset, registry)?;
@@ -485,7 +528,7 @@ fn normalize_step(
 
             match s.into.as_str() {
                 "lido" => Ok(ResolvedStep::LidoStake {
-                    lido: contract,
+                    steth: contract,
                     amount,
                     referral: Address::ZERO,
                 }),
@@ -494,6 +537,332 @@ fn normalize_step(
                     s.into
                 ))),
             }
+        }
+        Step::RequestWithdrawal(r) => {
+            if r.from != "lido" {
+                return Err(CompileError::UnsupportedStep(format!(
+                    "request_withdrawal from '{}' is not supported (only 'lido')",
+                    r.from
+                )));
+            }
+
+            let is_wsteth = match r.asset.as_str() {
+                "stETH" => false,
+                "wstETH" => true,
+                other => {
+                    return Err(CompileError::Validation(format!(
+                        "request_withdrawal asset must be 'stETH' or 'wstETH' (got '{}')",
+                        other
+                    )));
+                }
+            };
+
+            let lido_protocol =
+                registry
+                    .protocols
+                    .get("lido")
+                    .ok_or_else(|| CompileError::UnknownProtocol {
+                        protocol: "lido".to_string(),
+                        network: registry.network.clone(),
+                        available: known_protocols(registry),
+                    })?;
+
+            let queue_addr = lido_protocol
+                .contracts
+                .get("withdrawal_queue")
+                .ok_or_else(|| {
+                    CompileError::Adapter(
+                        "Protocol 'lido' has no 'withdrawal_queue' contract configured".to_string(),
+                    )
+                })?;
+            let queue = parse_address(queue_addr)?;
+
+            let token_key = if is_wsteth { "wsteth" } else { "steth" };
+            let token_addr = lido_protocol.contracts.get(token_key).ok_or_else(|| {
+                CompileError::Adapter(format!(
+                    "Protocol 'lido' has no '{}' contract configured",
+                    token_key
+                ))
+            })?;
+            let token = parse_address(token_addr)?;
+
+            let decimals = resolve_asset_decimals(&r.asset, registry)?;
+            let mut amounts = Vec::with_capacity(r.amounts.len());
+            for a in &r.amounts {
+                // Explicit amounts only for request_withdrawal: "all" would need
+                // to index into per-previous-step produces/consumes, which the
+                // v1 multi-amount flow doesn't support.
+                if a == "all" {
+                    return Err(CompileError::InvalidAmount(
+                        "request_withdrawal amounts must be explicit (not 'all')".to_string(),
+                    ));
+                }
+                amounts.push(parse_amount(a, decimals)?);
+            }
+
+            Ok(ResolvedStep::LidoRequestWithdrawal {
+                queue,
+                token,
+                is_wsteth,
+                amounts,
+                owner: signer,
+            })
+        }
+        Step::ClaimWithdrawal(c) => {
+            if c.protocol != "lido" {
+                return Err(CompileError::UnsupportedStep(format!(
+                    "claim_withdrawal for protocol '{}' is not supported (only 'lido')",
+                    c.protocol
+                )));
+            }
+
+            let lido_protocol =
+                registry
+                    .protocols
+                    .get("lido")
+                    .ok_or_else(|| CompileError::UnknownProtocol {
+                        protocol: "lido".to_string(),
+                        network: registry.network.clone(),
+                        available: known_protocols(registry),
+                    })?;
+
+            let queue_addr = lido_protocol
+                .contracts
+                .get("withdrawal_queue")
+                .ok_or_else(|| {
+                    CompileError::Adapter(
+                        "Protocol 'lido' has no 'withdrawal_queue' contract configured".to_string(),
+                    )
+                })?;
+            let queue = parse_address(queue_addr)?;
+
+            let request_ids = c.request_ids.iter().copied().map(U256::from).collect();
+            let hints = c.hints.iter().copied().map(U256::from).collect();
+
+            Ok(ResolvedStep::LidoClaimWithdrawal {
+                queue,
+                request_ids,
+                hints,
+            })
+        }
+        Step::LpMint(m) => {
+            if m.protocol != "uniswap" {
+                return Err(CompileError::UnsupportedStep(format!(
+                    "lp_mint for protocol '{}' is not supported (only 'uniswap')",
+                    m.protocol
+                )));
+            }
+
+            let fee = parse_uniswap_fee_tier(&m.fee)?;
+            let tick_spacing = uniswap_tick_spacing(fee);
+            validate_uniswap_tick_range(m.tick_lower, m.tick_upper, tick_spacing)?;
+
+            let npm = resolve_uniswap_position_manager(registry)?;
+
+            // Lexicographically sort (token0, token1) by address, swapping
+            // paired amount / min fields in lockstep so the NPM sees the
+            // pair in canonical order regardless of DSL-side ordering.
+            let (token0_alias, token1_alias, amount0_raw, amount1_raw, min0_raw, min1_raw) = {
+                let token0_addr = resolve_asset_address(&m.token0, registry)?;
+                let token1_addr = resolve_asset_address(&m.token1, registry)?;
+                if token0_addr <= token1_addr {
+                    (
+                        m.token0.as_str(),
+                        m.token1.as_str(),
+                        m.amount0.as_str(),
+                        m.amount1.as_str(),
+                        m.min_amount0.as_str(),
+                        m.min_amount1.as_str(),
+                    )
+                } else {
+                    (
+                        m.token1.as_str(),
+                        m.token0.as_str(),
+                        m.amount1.as_str(),
+                        m.amount0.as_str(),
+                        m.min_amount1.as_str(),
+                        m.min_amount0.as_str(),
+                    )
+                }
+            };
+
+            let token0 = resolve_asset_address(token0_alias, registry)?;
+            let token1 = resolve_asset_address(token1_alias, registry)?;
+            let dec0 = resolve_asset_decimals(token0_alias, registry)?;
+            let dec1 = resolve_asset_decimals(token1_alias, registry)?;
+
+            reject_all_amount("lp_mint", "amount0", amount0_raw)?;
+            reject_all_amount("lp_mint", "amount1", amount1_raw)?;
+            reject_all_amount("lp_mint", "min_amount0", min0_raw)?;
+            reject_all_amount("lp_mint", "min_amount1", min1_raw)?;
+
+            let amount0 = parse_amount(amount0_raw, dec0)?;
+            let amount1 = parse_amount(amount1_raw, dec1)?;
+            let amount0_min = parse_amount(min0_raw, dec0)?;
+            let amount1_min = parse_amount(min1_raw, dec1)?;
+
+            let deadline = resolve_step_deadline(m.deadline, script);
+
+            Ok(ResolvedStep::UniswapV3LpMint {
+                npm,
+                token0,
+                token1,
+                fee,
+                tick_lower: m.tick_lower,
+                tick_upper: m.tick_upper,
+                amount0,
+                amount1,
+                amount0_min,
+                amount1_min,
+                recipient: signer,
+                deadline: U256::from(deadline),
+            })
+        }
+        Step::LpIncrease(inc) => {
+            let npm = resolve_uniswap_position_manager(registry)?;
+            let token_id = parse_u256_decimal("position_id", &inc.position_id)?;
+
+            // Sort (token0, token1) + amounts in lockstep so the compiler's
+            // canonical ordering always matches the NFT's on-chain ordering.
+            let (token0_alias, token1_alias, amount0_raw, amount1_raw, min0_raw, min1_raw) = {
+                let a = resolve_asset_address(&inc.token0, registry)?;
+                let b = resolve_asset_address(&inc.token1, registry)?;
+                if a <= b {
+                    (
+                        inc.token0.as_str(),
+                        inc.token1.as_str(),
+                        inc.amount0.as_str(),
+                        inc.amount1.as_str(),
+                        inc.min_amount0.as_str(),
+                        inc.min_amount1.as_str(),
+                    )
+                } else {
+                    (
+                        inc.token1.as_str(),
+                        inc.token0.as_str(),
+                        inc.amount1.as_str(),
+                        inc.amount0.as_str(),
+                        inc.min_amount1.as_str(),
+                        inc.min_amount0.as_str(),
+                    )
+                }
+            };
+
+            let token0 = resolve_asset_address(token0_alias, registry)?;
+            let token1 = resolve_asset_address(token1_alias, registry)?;
+            let dec0 = resolve_asset_decimals(token0_alias, registry)?;
+            let dec1 = resolve_asset_decimals(token1_alias, registry)?;
+
+            reject_all_amount("lp_increase", "amount0", amount0_raw)?;
+            reject_all_amount("lp_increase", "amount1", amount1_raw)?;
+            reject_all_amount("lp_increase", "min_amount0", min0_raw)?;
+            reject_all_amount("lp_increase", "min_amount1", min1_raw)?;
+
+            let amount0 = parse_amount(amount0_raw, dec0)?;
+            let amount1 = parse_amount(amount1_raw, dec1)?;
+            let amount0_min = parse_amount(min0_raw, dec0)?;
+            let amount1_min = parse_amount(min1_raw, dec1)?;
+
+            let deadline = resolve_step_deadline(inc.deadline, script);
+
+            Ok(ResolvedStep::UniswapV3LpIncrease {
+                npm,
+                token0,
+                token1,
+                token_id,
+                amount0,
+                amount1,
+                amount0_min,
+                amount1_min,
+                deadline: U256::from(deadline),
+            })
+        }
+        Step::LpDecrease(dec) => {
+            let npm = resolve_uniswap_position_manager(registry)?;
+            let token_id = parse_u256_decimal("position_id", &dec.position_id)?;
+
+            let liquidity: u128 = if dec.liquidity == "all" {
+                return Err(CompileError::InvalidAmount(
+                    "lp_decrease liquidity='all' is not supported in v1 — supply the explicit u128 liquidity amount"
+                        .to_string(),
+                ));
+            } else {
+                dec.liquidity.parse().map_err(|_| {
+                    CompileError::InvalidAmount(format!(
+                        "Invalid liquidity value: '{}' (must fit in u128)",
+                        dec.liquidity
+                    ))
+                })?
+            };
+
+            // Sort token aliases so min_amount{0,1} line up with the position's
+            // canonical (token0, token1) ordering.
+            let (token0_alias, token1_alias, min0_raw, min1_raw) = {
+                let a = resolve_asset_address(&dec.token0, registry)?;
+                let b = resolve_asset_address(&dec.token1, registry)?;
+                if a <= b {
+                    (
+                        dec.token0.as_str(),
+                        dec.token1.as_str(),
+                        dec.min_amount0.as_str(),
+                        dec.min_amount1.as_str(),
+                    )
+                } else {
+                    (
+                        dec.token1.as_str(),
+                        dec.token0.as_str(),
+                        dec.min_amount1.as_str(),
+                        dec.min_amount0.as_str(),
+                    )
+                }
+            };
+            let dec0 = resolve_asset_decimals(token0_alias, registry)?;
+            let dec1 = resolve_asset_decimals(token1_alias, registry)?;
+
+            reject_all_amount("lp_decrease", "min_amount0", min0_raw)?;
+            reject_all_amount("lp_decrease", "min_amount1", min1_raw)?;
+            let amount0_min = parse_amount(min0_raw, dec0)?;
+            let amount1_min = parse_amount(min1_raw, dec1)?;
+
+            let deadline = resolve_step_deadline(dec.deadline, script);
+
+            Ok(ResolvedStep::UniswapV3LpDecrease {
+                npm,
+                token_id,
+                liquidity,
+                amount0_min,
+                amount1_min,
+                deadline: U256::from(deadline),
+            })
+        }
+        Step::LpCollect(col) => {
+            let npm = resolve_uniswap_position_manager(registry)?;
+            let token_id = parse_u256_decimal("position_id", &col.position_id)?;
+
+            let (token0_alias, token1_alias) = {
+                let a = resolve_asset_address(&col.token0, registry)?;
+                let b = resolve_asset_address(&col.token1, registry)?;
+                if a <= b {
+                    (col.token0.as_str(), col.token1.as_str())
+                } else {
+                    (col.token1.as_str(), col.token0.as_str())
+                }
+            };
+            let token0 = resolve_asset_address(token0_alias, registry)?;
+            let token1 = resolve_asset_address(token1_alias, registry)?;
+
+            // Collect everything that's uncollected on the position — the
+            // standard NPM pattern. Callers who need a cap can wait for a
+            // future DSL revision.
+            Ok(ResolvedStep::UniswapV3LpCollect {
+                npm,
+                token0,
+                token1,
+                token_id,
+                recipient: signer,
+                amount0_max: u128::MAX,
+                amount1_max: u128::MAX,
+            })
         }
         Step::Send(s) => {
             let to = parse_address(&s.to)?;
@@ -651,11 +1020,12 @@ fn resolve_amount_or_all(
     token: Address,
     previous_steps: &[ResolvedStep],
     _asset_alias: &str,
-    _registry: &RegistryContext,
+    registry: &RegistryContext,
 ) -> Result<U256> {
     if amount_str == "all" {
+        let fee_bps = registry.fee_bps();
         for step in previous_steps.iter().rev() {
-            if let Some((produced_token, guaranteed)) = step_produces(step) {
+            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps) {
                 if produced_token == token {
                     if guaranteed == U256::ZERO {
                         return Err(CompileError::InvalidChain(
@@ -818,6 +1188,123 @@ fn resolve_asset_decimals(alias: &str, registry: &RegistryContext) -> Result<u8>
 fn parse_address(s: &str) -> Result<Address> {
     s.parse::<Address>()
         .map_err(|_| CompileError::InvalidAddress(s.to_string()))
+}
+
+/// Parse a uint256 as a decimal string (no unit scaling — raw integer).
+///
+/// Used for step fields that don't have an associated asset decimals (e.g.
+/// `position_id`, or LP `amount*` fields where the pair's tokens are baked
+/// into the NFT position and the DSL string is already in wei).
+fn parse_u256_decimal(field: &str, s: &str) -> Result<U256> {
+    U256::from_str_radix(s, 10).map_err(|_| {
+        CompileError::InvalidAmount(format!(
+            "Invalid {}: '{}' is not a valid decimal integer",
+            field, s
+        ))
+    })
+}
+
+/// Reject `"all"` sugar in fields where we can't resolve it meaningfully.
+fn reject_all_amount(step_name: &str, field: &str, value: &str) -> Result<()> {
+    if value == "all" {
+        Err(CompileError::InvalidAmount(format!(
+            "{} does not support 'all' for {} — supply an explicit amount",
+            step_name, field
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Parse a Uniswap V3 fee tier from a string, accepting only the canonical
+/// values.
+fn parse_uniswap_fee_tier(s: &str) -> Result<u32> {
+    match s {
+        "500" => Ok(500),
+        "3000" => Ok(3000),
+        "10000" => Ok(10000),
+        other => Err(CompileError::InvalidAmount(format!(
+            "Invalid Uniswap V3 fee tier '{}' (must be 500, 3000, or 10000)",
+            other
+        ))),
+    }
+}
+
+/// Canonical tick spacing for a given Uniswap V3 fee tier.
+fn uniswap_tick_spacing(fee: u32) -> i32 {
+    match fee {
+        500 => 10,
+        3000 => 60,
+        10000 => 200,
+        // parse_uniswap_fee_tier gates inputs to this table; any other value
+        // here signals a caller bug.
+        _ => 1,
+    }
+}
+
+/// Validate that an LP tick range is non-empty, bounded, and aligned with
+/// the pool's tick spacing.
+fn validate_uniswap_tick_range(lower: i32, upper: i32, spacing: i32) -> Result<()> {
+    // Uniswap V3 MIN_TICK / MAX_TICK from TickMath.sol.
+    const MIN_TICK: i32 = -887272;
+    const MAX_TICK: i32 = 887272;
+    if lower >= upper {
+        return Err(CompileError::InvalidChain(format!(
+            "LP tick_lower ({}) must be strictly less than tick_upper ({})",
+            lower, upper
+        )));
+    }
+    if lower < MIN_TICK || upper > MAX_TICK {
+        return Err(CompileError::InvalidChain(format!(
+            "LP tick range [{}, {}] exceeds allowed bounds [{}, {}]",
+            lower, upper, MIN_TICK, MAX_TICK
+        )));
+    }
+    if lower % spacing != 0 || upper % spacing != 0 {
+        return Err(CompileError::InvalidChain(format!(
+            "LP ticks ({}, {}) must be multiples of tick spacing {} for this fee tier",
+            lower, upper, spacing
+        )));
+    }
+    Ok(())
+}
+
+/// Look up the Uniswap V3 NonfungiblePositionManager address from the
+/// protocol registry.
+fn resolve_uniswap_position_manager(registry: &RegistryContext) -> Result<Address> {
+    let protocol =
+        registry
+            .protocols
+            .get("uniswap")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "uniswap".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+
+    let npm_addr = protocol.contracts.get("position_manager").ok_or_else(|| {
+        CompileError::Adapter(
+            "Protocol 'uniswap' has no 'position_manager' contract configured".to_string(),
+        )
+    })?;
+    parse_address(npm_addr)
+}
+
+/// Compute a deadline for an LP step, falling back to the script's
+/// effective deadline and ultimately the default swap window.
+fn resolve_step_deadline(step_deadline: Option<u64>, script: &IntentScript) -> u64 {
+    if let Some(d) = step_deadline {
+        if d > 0 {
+            return d;
+        }
+    }
+    match script.deadline {
+        Some(d) if d > 0 => d,
+        _ => match script.current_timestamp {
+            Some(ts) => ts + DEFAULT_SWAP_DEADLINE_SECS,
+            None => u64::MAX,
+        },
+    }
 }
 
 /// Normalize user balance information into resolved types.

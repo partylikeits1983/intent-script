@@ -3,6 +3,6 @@
   "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
   "steps": [
     { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } },
-    { "wrap": { "asset": "stETH", "amount": "10.0" } }
+    { "wrap": { "asset": "stETH", "amount": "all" } }
   ]
 }

@@ -31,6 +31,11 @@ pub struct ResolvedIntent {
     /// which `approve(router, amount)` prerequisite txs to emit when the caller
     /// supplied `current_allowances`. Order is stable (sorted by address).
     pub required_pulls: Vec<(Address, U256)>,
+    /// Router fee in basis points applied at sweep/refund time on-chain.
+    /// Populated from `registry.fee_bps()` during normalize so that
+    /// `step_produces` can return post-fee floors for downstream `"all"`
+    /// consumers.
+    pub fee_bps: u16,
 }
 
 /// Resolved user balance information with concrete addresses and U256 amounts.
@@ -114,8 +119,11 @@ pub enum ResolvedStep {
         native_input: bool,
     },
     /// Lido stETH staking via submit()
+    ///
+    /// `steth` is the stETH token contract address — Lido's `submit()` is
+    /// called directly on the stETH contract (it mints stETH 1:1 with ETH in).
     LidoStake {
-        lido: Address,
+        steth: Address,
         amount: U256,
         referral: Address,
     },
@@ -124,6 +132,89 @@ pub enum ResolvedStep {
         wsteth: Address,
         steth: Address,
         amount: U256,
+    },
+    /// Unwrap wstETH → stETH via wstETH.unwrap(uint256)
+    WstETHUnwrap {
+        wsteth: Address,
+        steth: Address,
+        amount: U256,
+    },
+    /// Lido withdrawal queue: request one or more NFTs redeemable later for ETH.
+    ///
+    /// `token` is either stETH or wstETH (distinguished by `is_wsteth`), and
+    /// `owner` — the NFT recipient — is always the signer in v1, so the router
+    /// never custodies the withdrawal NFTs.
+    LidoRequestWithdrawal {
+        queue: Address,
+        token: Address,
+        is_wsteth: bool,
+        amounts: Vec<U256>,
+        owner: Address,
+    },
+    /// Lido withdrawal queue: claim ETH for previously-minted withdrawal NFTs.
+    ///
+    /// `hints` must be the same length as `request_ids` and are the caller-
+    /// supplied `findCheckpointHints(...)` results from the queue.
+    LidoClaimWithdrawal {
+        queue: Address,
+        request_ids: Vec<U256>,
+        hints: Vec<U256>,
+    },
+    /// Uniswap V3 NonfungiblePositionManager: mint a new LP position NFT.
+    ///
+    /// `token0` must be the lexicographically-smaller address of the pair
+    /// (NPM invariant). The `recipient` is the signer so the NFT bypasses
+    /// the router; dust-refunded amounts from slippage land in the router
+    /// and must be swept.
+    UniswapV3LpMint {
+        npm: Address,
+        token0: Address,
+        token1: Address,
+        fee: u32,
+        tick_lower: i32,
+        tick_upper: i32,
+        amount0: U256,
+        amount1: U256,
+        amount0_min: U256,
+        amount1_min: U256,
+        recipient: Address,
+        deadline: U256,
+    },
+    /// Uniswap V3: add liquidity to an existing position NFT.
+    UniswapV3LpIncrease {
+        npm: Address,
+        token0: Address,
+        token1: Address,
+        token_id: U256,
+        amount0: U256,
+        amount1: U256,
+        amount0_min: U256,
+        amount1_min: U256,
+        deadline: U256,
+    },
+    /// Uniswap V3: remove liquidity from an existing position.
+    ///
+    /// Decrease alone leaves the withdrawn tokens as uncollected fees inside
+    /// the position; a subsequent `UniswapV3LpCollect` is required to sweep
+    /// them to the router / signer.
+    UniswapV3LpDecrease {
+        npm: Address,
+        token_id: U256,
+        liquidity: u128,
+        amount0_min: U256,
+        amount1_min: U256,
+        deadline: U256,
+    },
+    /// Uniswap V3: collect tokens (fees + any freshly-decreased liquidity)
+    /// from a position NFT to `recipient` (= router under batching).
+    UniswapV3LpCollect {
+        npm: Address,
+        token0: Address,
+        token1: Address,
+        token_id: U256,
+        recipient: Address,
+        amount0_max: u128,
+        amount1_max: u128,
     },
     /// 1inch swap with pre-fetched calldata passthrough
     OneInchSwap {
@@ -166,6 +257,14 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
     match step {
         ResolvedStep::AaveV3Supply { asset, amount, .. } => Some((*asset, *amount)),
         ResolvedStep::WstETHWrap { steth, amount, .. } => Some((*steth, *amount)),
+        ResolvedStep::WstETHUnwrap { wsteth, amount, .. } => Some((*wsteth, *amount)),
+        ResolvedStep::LidoRequestWithdrawal { token, amounts, .. } => {
+            let total = amounts
+                .iter()
+                .copied()
+                .fold(U256::ZERO, |acc, a| acc.saturating_add(a));
+            Some((*token, total))
+        }
         ResolvedStep::UniswapV3Swap {
             token_in,
             amount_in,
@@ -198,13 +297,20 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
 /// Helper: determine what token and guaranteed amount a step produces (if any).
 ///
 /// Used by cross-step amount flow validation and "all" amount resolution.
-pub fn step_produces(step: &ResolvedStep) -> Option<(Address, U256)> {
-    match step {
+///
+/// `fee_bps` is the router's sweep-time skim in basis points. The returned
+/// amount is reduced to `raw * (10_000 - fee_bps) / 10_000` so downstream
+/// `"all"` consumers see the floor that will actually be in the router after
+/// sweep. Pass `0` when the produced tokens do NOT flow through sweep
+/// (e.g. inside a flashloan's inner pipeline where tokens are transferred
+/// back to the flashloan provider, not swept to the user).
+pub fn step_produces(step: &ResolvedStep, fee_bps: u16) -> Option<(Address, U256)> {
+    let (token, amount) = match step {
         ResolvedStep::UniswapV3Swap {
             token_out,
             amount_out_minimum,
             ..
-        } => Some((*token_out, *amount_out_minimum)),
+        } => (*token_out, *amount_out_minimum),
         // 1inch calldata is opaque — we use amount_in as a conservative lower bound
         // on production. The router's sweep will still return whatever arrives.
         // Downstream `"all"` consumers must not over-consume.
@@ -212,18 +318,23 @@ pub fn step_produces(step: &ResolvedStep) -> Option<(Address, U256)> {
             token_out,
             amount_in,
             ..
-        } => Some((*token_out, *amount_in)),
-        ResolvedStep::AaveV3Borrow { asset, amount, .. } => Some((*asset, *amount)),
-        ResolvedStep::AaveV3Withdraw { asset, amount, .. } => Some((*asset, *amount)),
-        ResolvedStep::LidoStake { lido, amount, .. } => Some((*lido, *amount)),
+        } => (*token_out, *amount_in),
+        ResolvedStep::AaveV3Borrow { asset, amount, .. } => (*asset, *amount),
+        ResolvedStep::AaveV3Withdraw { asset, amount, .. } => (*asset, *amount),
+        ResolvedStep::LidoStake { steth, amount, .. } => (*steth, *amount),
         ResolvedStep::Wrap {
             wrapped_token,
             amount,
             ..
-        } => Some((*wrapped_token, *amount)),
-        ResolvedStep::WstETHWrap { wsteth, amount, .. } => Some((*wsteth, *amount)),
-        _ => None,
-    }
+        } => (*wrapped_token, *amount),
+        ResolvedStep::WstETHWrap { wsteth, amount, .. } => (*wsteth, *amount),
+        ResolvedStep::WstETHUnwrap { steth, amount, .. } => (*steth, *amount),
+        _ => return None,
+    };
+
+    debug_assert!(fee_bps <= 10_000, "fee_bps must be <= 10_000");
+    let reduced = amount * U256::from(10_000u64 - fee_bps as u64) / U256::from(10_000u64);
+    Some((token, reduced))
 }
 
 /// A concrete EVM call produced by an adapter.

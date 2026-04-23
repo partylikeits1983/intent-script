@@ -137,12 +137,13 @@ Use when the user says: "wrap ETH", "convert ETH to WETH", "wrap stETH"
 | `asset` | ✅ | `"ETH"` (wraps to WETH) or `"stETH"` (wraps to wstETH) |
 | `amount` | ✅ | Amount as string, or `"all"` |
 
-### 6. `unwrap` — Unwrap WETH to ETH
+### 6. `unwrap` — Unwrap WETH or wstETH
 
-Use when the user says: "unwrap WETH", "convert WETH to ETH"
+Use when the user says: "unwrap WETH", "convert WETH to ETH", "unwrap wstETH", "convert wstETH to stETH"
 
 ```json
-{ "unwrap": { "asset": "WETH", "amount": "2.0" } }
+{ "unwrap": { "asset": "WETH",   "amount": "2.0" } }
+{ "unwrap": { "asset": "wstETH", "amount": "1.0" } }
 ```
 
 ### 7. `stake` — Stake ETH in Lido
@@ -159,7 +160,83 @@ Use when the user says: "stake ETH", "stake in Lido", "get stETH"
 | `amount` | ✅ | Amount as string |
 | `into` | ✅ | Always `"lido"` |
 
-### 8. `send` — Send tokens or ETH to an address
+### 8. `request_withdrawal` — Lido Withdrawal Queue Request
+
+Use when the user says: "unstake stETH", "request Lido withdrawal", "queue an unstake"
+
+```json
+{ "request_withdrawal": { "asset": "stETH",  "amounts": ["5.0"], "from": "lido" } }
+{ "request_withdrawal": { "asset": "wstETH", "amounts": ["1.0"], "from": "lido" } }
+```
+
+Each element in `amounts` creates one withdrawal NFT minted to the signer. Per-NFT amount must be between 100 wei and 1000 stETH (Lido protocol limit). Finalization happens asynchronously on-chain — claim with `claim_withdrawal` once the queue processes the request.
+
+### 9. `claim_withdrawal` — Lido Withdrawal Claim
+
+Use when the user says: "claim my Lido withdrawal", "redeem withdrawal NFT"
+
+```json
+{ "claim_withdrawal": { "protocol": "lido", "request_ids": [12345], "hints": [42] } }
+```
+
+`request_ids` are the NFT ids returned by `request_withdrawal`; `hints` must come from `WithdrawalQueue.findCheckpointHints(...)` (an RPC lookup; the LLM/runtime must supply them). ETH is returned to the caller.
+
+### 10. `lp_mint` — Uniswap V3 Concentrated Liquidity
+
+Use when the user says: "LP on Uniswap", "provide liquidity", "open a Uni V3 position"
+
+```json
+{
+  "lp_mint": {
+    "protocol": "uniswap",
+    "token0": "USDC", "token1": "WETH",
+    "fee": "3000",
+    "tick_lower": -887220, "tick_upper": 887220,
+    "amount0": "1000", "amount1": "0.3",
+    "min_amount0": "990", "min_amount1": "0.297"
+  }
+}
+```
+
+`token0` must be the address-wise smaller of the two tokens (the compiler will swap them automatically if you get it wrong, and emit a warning). Fee tier is one of `"500"`, `"3000"`, `"10000"`. Ticks must be multiples of the tier's spacing (10 / 60 / 200 respectively). `±887220` is the full-range canonical choice for 3000bp pools.
+
+### 11. `lp_increase` — Add Liquidity to an Existing Position
+
+```json
+{
+  "lp_increase": {
+    "position_id": "12345",
+    "token0": "USDC", "token1": "WETH",
+    "amount0": "500", "amount1": "0.15",
+    "min_amount0": "495", "min_amount1": "0.148"
+  }
+}
+```
+
+### 12. `lp_decrease` — Remove Liquidity from a Position
+
+```json
+{
+  "lp_decrease": {
+    "position_id": "12345",
+    "token0": "USDC", "token1": "WETH",
+    "liquidity": "all",
+    "min_amount0": "950", "min_amount1": "0.28"
+  }
+}
+```
+
+`liquidity` is a u128 decimal or `"all"` to burn the full on-chain liquidity. Tokens accumulate as "owed" on the position — a `lp_collect` step in the same intent (or later) withdraws them.
+
+### 13. `lp_collect` — Withdraw Owed Tokens from a Position
+
+```json
+{ "lp_collect": { "position_id": "12345", "token0": "USDC", "token1": "WETH" } }
+```
+
+Collects accumulated fees plus any proceeds from a preceding `lp_decrease` on the same position.
+
+### 14. `send` — Send tokens or ETH to an address
 
 Use when the user says: "send", "transfer", "pay"
 

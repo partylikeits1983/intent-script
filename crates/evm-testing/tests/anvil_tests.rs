@@ -91,7 +91,10 @@ mod hex {
 /// Test: Wrap ETH → WETH on a local Anvil instance forking mainnet.
 #[tokio::test]
 async fn test_wrap_eth_on_anvil() -> eyre::Result<()> {
-    let anvil = Anvil::new().fork(fork_url()).try_spawn()?;
+    // Pin the forked Anvil's chain_id to 31337 (what `config/chains.json`'s
+    // "anvil" entry declares) so compiled txs — which carry `chain_id: 31337`
+    // — aren't rejected by the node's signer-chain-id check.
+    let anvil = Anvil::new().fork(fork_url()).chain_id(31337).try_spawn()?;
 
     let provider = ProviderBuilder::new().connect_http(anvil.endpoint_url());
 
@@ -145,7 +148,10 @@ async fn test_wrap_eth_on_anvil() -> eyre::Result<()> {
 #[tokio::test]
 #[ignore = "WETH withdraw() reverts on Anvil fork — known environment bug, not a compiler bug"]
 async fn test_unwrap_weth_on_anvil() -> eyre::Result<()> {
-    let anvil = Anvil::new().fork(fork_url()).try_spawn()?;
+    // Pin the forked Anvil's chain_id to 31337 (what `config/chains.json`'s
+    // "anvil" entry declares) so compiled txs — which carry `chain_id: 31337`
+    // — aren't rejected by the node's signer-chain-id check.
+    let anvil = Anvil::new().fork(fork_url()).chain_id(31337).try_spawn()?;
 
     let provider = ProviderBuilder::new().connect_http(anvil.endpoint_url());
 
@@ -215,11 +221,14 @@ async fn test_unwrap_weth_on_anvil() -> eyre::Result<()> {
 /// Full on-chain execution of the batched tx is tested in the Foundry test suite.
 #[tokio::test]
 async fn test_aave_deposit_usdc_produces_batched_tx() -> eyre::Result<()> {
-    let anvil = Anvil::new().fork(fork_url()).try_spawn()?;
+    // Pin the forked Anvil's chain_id to 31337 (what `config/chains.json`'s
+    // "anvil" entry declares) so compiled txs — which carry `chain_id: 31337`
+    // — aren't rejected by the node's signer-chain-id check.
+    let anvil = Anvil::new().fork(fork_url()).chain_id(31337).try_spawn()?;
 
     let signer = anvil.addresses()[0];
     // Deployed IntentRouter address — sourced from config/protocols/anvil.json
-    let router_addr = address!("5bCC3154698bBC205ABF09351A52DD2d1A39F608");
+    let router_addr = address!("9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120");
 
     // Compile the deposit intent
     let intent_json = format!(

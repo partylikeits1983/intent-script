@@ -9,8 +9,9 @@
 | Protocol | Version | Actions | On-Chain Contract | Adapter File |
 |----------|---------|---------|-------------------|-------------|
 | **Uniswap** | V3 | `swap` (exactInputSingle) | `0xE592427A0AEce92De3Edee1F18E0157C05861564` | `adapters/uniswap_v3.rs` |
+| **Uniswap** | V3 LP | `lp_mint`, `lp_increase`, `lp_decrease`, `lp_collect` | NPM `0xC36442b4a4522E871399CD717aBDD847Ab11FE88` | `adapters/uniswap_v3_lp.rs` |
 | **Aave** | V3 | `deposit`, `borrow`, `withdraw` | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` | `adapters/aave_v3.rs` |
-| **Lido** | — | `stake` (ETH→stETH), `wrap` (stETH→wstETH) | stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` | `adapters/lido.rs` |
+| **Lido** | — | `stake` (ETH→stETH), `wrap` (stETH→wstETH), `unwrap` (wstETH→stETH), `request_withdrawal`, `claim_withdrawal` | stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84`, Queue `0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1` | `adapters/lido.rs` |
 | **WETH9** | — | `wrap` (ETH→WETH), `unwrap` (WETH→ETH) | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | `adapters/wrap.rs` |
 | **1inch** | Fusion v6 | `swap` (calldata passthrough) | `0x111111125421cA6dc452d289314280a0f8842A65` | `adapters/oneinch.rs` |
 | **ERC-20** | — | `approve`, `transferFrom`, `permit`, `transfer` | Any ERC-20 | `adapters/erc20.rs` |
@@ -24,9 +25,15 @@
 | **Deposit into Aave** | deposit | transferFrom + approve + supply |
 | **Deposit + Borrow** | deposit → borrow | transferFrom + approve + supply + borrow + sweep(borrowed) |
 | **Swap + Deposit** | swap → deposit | transferFrom + approve + swap(→router) + approve + supply |
-| **Swap + Deposit + Borrow** | swap → deposit → borrow | transferFrom + approve + swap(→router) + approve + supply + borrow + sweep(WETH,DAI) |
+| **Swap + Deposit + Borrow** | swap → deposit → borrow | transferFrom + approve + swap(→router) + approve + supply + borrow + sweep(collateral, borrowed) |
 | **Stake + Wrap** | stake → wrap(stETH) | stake(ETH→stETH) + approve(stETH→wstETH) + wrap + sweep(wstETH) |
+| **Unwrap wstETH** | unwrap(wstETH) | transferFrom(wstETH) + unwrap + sweep(stETH) |
 | **Withdraw from Aave** | withdraw | withdraw (user must have existing position) |
+| **Lido Withdrawal Request** | request_withdrawal | transferFrom + approve(queue) + requestWithdrawals[WstETH] (NFTs → signer) |
+| **Lido Withdrawal Claim** | claim_withdrawal | claimWithdrawals (ETH → caller) |
+| **Uniswap V3 LP Mint** | lp_mint | transferFrom×2 + approve(NPM)×2 + mint (NFT → signer) + sweep(pair) |
+| **Uniswap V3 LP Increase** | lp_increase | transferFrom×2 + approve(NPM)×2 + increaseLiquidity + sweep(pair) |
+| **Uniswap V3 LP Decrease + Collect** | lp_decrease → lp_collect | decreaseLiquidity + collect + sweep(pair) |
 
 ### Execution Modes
 
@@ -71,27 +78,29 @@
 
 | Test File | Count | What |
 |-----------|-------|------|
-| `crates/intent-script/tests/integration.rs` | ~22 | Compiler pipeline end-to-end |
+| `crates/intent-script/tests/integration.rs` | ~37 | Compiler pipeline end-to-end (adds Lido queue + V3 LP cases) |
 | `crates/intent-script/tests/enricher_tests.rs` | ~8 | Enrichment-specific tests |
 | `crates/intent-script/tests/fuzz_amounts.rs` | ~5 | Amount parsing fuzz tests |
-| `crates/intent-script/tests/generate_calldata.rs` | ~9 | Fixture generators for Foundry |
+| `crates/intent-script/tests/generate_calldata.rs` | ~11 | Fixture generators for Foundry |
 | `crates/intent-script/tests/generate_eip712_fixtures.rs` | ~6 | EIP-712 batch fixture generators |
 | `crates/intent-script/src/eip712.rs` (unit tests) | 5 | EIP-712 hashing verification |
 | `crates/intent-script/src/` (other unit tests) | ~6 | Amount parsing, etc. |
 | `crates/evm-testing/tests/anvil_tests.rs` | 3 | Anvil fork tests (1 ignored) |
 
-**Total Rust:** ~130 tests, ~130 pass, 0 fail, 1 ignored
+**Total Rust:** ~150 tests, all passing, 1 ignored (see Known Issues)
 
 ### Foundry Tests
 
 | Test File | Count | What |
 |-----------|-------|------|
-| `contracts/test/IntentRouter.t.sol` | ~10 | Unit tests with mocks (executeDirect + executeSigned) |
-| `contracts/test/IntentRouterCalldata.t.sol` | ~6 | Calldata verification from fixtures |
-| `contracts/test/IntentForkTests.t.sol` | ~5 | Local mock integration tests |
-| `contracts/test/IntentForkE2E.t.sol` | ~7 | Fork E2E against mainnet |
+| `contracts/test/IntentRouter.t.sol` | 17 | Unit tests with mocks (executeDirect + executeSigned) |
+| `contracts/test/IntentRouterCalldata.t.sol` | 7 | Calldata verification from fixtures |
+| `contracts/test/IntentRouterFees.t.sol` | 10 | Fee accrual / withdrawal |
+| `contracts/test/IntentRouterReentrancy.t.sol` | 1 | Reentrancy guard |
+| `contracts/test/IntentForkTests.t.sol` | 5 | Local mock integration tests |
+| `contracts/test/IntentForkE2E.t.sol` | 7 | Fork E2E against mainnet |
 
-**Total Foundry:** ~29 tests, 29 pass, 0 fail
+**Total Foundry:** 47 tests, all passing
 
 ### Running Tests
 
@@ -139,6 +148,11 @@ cargo run -p intent-script -- crates/intent-script/examples/wrap_eth.json -c ./c
 - Simulation requires an RPC connection (`eth_call`)
 - The library is `no_std`-compatible and has no network access
 - Simulation belongs in the CLI (`main.rs`) or frontend layer
+
+### 4. Aave V3 WETH LTV set to 0 on Mainnet
+- `test_fork_complexDefi_*` originally swapped USDC → WETH and borrowed against WETH collateral
+- After Aave governance set WETH LTV to 0 (post-2024), borrow validation reverts with `LtvValidationFailed()` even though the compiler output is correct
+- **Fix:** `examples/complex_defi.json` swaps USDC → wstETH (0.05% fee tier) and borrows DAI against wstETH collateral (LTV ≈ 78.5%). The test was updated to match
 
 ---
 

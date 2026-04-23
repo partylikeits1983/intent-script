@@ -31,6 +31,10 @@ pub struct ProtocolConfig {
     pub protocol_type: String,
     pub version: String,
     pub contracts: HashMap<String, String>,
+    /// Router-only: basis-points skim applied at sweep time.
+    /// Absent or `None` for non-router protocols.
+    #[serde(default)]
+    pub fee_bps: Option<u16>,
 }
 
 /// Combined registry context for a specific network.
@@ -91,6 +95,19 @@ impl RegistryContext {
     /// Check if an asset alias refers to the wrapped native asset (e.g. "WETH").
     pub fn is_wrapped_native(&self, alias: &str) -> bool {
         alias == self.chain.wrapped_native
+    }
+
+    /// Router fee in basis points (applied at sweep/refund time on-chain).
+    ///
+    /// Returns 0 when no `intent_router` protocol is configured or when its
+    /// `fee_bps` field is absent. Clamped to <= 10_000 to keep
+    /// `step_produces` reduction math safe.
+    pub fn fee_bps(&self) -> u16 {
+        self.protocols
+            .get("intent_router")
+            .and_then(|p| p.fee_bps)
+            .unwrap_or(0)
+            .min(10_000)
     }
 
     /// Look up the IntentRouter address for this network, if configured.

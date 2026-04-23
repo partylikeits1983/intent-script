@@ -14,11 +14,11 @@ This directory splits the monolithic plan in `../expand-defi-coverage.md` into d
 |---|---|---|---|
 | 01 | [01-phase0-preflight-config.md](01-phase0-preflight-config.md) | ✅ DONE (2026-04-22) | all subsequent |
 | 02 | [02-phase1-router-foundations.md](02-phase1-router-foundations.md) | ✅ DONE (2026-04-22) | 03+ |
-| 03 | [03-phase2-compiler-fee-awareness.md](03-phase2-compiler-fee-awareness.md) | pending | 04+ |
-| 04 | [04-phase3-lido-enhancements.md](04-phase3-lido-enhancements.md) | pending | — (parallel-safe after 03) |
+| 03 | [03-phase2-compiler-fee-awareness.md](03-phase2-compiler-fee-awareness.md) | ✅ DONE (2026-04-22) | 04+ |
+| 04 | [04-phase3-lido-enhancements.md](04-phase3-lido-enhancements.md) | ✅ DONE (2026-04-23) | — (parallel-safe after 03) |
 | 05 | [05-phase4-morpho-blue.md](05-phase4-morpho-blue.md) | pending | — (parallel-safe after 03) |
 | 06 | [06-phase5-balancer-flashloan-aave-loop.md](06-phase5-balancer-flashloan-aave-loop.md) | pending | 07+ |
-| 07 | [07-phase6-uniswap-v3-lp.md](07-phase6-uniswap-v3-lp.md) | pending | — (parallel-safe after 02) |
+| 07 | [07-phase6-uniswap-v3-lp.md](07-phase6-uniswap-v3-lp.md) | ✅ DONE (2026-04-23) | — (parallel-safe after 02) |
 | 08 | [08-phase7-across-bridging.md](08-phase7-across-bridging.md) | pending | — (parallel-safe after 03) |
 | 09 | [09-phase8-integration.md](09-phase8-integration.md) | pending | final |
 

@@ -364,7 +364,7 @@ fn test_swap_deposit_borrow_chain() {
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
-            { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+            { "deposit": { "asset": "WETH", "amount": "all", "into": "aave" } },
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
         ]
     }"#;
@@ -581,7 +581,7 @@ fn test_stake_and_wrap_steth() {
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } },
-            { "wrap": { "asset": "stETH", "amount": "10.0" } }
+            { "wrap": { "asset": "stETH", "amount": "all" } }
         ]
     }"#;
 
@@ -651,6 +651,129 @@ fn test_stake_eth_in_lido() {
     println!("Stake ETH in Lido output:\n{json_str}");
     assert!(json_str.contains("single_tx"));
     assert!(json_str.contains("0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"));
+}
+
+#[test]
+fn test_wrap_then_stake_elided_to_single_lido_call() {
+    // LLM regression: emits `wrap ETH→WETH` then `stake ETH` when a single
+    // `stake` would suffice. The compiler must silently rewrite to the
+    // correct shape: one Lido.submit() call carrying msg.value.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "2.5" } },
+            { "stake": { "asset": "ETH", "amount": "2.5", "into": "lido" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::SingleTx(tx) => {
+            // Target the Lido stETH contract directly, not WETH.
+            assert_eq!(
+                format!("{}", tx.to),
+                "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+                "wrap should be elided and the stake should hit stETH directly"
+            );
+            // msg.value = 2.5 ETH
+            let expected = alloy_primitives::U256::from(25u128)
+                * alloy_primitives::U256::from(10u128).pow(alloy_primitives::U256::from(17u64));
+            assert_eq!(
+                tx.value, expected,
+                "stake should carry 2.5 ETH as msg.value"
+            );
+            // submit(address) selector
+            assert_eq!(&tx.data[..4], &[0xa1, 0x90, 0x3e, 0xab]);
+        }
+        other => panic!("expected SingleTx after elide, got {other:?}"),
+    }
+
+    // The compiler should warn so we can track LLM regressions.
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Elided redundant 'wrap")),
+        "expected elide warning, got {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_wrap_then_swap_weth_elided_to_native_swap() {
+    // LLM regression: emits `wrap ETH→WETH` + `swap WETH→USDC` instead of
+    // a single native-ETH swap. The compiler must rewrite to one swap call
+    // with msg.value = amount_in, not two separate calls.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1" } },
+            { "swap": { "from": "WETH", "to": "USDC", "amount": "1", "price": "2344", "slippage": "0.5" } }
+        ],
+        "current_timestamp": 1776824820
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::SingleTx(tx) => {
+            // One ETH as msg.value, straight to the Uniswap V3 SwapRouter.
+            let expected = alloy_primitives::U256::from(1u128)
+                * alloy_primitives::U256::from(10u128).pow(alloy_primitives::U256::from(18u64));
+            assert_eq!(
+                tx.value, expected,
+                "elided swap should carry amount_in as msg.value"
+            );
+            assert_eq!(
+                format!("{:?}", tx.to).to_lowercase(),
+                "0xe592427a0aece92de3edee1f18e0157c05861564",
+                "elided pair should be a single call to SwapRouter"
+            );
+        }
+        other => panic!("expected SingleTx after elide, got {other:?}"),
+    }
+
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Elided redundant 'wrap")),
+        "expected elide warning, got {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_wrap_alone_is_not_elided() {
+    // Sanity: a legitimate standalone wrap (no stake/swap after it) must
+    // still produce a WETH.deposit() call. Don't over-eagerly rewrite.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap": { "asset": "ETH", "amount": "1.5" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::SingleTx(tx) => {
+            // WETH9 mainnet address
+            assert_eq!(
+                format!("{:?}", tx.to).to_lowercase(),
+                "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+            );
+        }
+        other => panic!("expected SingleTx for standalone wrap, got {other:?}"),
+    }
+    assert!(
+        !result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Elided redundant 'wrap")),
+        "standalone wrap must not be elided",
+    );
 }
 
 #[test]
@@ -1720,7 +1843,8 @@ fn test_preview_swap_inputs_outputs() {
 
     assert_eq!(preview.outputs.len(), 1);
     assert_eq!(preview.outputs[0].symbol, "WETH");
-    assert_eq!(preview.outputs[0].amount, "0.04");
+    // 0.04 WETH - 10 bps router fee = 0.03996 WETH actually netted to user.
+    assert_eq!(preview.outputs[0].amount, "0.03996");
 
     // Preview steps must only contain the user-meaningful swap; no approve or
     // transferFrom (those are enrich artefacts).
@@ -1897,7 +2021,7 @@ fn test_multi_token_only_user_pulls_counted() {
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "WETH", "amount": "1.0", "to": "USDC", "min_amount_out": "2000" } },
-            { "deposit": { "asset": "USDC", "amount": "2000", "into": "aave" } }
+            { "deposit": { "asset": "USDC", "amount": "all", "into": "aave" } }
         ]
     }"#;
     // Sufficient WETH, zero USDC — USDC shouldn't matter because the swap
@@ -1931,7 +2055,7 @@ fn test_multi_step_emits_one_approve_for_pulled_token() {
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "WETH", "amount": "1.0", "to": "USDC", "min_amount_out": "2000" } },
-            { "deposit": { "asset": "USDC", "amount": "2000", "into": "aave" } }
+            { "deposit": { "asset": "USDC", "amount": "all", "into": "aave" } }
         ]
     }"#;
     let allowances = r#"{ "tokens": { "WETH": "0" } }"#;
@@ -1956,4 +2080,587 @@ fn test_multi_step_emits_one_approve_for_pulled_token() {
         }
         other => panic!("Expected Eip712Intent, got {other:?}"),
     }
+}
+
+#[test]
+fn test_lido_unwrap_wsteth() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "unwrap": { "asset": "wstETH", "amount": "1.0" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
+            assert!(
+                intent.description.contains("Unwrap"),
+                "Description should mention Unwrap: {}",
+                intent.description
+            );
+            // The sub-calls the router will delegatecall live on
+            // `intent.intent_batch.calls`. Walk them directly and assert:
+            //   - there's a wstETH.unwrap() call
+            //   - no Erc20Approve is inserted for the unwrap itself
+            //     (unwrap burns caller's own wstETH — approve is not needed)
+            let approve_selector = [0x09, 0x5e, 0xa7, 0xb3];
+            let unwrap_selector = [0xde, 0x0e, 0x9a, 0x3e]; // wstETH.unwrap(uint256)
+            let mut saw_unwrap = false;
+            let mut saw_approve = false;
+            for call in &intent.intent_batch.calls {
+                if call.call_data.len() >= 4 {
+                    if call.call_data[..4] == unwrap_selector {
+                        saw_unwrap = true;
+                    }
+                    if call.call_data[..4] == approve_selector {
+                        saw_approve = true;
+                    }
+                }
+            }
+            assert!(saw_unwrap, "Expected the wstETH.unwrap() call in the batch");
+            assert!(
+                !saw_approve,
+                "Unwrap should not require an approve — wstETH is burned from caller's balance"
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+/// Helper: find the single call in `intent.intent_batch.calls` whose `target`
+/// matches the given hex address (case-insensitive). Fails the test if more
+/// than one such call exists, or none.
+fn single_call_to<'a>(
+    intent: &'a intent_script::output::Eip712IntentOutput,
+    address_hex: &str,
+) -> &'a intent_script::output::CallData {
+    let matches: Vec<&intent_script::output::CallData> = intent
+        .intent_batch
+        .calls
+        .iter()
+        .filter(|c| format!("{}", c.target).eq_ignore_ascii_case(address_hex))
+        .collect();
+    match matches.as_slice() {
+        [one] => one,
+        [] => panic!("No call to {} in batch", address_hex),
+        more => panic!(
+            "Expected exactly one call to {}, found {}",
+            address_hex,
+            more.len()
+        ),
+    }
+}
+
+#[test]
+fn test_lido_request_withdrawal_steth() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "request_withdrawal": {
+                    "asset": "stETH",
+                    "amounts": ["0.5"],
+                    "from": "lido"
+                }
+            }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert_eq!(intent.direct_tx.to, intent.domain.verifying_contract);
+            assert!(
+                intent.description.contains("Request Lido withdrawal"),
+                "Description should mention the request withdrawal: {}",
+                intent.description
+            );
+            // Exactly one call should target the queue, and its calldata for
+            // a single 0.5-stETH request must be 4 + 32*3 + 32*1 = 132 bytes
+            // (selector + offset to amounts + owner + amounts.len + amounts[0]).
+            let queue = single_call_to(intent, "0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1");
+            assert_eq!(
+                queue.call_data.len(),
+                132,
+                "requestWithdrawals(uint256[1], address) calldata is 132 bytes"
+            );
+            assert_eq!(
+                queue.value.to_string(),
+                "0",
+                "requestWithdrawals should carry no ETH value"
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_lido_request_withdrawal_wsteth_differs_from_steth_selector() {
+    // The calldata selectors MUST differ between the stETH and wstETH variants.
+    // We don't hardcode the expected selector — instead we run both variants
+    // and assert their leading 4 bytes differ.
+    let steth_input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "request_withdrawal": {
+                    "asset": "stETH",
+                    "amounts": ["0.5"],
+                    "from": "lido"
+                }
+            }
+        ]
+    }"#;
+    let wsteth_input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "request_withdrawal": {
+                    "asset": "wstETH",
+                    "amounts": ["0.5"],
+                    "from": "lido"
+                }
+            }
+        ]
+    }"#;
+
+    let steth_res = do_compile(steth_input).expect("compile stETH ok");
+    let wsteth_res = do_compile(wsteth_input).expect("compile wstETH ok");
+
+    let extract = |r: &CompileResult| -> [u8; 4] {
+        match &r.output {
+            CompileOutput::Eip712Intent(intent) => {
+                let queue = single_call_to(intent, "0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1");
+                let mut s = [0u8; 4];
+                s.copy_from_slice(&queue.call_data[..4]);
+                s
+            }
+            other => panic!("Expected Eip712Intent, got {:?}", other),
+        }
+    };
+
+    let steth_selector = extract(&steth_res);
+    let wsteth_selector = extract(&wsteth_res);
+    assert_ne!(
+        steth_selector, wsteth_selector,
+        "stETH and wstETH request-withdrawal selectors must differ"
+    );
+}
+
+#[test]
+fn test_lido_claim_withdrawal() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "claim_withdrawal": {
+                    "protocol": "lido",
+                    "request_ids": [42, 43],
+                    "hints": [1, 1]
+                }
+            }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    // Claim is a single tx: no token pulls, no approvals, no sweep.
+    match &result.output {
+        CompileOutput::SingleTx(tx) => {
+            assert_eq!(
+                format!("{}", tx.to),
+                "0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1"
+            );
+            assert_eq!(tx.value.to_string(), "0");
+            // claimWithdrawals(uint256[],uint256[]) has a non-trivial calldata.
+            assert!(tx.data.len() > 4, "claim should have calldata");
+        }
+        CompileOutput::Eip712Intent(intent) => {
+            // Acceptable if routed — no prerequisite approvals expected.
+            assert!(intent.prerequisite_approvals.is_empty());
+        }
+        other => panic!("Unexpected compile output: {:?}", other),
+    }
+}
+
+#[test]
+fn test_lido_claim_withdrawal_hints_length_mismatch_fails() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "claim_withdrawal": {
+                    "protocol": "lido",
+                    "request_ids": [42, 43],
+                    "hints": [1]
+                }
+            }
+        ]
+    }"#;
+
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("hints length"),
+        "Expected hints-length mismatch error, got: {err}"
+    );
+}
+
+#[test]
+fn test_lido_request_withdrawal_rejects_zero_amount() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "request_withdrawal": {
+                    "asset": "stETH",
+                    "amounts": ["0"],
+                    "from": "lido"
+                }
+            }
+        ]
+    }"#;
+
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("greater than zero"),
+        "Expected non-zero amount error, got: {err}"
+    );
+}
+
+#[test]
+fn test_lido_request_withdrawal_rejects_unknown_asset() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            {
+                "request_withdrawal": {
+                    "asset": "USDC",
+                    "amounts": ["1.0"],
+                    "from": "lido"
+                }
+            }
+        ]
+    }"#;
+
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("stETH") || err.contains("wstETH"),
+        "Expected asset-must-be-stETH-or-wstETH error, got: {err}"
+    );
+}
+
+// ─── Uniswap V3 LP ──────────────────────────────────────────────────
+
+/// Uniswap V3 NPM on mainnet/anvil.
+const NPM_ADDR: &str = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
+
+#[test]
+fn test_lp_mint_compiles() {
+    // USDC (0xA0b8...) is lexicographically smaller than WETH (0xC02a...),
+    // so the compiler must preserve that as token0 regardless of DSL order.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC",
+                "token1": "WETH",
+                "fee": "3000",
+                "tick_lower": -200040,
+                "tick_upper": -199980,
+                "amount0": "1000",
+                "amount1": "0.3",
+                "min_amount0": "990",
+                "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            // Expect the batch to include:
+            //   - 2 transferFrom (USDC, WETH)
+            //   - 2 approves (NPM)
+            //   - 1 mint
+            let transfer_count = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| c.call_data.len() >= 4 && c.call_data[..4] == [0x23, 0xb8, 0x72, 0xdd])
+                .count();
+            assert_eq!(transfer_count, 2, "expected two transferFrom calls");
+
+            let approve_selector = [0x09, 0x5e, 0xa7, 0xb3];
+            let approve_count = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| c.call_data.len() >= 4 && c.call_data[..4] == approve_selector)
+                .count();
+            assert_eq!(approve_count, 2, "expected two approve(NPM) calls");
+
+            // Exactly one NPM.mint call.
+            let npm_calls: Vec<_> = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| format!("{}", c.target).eq_ignore_ascii_case(NPM_ADDR))
+                .collect();
+            assert_eq!(npm_calls.len(), 1, "expected one NPM call");
+
+            // Both tokens should be swept for dust refunds.
+            assert_eq!(
+                intent.intent_batch.tokens_to_sweep.len(),
+                2,
+                "mint should register both tokens for sweep"
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_lp_mint_order_canonicalized_regardless_of_dsl_order() {
+    // Same pair supplied in reverse DSL order should produce identical calldata.
+    let a = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "WETH",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "990", "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+    let b = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "WETH", "token1": "USDC",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "0.3", "amount1": "1000",
+                "min_amount0": "0.29", "min_amount1": "990"
+            } }
+        ]
+    }"#;
+
+    let ra = do_compile(a).expect("A ok");
+    let rb = do_compile(b).expect("B ok");
+
+    let extract_mint_call = |r: &CompileResult| -> Vec<u8> {
+        match &r.output {
+            CompileOutput::Eip712Intent(intent) => intent
+                .intent_batch
+                .calls
+                .iter()
+                .find(|c| format!("{}", c.target).eq_ignore_ascii_case(NPM_ADDR))
+                .expect("NPM call present")
+                .call_data
+                .to_vec(),
+            _ => panic!("expected batched output"),
+        }
+    };
+    assert_eq!(
+        extract_mint_call(&ra),
+        extract_mint_call(&rb),
+        "mint calldata must be identical regardless of DSL token order"
+    );
+}
+
+#[test]
+fn test_lp_mint_rejects_misaligned_ticks() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "WETH",
+                "fee": "3000",
+                "tick_lower": -200041, "tick_upper": -199981,
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "990", "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("multiples of tick spacing"),
+        "expected tick-spacing error, got: {err}"
+    );
+}
+
+#[test]
+fn test_lp_mint_rejects_invalid_fee_tier() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "WETH",
+                "fee": "1500",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "990", "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("fee tier"),
+        "expected fee-tier error, got: {err}"
+    );
+}
+
+#[test]
+fn test_lp_mint_requires_slippage_protection() {
+    // Both mins zero — must be rejected.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "WETH",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "0", "min_amount1": "0"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("slippage protection"),
+        "expected slippage-required error, got: {err}"
+    );
+}
+
+#[test]
+fn test_lp_increase_emits_dual_transfer_and_approve() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_increase": {
+                "position_id": "12345",
+                "token0": "USDC",
+                "token1": "WETH",
+                "amount0": "500",
+                "amount1": "0.15",
+                "min_amount0": "495",
+                "min_amount1": "0.148"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let transfer_count = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| c.call_data.len() >= 4 && c.call_data[..4] == [0x23, 0xb8, 0x72, 0xdd])
+                .count();
+            assert_eq!(transfer_count, 2);
+            let approve_count = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| c.call_data.len() >= 4 && c.call_data[..4] == [0x09, 0x5e, 0xa7, 0xb3])
+                .count();
+            assert_eq!(approve_count, 2);
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_lp_decrease_then_collect() {
+    // Rebalance pattern: decrease → collect in one intent.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_decrease": {
+                "position_id": "12345",
+                "token0": "USDC",
+                "token1": "WETH",
+                "liquidity": "1000000000000000000",
+                "min_amount0": "950",
+                "min_amount1": "0.28"
+            } },
+            { "lp_collect": {
+                "position_id": "12345",
+                "token0": "USDC",
+                "token1": "WETH"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            // Both NPM calls should target the same NFT.
+            let npm_calls: Vec<_> = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| format!("{}", c.target).eq_ignore_ascii_case(NPM_ADDR))
+                .collect();
+            assert_eq!(npm_calls.len(), 2, "expected decrease + collect calls");
+
+            // No approves or transferFroms should appear — decrease/collect
+            // don't consume user tokens (tokens bypass router via recipient=signer).
+            let approve_count = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| c.call_data.len() >= 4 && c.call_data[..4] == [0x09, 0x5e, 0xa7, 0xb3])
+                .count();
+            assert_eq!(approve_count, 0);
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_lp_decrease_rejects_all_liquidity() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_decrease": {
+                "position_id": "12345",
+                "token0": "USDC",
+                "token1": "WETH",
+                "liquidity": "all",
+                "min_amount0": "950",
+                "min_amount1": "0.28"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("liquidity='all' is not supported"),
+        "expected all-liquidity rejection, got: {err}"
+    );
 }

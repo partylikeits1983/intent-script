@@ -42,7 +42,7 @@ fn test_swap_then_deposit_no_duplicate_transfer() {
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
-            { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } }
+            { "deposit": { "asset": "WETH", "amount": "all", "into": "aave" } }
         ]
     }"#;
 

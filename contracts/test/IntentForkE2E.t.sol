@@ -29,7 +29,7 @@ contract IntentForkE2E is Test {
     // config/protocols/ethereum.json — compiler-generated calldata bakes this
     // address into transferFrom/swap-recipient fields, and the fork test etches
     // IntentRouter bytecode at this same address so the calls line up.
-    address constant ROUTER_ADDR = 0x5bCC3154698bBC205ABF09351A52DD2d1A39F608;
+    address constant ROUTER_ADDR = 0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120;
     address constant WETH        = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant USDC        = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant DAI         = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
@@ -46,6 +46,7 @@ contract IntentForkE2E is Test {
     // Aave V3 aToken addresses on mainnet
     address constant A_WETH      = 0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8;
     address constant A_USDC      = 0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c;
+    address constant A_WSTETH    = 0x0B925eD163218f6662a35e0f0371Ac234f9E9371;
 
     // Variable debt token for DAI on Aave V3
     address constant VDEBT_DAI   = 0xcF8d0c70c850859266f5C338b38F9D663181C314;
@@ -67,10 +68,17 @@ contract IntentForkE2E is Test {
         vm.etch(ROUTER_ADDR, address(impl_).code);
         router = IntentRouter(payable(ROUTER_ADDR));
 
-        // The etched contract has owner = address(0) in storage (etch copies code, not storage).
-        // Directly write allowedTargets mapping entries via vm.store.
-        // Storage layout: slot 0 = nonces, slot 1 = owner, slot 2 = allowedTargets
-        // For mapping(address => bool) at slot 2, the slot for key k is keccak256(abi.encode(k, 2))
+        // vm.etch copies code but not storage, so the etched router starts with
+        // an all-zero storage slate. ReentrancyGuard's `_status` defaults to 1
+        // (_NOT_ENTERED) in the constructor; we write it here so nonReentrant
+        // doesn't accidentally flag a zero value as invalid state.
+        // Storage layout (IntentRouter is ReentrancyGuard):
+        //   slot 0 = ReentrancyGuard._status
+        //   slot 1 = nonces (mapping)
+        //   slot 2 = owner
+        //   slot 3 = allowedTargets (mapping)
+        vm.store(ROUTER_ADDR, bytes32(uint256(0)), bytes32(uint256(1))); // _NOT_ENTERED
+
         _allowTarget(WETH);
         _allowTarget(USDC);
         _allowTarget(DAI);
@@ -86,10 +94,11 @@ contract IntentForkE2E is Test {
     }
 
     /// @dev Directly write allowedTargets[target] = true via vm.store
-    ///      Bypasses the onlyOwner check (owner is address(0) after vm.etch)
+    ///      Bypasses the onlyOwner check (owner is address(0) after vm.etch).
+    ///      IntentRouter inherits ReentrancyGuard which occupies slot 0, so
+    ///      allowedTargets lives at slot 3 (not slot 2).
     function _allowTarget(address target) internal {
-        // allowedTargets is at storage slot 2
-        bytes32 slot = keccak256(abi.encode(target, uint256(2)));
+        bytes32 slot = keccak256(abi.encode(target, uint256(3)));
         vm.store(ROUTER_ADDR, slot, bytes32(uint256(1)));
     }
 
@@ -325,13 +334,17 @@ contract IntentForkE2E is Test {
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // Test 6: Complex DeFi — Swap USDC→WETH + Deposit WETH + Borrow DAI
+    // Test 6: Complex DeFi — Swap USDC→wstETH + Deposit wstETH + Borrow DAI
     //         via executeDirect (compiler-generated calldata)
     // ═════════════════════════════════════════════════════════════════
 
     /// @notice Full complex DeFi chain using compiler-generated calldata.
     ///         This is the end-to-end test for complex_defi.json:
-    ///         swap 5000 USDC → WETH, deposit 2 WETH into Aave, borrow 1000 DAI.
+    ///         swap 5000 USDC → wstETH, deposit all into Aave, borrow 1000 DAI.
+    ///         wstETH is used as the borrow collateral because Aave V3 set
+    ///         WETH's LTV to 0 on mainnet (post-2024), which makes WETH-collateral
+    ///         borrow flows revert with LtvValidationFailed even though the
+    ///         compiler output is correct. wstETH still has LTV ≈ 78.5%.
     function test_fork_complexDefi_executeDirect() public {
         uint256 usdcAmount = 5000 * 1e6; // 5000 USDC
         uint256 borrowAmount = 1000 * 1e18; // 1000 DAI
@@ -347,7 +360,7 @@ contract IntentForkE2E is Test {
         // Aave V3 requires approveDelegation when msg.sender != onBehalfOf.
         _approveDelegation(VDEBT_DAI, user, ROUTER_ADDR, borrowAmount);
 
-        uint256 wethBefore = IERC20(WETH).balanceOf(user);
+        uint256 wstethBefore = IERC20(WSTETH).balanceOf(user);
         uint256 daiBefore = IERC20(DAI).balanceOf(user);
 
         // Read compiler-generated calldata for complex_defi
@@ -358,17 +371,17 @@ contract IntentForkE2E is Test {
         (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Complex DeFi executeDirect should succeed");
 
-        uint256 wethAfter = IERC20(WETH).balanceOf(user);
+        uint256 wstethAfter = IERC20(WSTETH).balanceOf(user);
         uint256 daiAfter = IERC20(DAI).balanceOf(user);
-        uint256 aWethAfter = IERC20(A_WETH).balanceOf(user);
+        uint256 aWstethAfter = IERC20(A_WSTETH).balanceOf(user);
         uint256 usdcAfter = IERC20(USDC).balanceOf(user);
 
         // Assertions:
         // 1. USDC should be spent
         assertEq(usdcAfter, 0, "User should have spent all USDC");
 
-        // 2. aWETH should be > 0 (deposited 2 WETH into Aave)
-        assertTrue(aWethAfter > 0, "User should have aWETH from Aave deposit");
+        // 2. aWstETH should be > 0 (deposited the swapped wstETH into Aave)
+        assertTrue(aWstethAfter > 0, "User should have aWstETH from Aave deposit");
 
         // 3. DAI should have increased by ~1000 (borrowed from Aave)
         //    Allow small dust tolerance because the router address on mainnet fork
@@ -376,12 +389,10 @@ contract IntentForkE2E is Test {
         assertTrue(daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 1000 DAI");
         assertApproxEqAbs(daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~1000 DAI");
 
-        // 4. User may have excess WETH from the swap (swapped 5000 USDC but only deposited 2 WETH)
-        //    The sweep should return any remaining WETH to the user
         console.log("Fork complex DeFi executeDirect:");
         console.log("  USDC spent:", usdcAmount);
-        console.log("  WETH balance change:", wethAfter > wethBefore ? wethAfter - wethBefore : 0);
-        console.log("  aWETH received:", aWethAfter);
+        console.log("  wstETH balance change:", wstethAfter > wstethBefore ? wstethAfter - wstethBefore : 0);
+        console.log("  aWstETH received:", aWstethAfter);
         console.log("  DAI borrowed:", daiAfter - daiBefore);
     }
 
@@ -393,6 +404,8 @@ contract IntentForkE2E is Test {
     /// @notice Build the complex DeFi calls array for a given signer and amounts.
     ///         Matches the compiler output: transferFrom + approve + swap(recipient=router)
     ///         + approve + supply + borrow. Intermediate tokens stay in the router.
+    ///         Uses wstETH (not WETH) as the intermediate collateral asset because
+    ///         Aave V3 set WETH LTV to 0 on mainnet post-2024. See test_fork_complexDefi_executeDirect.
     function _buildComplexDefiCalls(
         address signer,
         address routerAddr,
@@ -421,34 +434,34 @@ contract IntentForkE2E is Test {
             value: 0
         });
 
-        // Step 2: Swap USDC → WETH, recipient = router (WETH stays in router)
+        // Step 2: Swap USDC → wstETH through 0.05% pool, recipient = router
         // amountOutMinimum is set to a conservative value for slippage protection
         // (matches compiler behavior when min_amount_out is specified)
         calls[2] = IntentRouter.Call({
             target: UNI_ROUTER,
             callData: abi.encodeWithSignature(
                 "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
-                USDC, WETH, uint24(3000), routerAddr,
+                USDC, WSTETH, uint24(500), routerAddr,
                 type(uint256).max, usdcAmount, uint256(1), uint160(0)
             ),
             value: 0
         });
 
-        // Step 3: Router approves Aave to spend WETH (already in router from swap)
+        // Step 3: Router approves Aave to spend wstETH (already in router from swap)
         calls[3] = IntentRouter.Call({
-            target: WETH,
+            target: WSTETH,
             callData: abi.encodeWithSignature(
                 "approve(address,uint256)", AAVE_POOL, depositAmount
             ),
             value: 0
         });
 
-        // Step 4: Supply WETH to Aave on behalf of signer
+        // Step 4: Supply wstETH to Aave on behalf of signer
         calls[4] = IntentRouter.Call({
             target: AAVE_POOL,
             callData: abi.encodeWithSignature(
                 "supply(address,uint256,address,uint16)",
-                WETH, depositAmount, signer, uint16(0)
+                WSTETH, depositAmount, signer, uint16(0)
             ),
             value: 0
         });
@@ -473,7 +486,7 @@ contract IntentForkE2E is Test {
         IntentRouter signedRouter = new IntentRouter();
 
         // Whitelist all target contracts on the signed router (Task 8: allowlist)
-        signedRouter.setAllowedTarget(WETH, true);
+        signedRouter.setAllowedTarget(WSTETH, true);
         signedRouter.setAllowedTarget(USDC, true);
         signedRouter.setAllowedTarget(DAI, true);
         signedRouter.setAllowedTarget(AAVE_POOL, true);
@@ -495,14 +508,18 @@ contract IntentForkE2E is Test {
         // Aave V3 requires approveDelegation when msg.sender != onBehalfOf.
         _approveDelegation(VDEBT_DAI, signer, address(signedRouter), borrowAmount);
 
-        // Build batch — sweep both WETH (excess from swap) and DAI (borrowed by router)
+        // Build batch — sweep both wstETH (excess from swap) and DAI (borrowed by router)
         address[] memory tokensToSweep = new address[](2);
-        tokensToSweep[0] = WETH;
+        tokensToSweep[0] = WSTETH;
         tokensToSweep[1] = DAI;
 
+        // Deposit the entire swap output into Aave; the handcrafted calls model
+        // the compiler's "deposit all" behavior by reading router balance at runtime.
+        // For the manually-built test we approximate with a fixed depositAmount that
+        // matches the min swap output (1.0 wstETH, adjusted by fee_bps if any).
         IntentRouter.IntentBatch memory batch = IntentRouter.IntentBatch({
             signer: signer,
-            calls: _buildComplexDefiCalls(signer, address(signedRouter), usdcAmount, 2 ether, borrowAmount),
+            calls: _buildComplexDefiCalls(signer, address(signedRouter), usdcAmount, 1 ether, borrowAmount),
             tokensToSweep: tokensToSweep,
             nonce: 0,
             deadline: type(uint256).max
@@ -524,10 +541,10 @@ contract IntentForkE2E is Test {
 
         // Assertions
         assertEq(IERC20(USDC).balanceOf(signer), 0, "Signer should have spent all USDC");
-        assertTrue(IERC20(A_WETH).balanceOf(signer) > 0, "Signer should have aWETH");
+        assertTrue(IERC20(A_WSTETH).balanceOf(signer) > 0, "Signer should have aWstETH");
         assertEq(IERC20(DAI).balanceOf(signer), borrowAmount, "Signer should have borrowed DAI");
         assertEq(signedRouter.nonces(signer), 1, "Nonce should be 1 after execution");
-        assertEq(IERC20(WETH).balanceOf(relayer), 0, "Relayer should have 0 WETH");
+        assertEq(IERC20(WSTETH).balanceOf(relayer), 0, "Relayer should have 0 wstETH");
         assertEq(IERC20(DAI).balanceOf(relayer), 0, "Relayer should have 0 DAI");
 
         console.log("Fork complex DeFi executeSigned: OK");

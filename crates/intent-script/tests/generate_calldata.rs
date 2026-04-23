@@ -168,7 +168,7 @@ fn generate_swap_deposit_borrow_calldata() {
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "steps": [
             { "swap": { "from": "USDC", "amount": "5000", "to": "WETH", "min_amount_out": "2.0" } },
-            { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+            { "deposit": { "asset": "WETH", "amount": "all", "into": "aave" } },
             { "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }
         ]
     }"#;
@@ -227,4 +227,27 @@ fn generate_stake_lido_wsteth_calldata() {
 
     let output = do_compile(&input).expect("compile should succeed");
     write_calldata("stake_lido_wsteth", &output);
+}
+
+#[test]
+fn generate_lido_request_withdrawal_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/lido_request_withdrawal.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read lido_request_withdrawal.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("lido_request_withdrawal", &output);
+}
+
+#[test]
+fn generate_lp_mint_usdc_weth_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/lp_mint_usdc_weth.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read lp_mint_usdc_weth.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("lp_mint_usdc_weth", &output);
 }
