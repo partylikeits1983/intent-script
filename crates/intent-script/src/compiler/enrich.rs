@@ -40,7 +40,40 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
     // `approve(router, amount)` prerequisite txs to emit.
     let mut required_pulls: HashMap<Address, U256> = HashMap::new();
 
-    for step in &intent.steps {
+    enrich_steps(
+        &intent.steps,
+        router,
+        signer,
+        is_single_user_step,
+        &mut enriched_steps,
+        &mut sweep_tokens,
+        &mut tokens_in_router,
+        &mut required_pulls,
+    )?;
+
+    intent.steps = enriched_steps;
+    intent.tokens_to_sweep = sweep_tokens;
+
+    // Sort by token address for stable output (tests + UI rely on it).
+    let mut required_pulls_vec: Vec<(Address, U256)> = required_pulls.into_iter().collect();
+    required_pulls_vec.sort_by_key(|(addr, _)| *addr);
+    intent.required_pulls = required_pulls_vec;
+
+    Ok(intent)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enrich_steps(
+    input_steps: &[ResolvedStep],
+    router: Option<Address>,
+    signer: Address,
+    is_single_user_step: bool,
+    enriched_steps: &mut Vec<ResolvedStep>,
+    sweep_tokens: &mut Vec<Address>,
+    tokens_in_router: &mut HashSet<Address>,
+    required_pulls: &mut HashMap<Address, U256>,
+) -> Result<()> {
+    for step in input_steps {
         match step {
             ResolvedStep::AaveV3Supply {
                 pool,
@@ -68,17 +101,196 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 });
                 enriched_steps.push(step.clone());
             }
+            ResolvedStep::AaveV3Repay {
+                pool,
+                asset,
+                amount,
+                ..
+            } => {
+                // Repay pulls `amount` of `asset` from msg.sender (router) via
+                // transferFrom inside Aave, so we need the token in router and
+                // an approval for the pool.
+                if let Some(router_addr) = router {
+                    if !tokens_in_router.contains(asset) {
+                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                            token: *asset,
+                            from: signer,
+                            to: router_addr,
+                            amount: *amount,
+                        });
+                        *required_pulls.entry(*asset).or_insert(U256::ZERO) += *amount;
+                    }
+                }
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token: *asset,
+                    spender: *pool,
+                    amount: *amount,
+                });
+                enriched_steps.push(step.clone());
+            }
             ResolvedStep::AaveV3Borrow { asset, .. } => {
                 // Borrow doesn't need transferFrom (no input tokens consumed from user).
                 // But when batching via router, Aave V3 sends borrowed tokens to msg.sender
                 // (the router), not to onBehalfOf (the user). So we must sweep the borrowed
-                // asset back to the user after execution.
+                // asset back to the user after execution — and mark it as in-router so
+                // downstream steps in the same batch consume it from the router rather
+                // than re-pulling from the signer (crucial for flashloan-assisted loops).
                 if router.is_some() {
+                    tokens_in_router.insert(*asset);
                     if !sweep_tokens.contains(asset) {
                         sweep_tokens.push(*asset);
                     }
                 }
                 enriched_steps.push(step.clone());
+            }
+            ResolvedStep::MorphoSupply {
+                pool,
+                market_params,
+                amount,
+                ..
+            } => {
+                // Supplying the loan asset: pull from user + approve pool.
+                let token = market_params.loan_token;
+                if let Some(router_addr) = router {
+                    if !tokens_in_router.contains(&token) {
+                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                            token,
+                            from: signer,
+                            to: router_addr,
+                            amount: *amount,
+                        });
+                        *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
+                    }
+                }
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token,
+                    spender: *pool,
+                    amount: *amount,
+                });
+                enriched_steps.push(step.clone());
+            }
+            ResolvedStep::MorphoSupplyCollat {
+                pool,
+                market_params,
+                amount,
+                ..
+            } => {
+                let token = market_params.collateral_token;
+                if let Some(router_addr) = router {
+                    if !tokens_in_router.contains(&token) {
+                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                            token,
+                            from: signer,
+                            to: router_addr,
+                            amount: *amount,
+                        });
+                        *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
+                    }
+                }
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token,
+                    spender: *pool,
+                    amount: *amount,
+                });
+                enriched_steps.push(step.clone());
+            }
+            ResolvedStep::MorphoRepay {
+                pool,
+                market_params,
+                amount,
+                ..
+            } => {
+                let token = market_params.loan_token;
+                if let Some(router_addr) = router {
+                    if !tokens_in_router.contains(&token) {
+                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                            token,
+                            from: signer,
+                            to: router_addr,
+                            amount: *amount,
+                        });
+                        *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
+                    }
+                }
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token,
+                    spender: *pool,
+                    amount: *amount,
+                });
+                enriched_steps.push(step.clone());
+            }
+            ResolvedStep::MorphoBorrow {
+                pool,
+                market_params,
+                amount,
+                on_behalf,
+                ..
+            } => {
+                // When batching, redirect receiver to the router so the loan
+                // token can participate in downstream steps, then sweep back
+                // to the signer. Without a router, leave the tokens flowing
+                // straight to the signer.
+                let token = market_params.loan_token;
+                let receiver = router.unwrap_or(*on_behalf);
+                enriched_steps.push(ResolvedStep::MorphoBorrow {
+                    pool: *pool,
+                    market_params: market_params.clone(),
+                    amount: *amount,
+                    on_behalf: *on_behalf,
+                    receiver,
+                });
+                if router.is_some() {
+                    tokens_in_router.insert(token);
+                    if !sweep_tokens.contains(&token) {
+                        sweep_tokens.push(token);
+                    }
+                }
+            }
+            ResolvedStep::MorphoWithdraw {
+                pool,
+                market_params,
+                amount,
+                on_behalf,
+                ..
+            } => {
+                let token = market_params.loan_token;
+                let receiver = router.unwrap_or(*on_behalf);
+                enriched_steps.push(ResolvedStep::MorphoWithdraw {
+                    pool: *pool,
+                    market_params: market_params.clone(),
+                    amount: *amount,
+                    on_behalf: *on_behalf,
+                    receiver,
+                });
+                if router.is_some() {
+                    tokens_in_router.insert(token);
+                    if !sweep_tokens.contains(&token) {
+                        sweep_tokens.push(token);
+                    }
+                }
+            }
+            ResolvedStep::MorphoWithdrawCollat {
+                pool,
+                market_params,
+                amount,
+                on_behalf,
+                ..
+            } => {
+                let token = market_params.collateral_token;
+                let receiver = router.unwrap_or(*on_behalf);
+                enriched_steps.push(ResolvedStep::MorphoWithdrawCollat {
+                    pool: *pool,
+                    market_params: market_params.clone(),
+                    amount: *amount,
+                    on_behalf: *on_behalf,
+                    receiver,
+                });
+                if router.is_some() {
+                    tokens_in_router.insert(token);
+                    if !sweep_tokens.contains(&token) {
+                        sweep_tokens.push(token);
+                    }
+                }
             }
             ResolvedStep::UniswapV3Swap {
                 router: swap_router,
@@ -438,6 +650,33 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 // recipient to router, a sweep entry is ready.
                 let _ = (token0, token1);
             }
+            ResolvedStep::AcrossDepositV3 {
+                spoke_pool,
+                input_token,
+                input_amount,
+                ..
+            } => {
+                // Pull input_token from user (if not already in router) and
+                // approve the SpokePool for input_amount. No sweep — the
+                // tokens are in flight cross-chain, not coming back.
+                if let Some(router_addr) = router {
+                    if !tokens_in_router.contains(input_token) {
+                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                            token: *input_token,
+                            from: signer,
+                            to: router_addr,
+                            amount: *input_amount,
+                        });
+                        *required_pulls.entry(*input_token).or_insert(U256::ZERO) += *input_amount;
+                    }
+                }
+                enriched_steps.push(ResolvedStep::Erc20Approve {
+                    token: *input_token,
+                    spender: *spoke_pool,
+                    amount: *input_amount,
+                });
+                enriched_steps.push(step.clone());
+            }
             ResolvedStep::SendErc20 { token, amount, .. } => {
                 // When batching via router, pull tokens from user if not already in router
                 if let Some(router_addr) = router {
@@ -453,6 +692,93 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
                 }
                 enriched_steps.push(step.clone());
             }
+            ResolvedStep::BalancerFlashloan {
+                vault,
+                tokens,
+                amounts,
+                inner_steps,
+            } => {
+                // Enrich the inner pipeline recursively with a fresh local
+                // state, seeded to reflect that Balancer transfers the
+                // flashloaned tokens onto the router before calling back.
+                // Downstream (sweep_tokens, required_pulls) from the inner
+                // pass merges into the OUTER state:
+                //   - inner sweep_tokens minus the flashloaned tokens → outer
+                //     sweep list (leftover dust after repayment flows back).
+                //   - inner required_pulls → outer required_pulls (user may
+                //     still contribute their own collateral alongside the
+                //     flashloan).
+                //   - inner tokens_in_router end-state is discarded — after
+                //     `receiveFlashLoan` returns, only non-flashloan dust is
+                //     still in the router.
+                let mut inner_enriched: Vec<ResolvedStep> = Vec::new();
+                let mut inner_sweep: Vec<Address> = Vec::new();
+                let mut inner_in_router: HashSet<Address> = HashSet::new();
+                for t in tokens {
+                    inner_in_router.insert(*t);
+                }
+                let mut inner_pulls: HashMap<Address, U256> = HashMap::new();
+                enrich_steps(
+                    inner_steps,
+                    router,
+                    signer,
+                    false, // inner pipeline always runs via router
+                    &mut inner_enriched,
+                    &mut inner_sweep,
+                    &mut inner_in_router,
+                    &mut inner_pulls,
+                )?;
+
+                // Emit a single outer BalancerFlashloan carrying the enriched
+                // inner pipeline. Lowering will ABI-encode inner_steps into
+                // `userData` for the vault.flashLoan call.
+                enriched_steps.push(ResolvedStep::BalancerFlashloan {
+                    vault: *vault,
+                    tokens: tokens.clone(),
+                    amounts: amounts.clone(),
+                    inner_steps: inner_enriched,
+                });
+
+                // Merge inner pulls into outer (user approvals cover both).
+                for (t, a) in inner_pulls {
+                    *required_pulls.entry(t).or_insert(U256::ZERO) += a;
+                }
+                // Dust sweep: inner non-flashloan tokens that ended up in the
+                // router are still there after the callback returns.
+                for t in inner_sweep {
+                    let is_flashloaned = tokens.contains(&t);
+                    if !is_flashloaned && !sweep_tokens.contains(&t) {
+                        sweep_tokens.push(t);
+                    }
+                }
+                // After the flashloan returns, any non-flashloan inner-produced
+                // token is still in the router balance; surface to the outer
+                // tokens_in_router so downstream outer steps can re-use them.
+                for t in inner_in_router {
+                    if !tokens.contains(&t) {
+                        tokens_in_router.insert(t);
+                    }
+                }
+            }
+            ResolvedStep::Erc20TransferFrom {
+                token,
+                from,
+                amount,
+                ..
+            } => {
+                // Pre-existing transferFrom (emitted by leverage sugar to pull
+                // user equity into the router before a supply). Track it in
+                // required_pulls so the builder surfaces a prerequisite
+                // approve(router, amount) for the signer, and mark the token
+                // as in-router so subsequent inner steps don't duplicate the
+                // pull. Auto-inserted transferFroms never reach this arm
+                // because they're inserted via explicit pushes in other arms.
+                if *from == signer {
+                    *required_pulls.entry(*token).or_insert(U256::ZERO) += *amount;
+                }
+                tokens_in_router.insert(*token);
+                enriched_steps.push(step.clone());
+            }
             // SendEth, SendErc721, and other steps don't need enrichment
             _ => {
                 enriched_steps.push(step.clone());
@@ -460,13 +786,5 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
         }
     }
 
-    intent.steps = enriched_steps;
-    intent.tokens_to_sweep = sweep_tokens;
-
-    // Sort by token address for stable output (tests + UI rely on it).
-    let mut required_pulls_vec: Vec<(Address, U256)> = required_pulls.into_iter().collect();
-    required_pulls_vec.sort_by_key(|(addr, _)| *addr);
-    intent.required_pulls = required_pulls_vec;
-
-    Ok(intent)
+    Ok(())
 }

@@ -36,6 +36,28 @@ pub struct ResolvedIntent {
     /// `step_produces` can return post-fee floors for downstream `"all"`
     /// consumers.
     pub fee_bps: u16,
+    /// Forces the planner to emit a Batched (router-executed) output even
+    /// when the enriched pipeline lowers to a single concrete call. Set by
+    /// normalize when a step needs router context — e.g. Balancer flashloans,
+    /// whose `receiveFlashLoan` callback requires the router's transient
+    /// sentinel to have been armed by `_executeCalls`.
+    pub requires_router: bool,
+}
+
+/// Fully resolved Morpho Blue market parameters ready for calldata encoding.
+///
+/// The market id (`keccak256(abi.encode(MarketParams))`) is stored alongside
+/// the constituent fields so adapters can either reconstruct the struct for
+/// `supply/borrow/…` calls or reference the id directly when Morpho's ABI
+/// takes the id instead of the struct.
+#[derive(Debug, Clone)]
+pub struct MorphoMarketParams {
+    pub loan_token: Address,
+    pub collateral_token: Address,
+    pub oracle: Address,
+    pub irm: Address,
+    pub lltv: U256,
+    pub id: [u8; 32],
 }
 
 /// Resolved user balance information with concrete addresses and U256 amounts.
@@ -98,6 +120,59 @@ pub enum ResolvedStep {
         asset: Address,
         amount: U256,
         to: Address,
+    },
+    /// Aave V3 repay — pay back borrowed assets.
+    AaveV3Repay {
+        pool: Address,
+        asset: Address,
+        amount: U256,
+        rate_mode: u8,
+        on_behalf_of: Address,
+    },
+    /// Morpho Blue: supply loan asset (earns interest).
+    MorphoSupply {
+        pool: Address,
+        market_params: MorphoMarketParams,
+        amount: U256,
+        on_behalf: Address,
+    },
+    /// Morpho Blue: supply collateral (no interest; enables borrowing).
+    MorphoSupplyCollat {
+        pool: Address,
+        market_params: MorphoMarketParams,
+        amount: U256,
+        on_behalf: Address,
+    },
+    /// Morpho Blue: borrow loan asset against collateral.
+    MorphoBorrow {
+        pool: Address,
+        market_params: MorphoMarketParams,
+        amount: U256,
+        on_behalf: Address,
+        receiver: Address,
+    },
+    /// Morpho Blue: withdraw supplied loan asset.
+    MorphoWithdraw {
+        pool: Address,
+        market_params: MorphoMarketParams,
+        amount: U256,
+        on_behalf: Address,
+        receiver: Address,
+    },
+    /// Morpho Blue: withdraw collateral (only when no borrow held or within HF).
+    MorphoWithdrawCollat {
+        pool: Address,
+        market_params: MorphoMarketParams,
+        amount: U256,
+        on_behalf: Address,
+        receiver: Address,
+    },
+    /// Morpho Blue: repay borrowed loan asset.
+    MorphoRepay {
+        pool: Address,
+        market_params: MorphoMarketParams,
+        amount: U256,
+        on_behalf: Address,
     },
     /// Uniswap V3 exactInputSingle swap.
     ///
@@ -247,6 +322,37 @@ pub enum ResolvedStep {
         to: Address,
         token_id: U256,
     },
+    /// Across V3 `depositV3` — single-sided cross-chain transfer.
+    /// `step_produces` returns `None` because produced tokens land on the
+    /// destination chain, not the router.
+    AcrossDepositV3 {
+        spoke_pool: Address,
+        depositor: Address,
+        recipient: Address,
+        input_token: Address,
+        output_token: Address,
+        input_amount: U256,
+        output_amount: U256,
+        destination_chain_id: U256,
+        exclusive_relayer: Address,
+        quote_timestamp: u32,
+        fill_deadline: u32,
+        exclusivity_deadline: u32,
+        message: Bytes,
+    },
+    /// Balancer V2 flashloan wrapping an inner pipeline.
+    ///
+    /// The inner pipeline is stored as `Vec<ResolvedStep>` (not lowered yet)
+    /// so the enricher can walk it recursively with a seeded context and
+    /// auto-insert approvals/transferFroms as needed. Lowering happens last:
+    /// the whole inner tree is rendered to `ConcreteCall[]`, ABI-encoded as
+    /// `userData`, and passed to `vault.flashLoan(recipient=router,…)`.
+    BalancerFlashloan {
+        vault: Address,
+        tokens: Vec<Address>,
+        amounts: Vec<U256>,
+        inner_steps: Vec<ResolvedStep>,
+    },
 }
 
 /// Helper: determine what token and amount a step consumes (if any).
@@ -256,6 +362,22 @@ pub enum ResolvedStep {
 pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
     match step {
         ResolvedStep::AaveV3Supply { asset, amount, .. } => Some((*asset, *amount)),
+        ResolvedStep::AaveV3Repay { asset, amount, .. } => Some((*asset, *amount)),
+        ResolvedStep::MorphoSupply {
+            market_params,
+            amount,
+            ..
+        } => Some((market_params.loan_token, *amount)),
+        ResolvedStep::MorphoSupplyCollat {
+            market_params,
+            amount,
+            ..
+        } => Some((market_params.collateral_token, *amount)),
+        ResolvedStep::MorphoRepay {
+            market_params,
+            amount,
+            ..
+        } => Some((market_params.loan_token, *amount)),
         ResolvedStep::WstETHWrap { steth, amount, .. } => Some((*steth, *amount)),
         ResolvedStep::WstETHUnwrap { wsteth, amount, .. } => Some((*wsteth, *amount)),
         ResolvedStep::LidoRequestWithdrawal { token, amounts, .. } => {
@@ -290,6 +412,11 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
             amount,
         } => Some((*wrapped_token, *amount)),
         ResolvedStep::SendErc20 { token, amount, .. } => Some((*token, *amount)),
+        ResolvedStep::AcrossDepositV3 {
+            input_token,
+            input_amount,
+            ..
+        } => Some((*input_token, *input_amount)),
         _ => None,
     }
 }
@@ -306,6 +433,13 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
 /// back to the flashloan provider, not swept to the user).
 pub fn step_produces(step: &ResolvedStep, fee_bps: u16) -> Option<(Address, U256)> {
     let (token, amount) = match step {
+        // A transferFrom into the router brings tokens INTO the router's
+        // balance sheet — important for flashloan repayability accounting
+        // where the leverage-sugar expander emits an explicit transferFrom
+        // as the first inner step to represent the user's equity contribution.
+        // Auto-inserted transferFroms don't appear in pre-enrich IR, so this
+        // doesn't perturb the normal "all" / amount-flow paths.
+        ResolvedStep::Erc20TransferFrom { token, amount, .. } => (*token, *amount),
         ResolvedStep::UniswapV3Swap {
             token_out,
             amount_out_minimum,
@@ -321,6 +455,21 @@ pub fn step_produces(step: &ResolvedStep, fee_bps: u16) -> Option<(Address, U256
         } => (*token_out, *amount_in),
         ResolvedStep::AaveV3Borrow { asset, amount, .. } => (*asset, *amount),
         ResolvedStep::AaveV3Withdraw { asset, amount, .. } => (*asset, *amount),
+        ResolvedStep::MorphoBorrow {
+            market_params,
+            amount,
+            ..
+        } => (market_params.loan_token, *amount),
+        ResolvedStep::MorphoWithdraw {
+            market_params,
+            amount,
+            ..
+        } => (market_params.loan_token, *amount),
+        ResolvedStep::MorphoWithdrawCollat {
+            market_params,
+            amount,
+            ..
+        } => (market_params.collateral_token, *amount),
         ResolvedStep::LidoStake { steth, amount, .. } => (*steth, *amount),
         ResolvedStep::Wrap {
             wrapped_token,

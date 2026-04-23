@@ -25,15 +25,19 @@ pub enum ExecutionPlan {
 /// Decide the execution strategy for a list of concrete calls.
 ///
 /// When a router address is provided and there are multiple calls,
-/// the planner produces a `Batched` plan instead of a `Sequence`.
+/// the planner produces a `Batched` plan instead of a `Sequence`. When
+/// `require_router` is true, even single-call pipelines are forced through
+/// the router — necessary for flashloan-style steps whose callback requires
+/// the router's transient sentinel to have been armed by `_executeCalls`.
 pub fn plan(
     calls: &[ConcreteCall],
     router: Option<Address>,
     tokens_to_sweep: Vec<Address>,
+    require_router: bool,
 ) -> ExecutionPlan {
     match calls.len() {
         0 => unreachable!("Validator should have caught empty steps"),
-        1 => ExecutionPlan::Single(calls[0].clone()),
+        1 if !require_router => ExecutionPlan::Single(calls[0].clone()),
         _ => {
             if let Some(router_addr) = router {
                 ExecutionPlan::Batched {

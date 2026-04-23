@@ -17,7 +17,9 @@ use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_consumes, s
 use crate::registry::RegistryContext;
 
 /// Maximum number of user-facing steps allowed in a single intent.
-pub const MAX_STEPS: usize = 3;
+pub const MAX_STEPS: usize = 5;
+/// Maximum inner-pipeline step count for a flashloan.
+pub const MAX_FLASHLOAN_INNER_STEPS: usize = 5;
 
 /// Minimum Aave health factor — below this, borrows are rejected.
 const MIN_HEALTH_FACTOR: f64 = 1.2;
@@ -84,6 +86,9 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
         // Task 7: Send validation
         validate_send(step)?;
 
+        // Flashloan structural rules (nesting, step count, repayability).
+        validate_flashloan(step, intent.fee_bps)?;
+
         match step {
             ResolvedStep::AaveV3Supply { pool, .. } => {
                 // Track that we've deposited into this protocol
@@ -115,6 +120,91 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
     validate_amount_flow(&intent.steps, intent.fee_bps)?;
 
     Ok(ValidationResult { warnings })
+}
+
+/// Flashloan validation: enforce bounded depth, bounded inner step count,
+/// and that the inner pipeline produces at least the flashloaned amount of
+/// each borrowed token.
+fn validate_flashloan(step: &ResolvedStep, fee_bps: u16) -> Result<()> {
+    let ResolvedStep::BalancerFlashloan {
+        tokens,
+        amounts,
+        inner_steps,
+        ..
+    } = step
+    else {
+        return Ok(());
+    };
+
+    // Depth 1: no nested flashloans. Also enforce the usual structural rules
+    // (positive amounts, slippage, asset compatibility) on inner steps.
+    for (inner_index, inner) in inner_steps.iter().enumerate() {
+        if matches!(inner, ResolvedStep::BalancerFlashloan { .. }) {
+            return Err(CompileError::Validation(
+                "nested flashloans are not allowed (max depth 1)".to_string(),
+            ));
+        }
+        validate_amount(inner)?;
+        validate_asset_compatibility(inner)?;
+        validate_slippage(inner, inner_index)?;
+        validate_send(inner)?;
+    }
+
+    // Bounded inner pipeline.
+    if inner_steps.len() > MAX_FLASHLOAN_INNER_STEPS {
+        return Err(CompileError::Validation(format!(
+            "flashloan inner pipeline has {} steps but maximum is {}",
+            inner_steps.len(),
+            MAX_FLASHLOAN_INNER_STEPS
+        )));
+    }
+
+    if tokens.len() != amounts.len() {
+        return Err(CompileError::Validation(
+            "flashloan tokens and amounts lengths must match".to_string(),
+        ));
+    }
+
+    // Repayability: seed the running balance with the flashloaned amounts
+    // (Balancer transfers those in before calling back), then walk the inner
+    // pipeline's produces/consumes. At the end, each flashloaned token must
+    // have at least `amount` of balance left to repay the Vault. `fee_bps = 0`
+    // per the doc-comment on `step_produces`: produced tokens inside a
+    // flashloan are returned to the Vault by `receiveFlashLoan`, not swept
+    // through the router fee path, so no fee reduction applies.
+    let _ = fee_bps;
+    let mut balance: HashMap<Address, U256> = HashMap::new();
+    for (t, a) in tokens.iter().zip(amounts.iter()) {
+        *balance.entry(*t).or_insert(U256::ZERO) += *a;
+    }
+    for inner in inner_steps {
+        if let Some((t, a)) = step_consumes(inner) {
+            let have = balance.get(&t).copied().unwrap_or(U256::ZERO);
+            if a > have {
+                // Inner step consumes more than present — the step will revert
+                // on-chain. Surface the chain error now rather than later.
+                return Err(CompileError::InvalidChain(format!(
+                    "flashloan inner step consumes {} of token {} but only {} is available (flashloaned + produced)",
+                    a, t, have
+                )));
+            }
+            balance.insert(t, have - a);
+        }
+        if let Some((t, a)) = step_produces(inner, 0) {
+            *balance.entry(t).or_insert(U256::ZERO) += a;
+        }
+    }
+    for (t, a) in tokens.iter().zip(amounts.iter()) {
+        let have = balance.get(t).copied().unwrap_or(U256::ZERO);
+        if have < *a {
+            return Err(CompileError::Validation(format!(
+                "flashloan not repayable: inner pipeline leaves only {} of token {} but {} is owed to Balancer",
+                have, t, a
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Task 1: Reject swaps with zero slippage protection.
@@ -289,6 +379,17 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         ResolvedStep::AaveV3Supply { amount, .. } => Some(("deposit", amount)),
         ResolvedStep::AaveV3Borrow { amount, .. } => Some(("borrow", amount)),
         ResolvedStep::AaveV3Withdraw { amount, .. } => Some(("withdraw", amount)),
+        ResolvedStep::AaveV3Repay { amount, .. } => Some(("aave repay", amount)),
+        ResolvedStep::MorphoSupply { amount, .. } => Some(("morpho supply", amount)),
+        ResolvedStep::MorphoSupplyCollat { amount, .. } => {
+            Some(("morpho supply collateral", amount))
+        }
+        ResolvedStep::MorphoBorrow { amount, .. } => Some(("morpho borrow", amount)),
+        ResolvedStep::MorphoWithdraw { amount, .. } => Some(("morpho withdraw", amount)),
+        ResolvedStep::MorphoWithdrawCollat { amount, .. } => {
+            Some(("morpho withdraw collateral", amount))
+        }
+        ResolvedStep::MorphoRepay { amount, .. } => Some(("morpho repay", amount)),
         ResolvedStep::UniswapV3Swap { amount_in, .. } => Some(("swap", amount_in)),
         ResolvedStep::LidoStake { amount, .. } => Some(("stake", amount)),
         ResolvedStep::WstETHWrap { amount, .. } => Some(("wrap stETH", amount)),
@@ -296,6 +397,7 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         ResolvedStep::OneInchSwap { amount_in, .. } => Some(("swap", amount_in)),
         ResolvedStep::SendErc20 { amount, .. } => Some(("send", amount)),
         ResolvedStep::SendEth { amount, .. } => Some(("send", amount)),
+        ResolvedStep::AcrossDepositV3 { input_amount, .. } => Some(("bridge", input_amount)),
         // Multi-amount variants and auto-generated steps are validated separately.
         ResolvedStep::LidoRequestWithdrawal { amounts, .. } => {
             if amounts.is_empty() {
@@ -381,6 +483,10 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         // Collect has no amount fields to range-check here; validity is
         // covered by normalize (token_id / position sanity).
         ResolvedStep::UniswapV3LpCollect { .. } => None,
+        // Flashloan: outer step has no single amount. Inner-step amounts are
+        // validated in validate() via the main step loop when we call
+        // validate_flashloan(), which also recursively walks inner_steps.
+        ResolvedStep::BalancerFlashloan { .. } => None,
         // Approve, TransferFrom, Permit, SendErc721 are auto-generated or don't have amounts
         ResolvedStep::Erc20Approve { .. }
         | ResolvedStep::Erc20TransferFrom { .. }
@@ -451,6 +557,7 @@ mod tests {
             user_balances: None,
             required_pulls: Vec::new(),
             fee_bps: 0,
+            requires_router: false,
         }
     }
 
@@ -632,7 +739,7 @@ mod tests {
     // Task 4: Max step count test
     #[test]
     fn test_too_many_steps_rejected() {
-        let steps: Vec<ResolvedStep> = (0..4)
+        let steps: Vec<ResolvedStep> = (0..MAX_STEPS + 1)
             .map(|_| ResolvedStep::Wrap {
                 wrapped_token: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
                 amount: U256::from(1_000_000_000_000_000_000u64),

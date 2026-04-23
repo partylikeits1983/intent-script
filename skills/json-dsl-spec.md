@@ -66,41 +66,56 @@ Each step is a JSON object with exactly one key (the action name) mapping to its
 
 > **Note:** 1inch swaps handle slippage via the 1inch Fusion protocol, not via these fields.
 
-### `deposit` — Aave V3 Supply
+### `deposit` — Aave V3 or Morpho Blue Supply
 
 ```json
 { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }
+{ "deposit": { "asset": "WETH", "amount": "1.0",  "into": "morpho",
+               "market": "USDC-WETH-86", "as": "collateral" } }
+{ "deposit": { "asset": "USDC", "amount": "5000", "into": "morpho",
+               "market": "USDC-WETH-86" } }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `asset` | string | ✅ | Token alias to deposit |
+| `asset` | string | ✅ | Token alias to deposit. For Morpho must match the market's loan side (default) or collateral side (when `as: "collateral"`). |
 | `amount` | string | ✅ | Human-readable amount, or `"all"` |
-| `into` | string | ✅ | Protocol name (e.g., `"aave"`) |
+| `into` | string | ✅ | Protocol name: `"aave"` or `"morpho"` |
+| `market` | string | ✅ *(morpho only)* | Market alias from `protocols.morpho.markets` (e.g. `"USDC-WETH-86"`). Aave rejects this field. |
+| `as` | `"collateral"` \| `"loan"` (default) | — | Morpho only. Selects `supplyCollateral` vs `supply` on the loan side. |
 
-### `borrow` — Aave V3 Borrow
+### `borrow` — Aave V3 or Morpho Blue Borrow
 
 ```json
-{ "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }
+{ "borrow": { "asset": "DAI",  "amount": "2000", "from": "aave" } }
+{ "borrow": { "asset": "USDC", "amount": "1500", "from": "morpho",
+              "market": "USDC-WETH-86" } }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `asset` | string | ✅ | Token alias to borrow |
+| `asset` | string | ✅ | Token alias to borrow. For Morpho must match the market's loan side. |
 | `amount` | string | ✅ | Human-readable amount |
-| `from` | string | ✅ | Protocol name (e.g., `"aave"`) |
+| `from` | string | ✅ | Protocol name: `"aave"` or `"morpho"` |
+| `market` | string | ✅ *(morpho only)* | Market alias from `protocols.morpho.markets` |
 
-### `withdraw` — Aave V3 Withdraw
+### `withdraw` — Aave V3 or Morpho Blue Withdraw
 
 ```json
 { "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }
+{ "withdraw": { "asset": "USDC", "amount": "1500", "from": "morpho",
+                "market": "USDC-WETH-86" } }
+{ "withdraw": { "asset": "WETH", "amount": "1.0",  "from": "morpho",
+                "market": "USDC-WETH-86", "as": "collateral" } }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `asset` | string | ✅ | Token alias to withdraw |
 | `amount` | string | ✅ | Human-readable amount, or `"all"` |
-| `from` | string | ✅ | Protocol name (e.g., `"aave"`) |
+| `from` | string | ✅ | Protocol name: `"aave"` or `"morpho"` |
+| `market` | string | ✅ *(morpho only)* | Market alias |
+| `as` | `"collateral"` \| `"loan"` (default) | — | Morpho only. `"collateral"` calls `withdrawCollateral`. |
 
 ### `wrap` — Wrap Native or stETH
 
@@ -323,6 +338,104 @@ Collects all owed tokens (accumulated fees + proceeds from `lp_decrease`) from a
 
 *Required for ERC-20/ETH sends. For ERC-721, `contract` and `token_id` are required instead.
 
+> **ERC-20, native ETH, and ERC-721 sends are all first-class step types** — do not simulate them with ad-hoc `swap` or `custom` patterns. The compiler auto-inserts the appropriate `transferFrom`/`approve` when the signer's tokens still need to be pulled into the router.
+
+### `bridge` — Across V3 Cross-Chain Transfer
+
+Single-sided deposit: emits only the source-chain `depositV3` call. Receiving on the destination chain is authored as a separate intent.
+
+```json
+{ "bridge": {
+    "via": "across",
+    "asset": "USDC",
+    "amount": "1000",
+    "to_chain": "arbitrum",
+    "recipient": "0xabc...",
+    "relayer_fee_bps": "5"
+} }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `via` | string | ✅ | Bridge provider; must be `"across"` in v1 |
+| `asset` | string | ✅ | Token alias. Native ETH is **rejected** — pre-wrap to WETH. |
+| `amount` | string | ✅ | Human-readable input amount |
+| `to_chain` | string | ✅ | Destination alias from `chains.json` (e.g. `"arbitrum"`, `"base"`, `"optimism"`) |
+| `recipient` | string | ✅ | Non-zero recipient address on the destination chain |
+| `relayer_fee_bps` | string | ✅ | Basis points; **hard-capped at 50 (0.5%)** |
+
+**Requires** the script's top-level `current_timestamp` (used as `quote_timestamp`; `fill_deadline = quote_timestamp + 4h`). v1 uses `output_token = input_token`; `exclusive_relayer = 0x0` (any relayer can fill).
+
+### `flashloan` — Balancer V2 Flashloan with Inner Pipeline
+
+0% fee flashloan from the Balancer Vault. The `then:` inner pipeline runs inside `router.receiveFlashLoan` with the flashloaned tokens already on the router's balance; each inner step is subject to the usual enrichment (approvals, transferFroms). The compiler rejects the intent if the inner pipeline cannot produce back enough of each flashloaned token to repay the Vault.
+
+```json
+{ "flashloan": {
+    "via": "balancer",
+    "assets": [{ "asset": "WETH", "amount": "2.0" }],
+    "then": [
+      { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+      { "borrow":  { "asset": "USDC", "amount": "4000", "from": "aave" } },
+      { "swap":    { "from": "USDC", "amount": "4000", "to": "WETH",
+                     "min_amount_out": "2.0" } }
+    ]
+} }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `via` | string | ✅ | Provider; must be `"balancer"` in v1 |
+| `assets` | array | ✅ | One or more `{ asset, amount }` entries to flashloan |
+| `then` | array | ✅ | Inner pipeline (≤5 steps, nested flashloans rejected) |
+
+### `long` / `short` — Leverage Open
+
+Desugars to a Balancer flashloan wrapping an Aave `supply → borrow → swap` inner pipeline. `short` is `long` with collateral and borrow swapped.
+
+```json
+{ "long":  { "collateral": "WETH", "borrow": "USDC", "amount": "1.0",
+             "leverage": "5",  "slippage": "50", "price": "3200" } }
+{ "short": { "collateral": "WETH", "borrow": "USDC", "amount": "1.0",
+             "leverage": "3",  "slippage": "50", "price": "3200" } }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `collateral` | string | ✅ | Asset deposited to Aave as margin |
+| `borrow` | string | — | Borrow asset. Default: volatile collateral → `"USDC"`, stable → `"WETH"`. |
+| `amount` | string | ✅ | User's equity contribution in `collateral` units |
+| `leverage` | string | ✅ | Target multiplier; capped per-asset by `aave.ltv_bps` (e.g. WETH 80% → max 5x). `"1"` is rejected — use `deposit` instead. |
+| `slippage` | string | — | Max swap slippage in bps. Default 50 (0.5%). Hard-capped at 500 (5%). |
+| `price` | string | ✅ when `leverage > 1` | Borrow-tokens per 1 collateral-token. Caller-supplied oracle value until the on-chain quote primitive lands. |
+| `via` | string | — | Flashloan provider; default `"balancer"`. |
+| `safety_margin_bps` | number | — | Extra per-call margin subtracted from effective LTV. Default 0. |
+
+### `close_position` — Leverage Close
+
+Undoes a prior `long`/`short`. Requires the frontend to thread in the current Aave debt and collateral (read off-chain via `getUserAccountData`) because the compiler has no RPC.
+
+```json
+{ "close_position": {
+    "collateral":         "WETH",
+    "borrow":             "USDC",
+    "current_debt":       "4180.0",
+    "current_collateral": "5.0",
+    "slippage":           "50"
+} }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `collateral` | string | ✅ | Must match the position being closed |
+| `borrow` | string | ✅ | Must match the position being closed |
+| `current_debt` | string | ✅ | Current debt in `borrow`-token units (> 0) |
+| `current_collateral` | string | ✅ | Current collateral in `collateral`-token units (> 0) |
+| `slippage` | string | — | Default 50 bps; same 500 bps cap as `long`/`short` |
+| `via` | string | — | Default `"balancer"` |
+
+Desugars to `flashloan(borrow = current_debt) { repay → withdraw → swap(collateral → borrow, min_out = current_debt) }`.
+
 ---
 
 ## Amount Syntax
@@ -372,13 +485,17 @@ When provided, the compiler performs stricter validation:
 Implemented in `crates/intent-script/src/compiler/validate.rs`:
 
 1. **Signer**: Must be a valid non-zero Ethereum address
-2. **Steps**: 1–5 steps required (max 5, `MAX_STEPS` constant)
+2. **Steps**: 1–5 outer steps (max 5 via `MAX_STEPS`); flashloan inner pipelines are bounded to 5 steps each via `MAX_FLASHLOAN_INNER_STEPS` and depth == 1 (nested flashloans rejected)
 3. **Amounts**: Must be positive (> 0)
-4. **Slippage**: Swaps must have `min_amount_out` or `price`+`slippage`; zero `amount_out_minimum` is rejected
+4. **Slippage**: Swaps must have `min_amount_out` or `price`+`slippage`; zero `amount_out_minimum` is rejected; LP mint/increase/decrease require at least one `min_amount*` > 0
 5. **Asset compatibility**: No native ETH into Aave; no swap-to-self
-6. **Amount flow**: Cross-step token consumption cannot exceed guaranteed production
+6. **Amount flow**: Cross-step token consumption cannot exceed guaranteed production (fee-aware: post-skim floor)
 7. **Health factor**: Borrows rejected when Aave HF < 1.2
 8. **Send targets**: Cannot send to the zero address
+9. **Bridge**: `relayer_fee_bps ≤ 50`; rejects native ETH (pre-wrap to WETH); requires `current_timestamp` at the script top level
+10. **Flashloan**: only `via: "balancer"` in v1; inner pipeline must be repayable per-token (validated in `validate_flashloan` with `fee_bps = 0` — inner tokens are returned to the Vault, not swept)
+11. **Leverage**: `leverage >= 1` (literal 1 rejected — use plain `deposit`); per-asset cap derived from `protocols.aave.ltv_bps`; `slippage ≤ 500 bps`; `collateral != borrow`; `leverage > 1` requires explicit `price` field
+12. **LP fees**: Uniswap V3 LP fee tier restricted to `{500, 3000, 10000}`; `position_id` must be explicit (no `"last_minted"`)
 
 ---
 

@@ -30,6 +30,16 @@ contract IntentRouter is ReentrancyGuard {
     address public owner;
     mapping(address => bool) public allowedTargets;
 
+    // ─── Balancer V2 flashloan ──────────────────────────────
+    /// Balancer V2 Vault mainnet address — used for 0% flashloans.
+    address public constant BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
+    /// `flashLoan(address,address[],uint256[],bytes)` selector.
+    bytes4 public constant FLASHLOAN_SELECTOR = 0x5c38449e;
+    /// Transient-storage slot (EIP-1153) used as a boolean sentinel while a
+    /// flashloan call is in flight. Set just before `vault.flashLoan` and
+    /// cleared in `receiveFlashLoan` before the inner pipeline runs.
+    bytes32 private constant FLASHLOAN_GUARD_SLOT = keccak256("intent.flashloan.guard");
+
     // ─── Fees ───────────────────────────────────────────────
     uint16 public constant MAX_FEE_BPS = 100;   // 1.00% hard cap
     uint256 public constant FEE_TIMELOCK = 1 days;
@@ -169,6 +179,20 @@ contract IntentRouter is ReentrancyGuard {
     function _executeCalls(Call[] calldata calls) internal {
         for (uint256 i = 0; i < calls.length; i++) {
             require(allowedTargets[calls[i].target], "Target not allowed");
+
+            // Just before dispatching a Balancer flashLoan, arm the transient
+            // sentinel. `receiveFlashLoan` requires it to be set and clears it
+            // before running inner calls. This defends against a compromised
+            // allowlisted target re-entering `receiveFlashLoan` via delegatecall.
+            if (
+                calls[i].target == BALANCER_VAULT
+                && calls[i].callData.length >= 4
+                && bytes4(calls[i].callData[:4]) == FLASHLOAN_SELECTOR
+            ) {
+                bytes32 slot = FLASHLOAN_GUARD_SLOT;
+                assembly { tstore(slot, 1) }
+            }
+
             (bool success, bytes memory result) = calls[i].target.call{ value: calls[i].value }(
                 calls[i].callData
             );
@@ -178,6 +202,57 @@ contract IntentRouter is ReentrancyGuard {
                     revert(add(result, 32), mload(result))
                 }
             }
+        }
+    }
+
+    /// Execute a single call held in memory (used by `receiveFlashLoan`).
+    /// Applies the same allowlist check as `_executeCalls`.
+    function _execOne(Call memory call) internal {
+        require(allowedTargets[call.target], "Target not allowed");
+        (bool success, bytes memory result) = call.target.call{ value: call.value }(call.callData);
+        if (!success) {
+            assembly { revert(add(result, 32), mload(result)) }
+        }
+    }
+
+    /// @notice Balancer V2 flashloan callback. Balancer transfers `amounts[i]`
+    ///         of each `tokens[i]` to this contract before calling this
+    ///         function, then asserts `balanceOf(self) >= pre + feeAmounts[i]`
+    ///         after return. We decode `userData` into an inner `Call[]`,
+    ///         execute it (subject to the allowlist), and transfer the owed
+    ///         amount back to the Vault. The sentinel must have been armed by
+    ///         `_executeCalls` immediately before the flashLoan call.
+    function receiveFlashLoan(
+        address[] calldata tokens,
+        uint256[] calldata amounts,
+        uint256[] calldata feeAmounts,
+        bytes calldata userData
+    ) external {
+        require(msg.sender == BALANCER_VAULT, "not vault");
+
+        bytes32 slot = FLASHLOAN_GUARD_SLOT;
+        bytes32 guard;
+        assembly { guard := tload(slot) }
+        require(guard != bytes32(0), "no flashloan in progress");
+        // Clear before running inner calls so a nested flashLoan via a
+        // compromised allowlisted target can't satisfy the sentinel check.
+        assembly { tstore(slot, 0) }
+
+        Call[] memory innerCalls = abi.decode(userData, (Call[]));
+        for (uint256 i = 0; i < innerCalls.length; i++) {
+            _execOne(innerCalls[i]);
+        }
+
+        // Repay: Vault checks `balanceOf(address(this)) >= pre + feeAmounts[i]`.
+        // Transfer the owed amount back explicitly rather than leaving it to
+        // the Vault's balance comparison — cheaper on non-rebasing tokens and
+        // keeps semantics obvious.
+        for (uint256 i = 0; i < tokens.length; i++) {
+            uint256 owed = amounts[i] + feeAmounts[i];
+            require(
+                IERC20(tokens[i]).transfer(BALANCER_VAULT, owed),
+                "flashloan repay fail"
+            );
         }
     }
 

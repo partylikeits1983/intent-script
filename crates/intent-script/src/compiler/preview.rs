@@ -254,6 +254,117 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 ),
             })
         }
+        ResolvedStep::AaveV3Repay { asset, amount, .. } => {
+            let sym = registry.symbol_for_address(asset);
+            let dec = registry.decimals_for_address(asset);
+            Some(PreviewStepInfo {
+                action: "repay".into(),
+                protocol: "aave_v3".into(),
+                description: format!("Repay {} {} to Aave V3", format_amount(*amount, dec), sym),
+            })
+        }
+        ResolvedStep::MorphoSupply {
+            market_params,
+            amount,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(&market_params.loan_token);
+            let dec = registry.decimals_for_address(&market_params.loan_token);
+            Some(PreviewStepInfo {
+                action: "deposit".into(),
+                protocol: "morpho".into(),
+                description: format!(
+                    "Supply {} {} to Morpho Blue",
+                    format_amount(*amount, dec),
+                    sym
+                ),
+            })
+        }
+        ResolvedStep::MorphoSupplyCollat {
+            market_params,
+            amount,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(&market_params.collateral_token);
+            let dec = registry.decimals_for_address(&market_params.collateral_token);
+            Some(PreviewStepInfo {
+                action: "deposit".into(),
+                protocol: "morpho".into(),
+                description: format!(
+                    "Supply {} {} as collateral to Morpho Blue",
+                    format_amount(*amount, dec),
+                    sym
+                ),
+            })
+        }
+        ResolvedStep::MorphoBorrow {
+            market_params,
+            amount,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(&market_params.loan_token);
+            let dec = registry.decimals_for_address(&market_params.loan_token);
+            Some(PreviewStepInfo {
+                action: "borrow".into(),
+                protocol: "morpho".into(),
+                description: format!(
+                    "Borrow {} {} from Morpho Blue",
+                    format_amount(*amount, dec),
+                    sym
+                ),
+            })
+        }
+        ResolvedStep::MorphoWithdraw {
+            market_params,
+            amount,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(&market_params.loan_token);
+            let dec = registry.decimals_for_address(&market_params.loan_token);
+            Some(PreviewStepInfo {
+                action: "withdraw".into(),
+                protocol: "morpho".into(),
+                description: format!(
+                    "Withdraw {} {} from Morpho Blue",
+                    format_amount(*amount, dec),
+                    sym
+                ),
+            })
+        }
+        ResolvedStep::MorphoWithdrawCollat {
+            market_params,
+            amount,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(&market_params.collateral_token);
+            let dec = registry.decimals_for_address(&market_params.collateral_token);
+            Some(PreviewStepInfo {
+                action: "withdraw".into(),
+                protocol: "morpho".into(),
+                description: format!(
+                    "Withdraw {} {} collateral from Morpho Blue",
+                    format_amount(*amount, dec),
+                    sym
+                ),
+            })
+        }
+        ResolvedStep::MorphoRepay {
+            market_params,
+            amount,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(&market_params.loan_token);
+            let dec = registry.decimals_for_address(&market_params.loan_token);
+            Some(PreviewStepInfo {
+                action: "repay".into(),
+                protocol: "morpho".into(),
+                description: format!(
+                    "Repay {} {} to Morpho Blue",
+                    format_amount(*amount, dec),
+                    sym
+                ),
+            })
+        }
         ResolvedStep::LidoStake { amount, .. } => Some(PreviewStepInfo {
             action: "stake".into(),
             protocol: "lido".into(),
@@ -404,5 +515,49 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
             protocol: "erc721".into(),
             description: format!("Send NFT #{} to {:?}", token_id, to),
         }),
+        ResolvedStep::AcrossDepositV3 {
+            input_token,
+            input_amount,
+            destination_chain_id,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(input_token);
+            let dec = registry.decimals_for_address(input_token);
+            Some(PreviewStepInfo {
+                action: "bridge".into(),
+                protocol: "across".into(),
+                description: format!(
+                    "Bridge {} {} via Across to chain {}",
+                    format_amount(*input_amount, dec),
+                    sym,
+                    destination_chain_id
+                ),
+            })
+        }
+        ResolvedStep::BalancerFlashloan {
+            tokens,
+            amounts,
+            inner_steps,
+            ..
+        } => {
+            let token_summary: Vec<String> = tokens
+                .iter()
+                .zip(amounts.iter())
+                .map(|(t, a)| {
+                    let sym = registry.symbol_for_address(t);
+                    let dec = registry.decimals_for_address(t);
+                    format!("{} {}", format_amount(*a, dec), sym)
+                })
+                .collect();
+            Some(PreviewStepInfo {
+                action: "flashloan".into(),
+                protocol: "balancer".into(),
+                description: format!(
+                    "Flashloan {} via Balancer V2 with {} inner step(s)",
+                    token_summary.join(" + "),
+                    inner_steps.len()
+                ),
+            })
+        }
     }
 }

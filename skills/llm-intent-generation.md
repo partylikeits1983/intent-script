@@ -238,7 +238,7 @@ Collects accumulated fees plus any proceeds from a preceding `lp_decrease` on th
 
 ### 14. `send` — Send tokens or ETH to an address
 
-Use when the user says: "send", "transfer", "pay"
+Use when the user says: "send", "transfer", "pay". **ERC-20, native ETH, and ERC-721 (NFT) sends are first-class step types — emit a `send` step rather than simulating via swap or custom.**
 
 **ERC-20 token send:**
 ```json
@@ -253,6 +253,78 @@ Use when the user says: "send", "transfer", "pay"
 **NFT send:**
 ```json
 { "send": { "asset_type": "erc721", "contract": "0x...", "token_id": "42", "to": "0x..." } }
+```
+
+### 15. `bridge` — Across V3 cross-chain transfer
+
+Use when the user says: "bridge", "move to L2/Arbitrum/Base/Optimism", "send across chains". Source-chain only: the receive side is a separate intent on the destination chain.
+
+```json
+{ "bridge": {
+    "via": "across",
+    "asset": "USDC",
+    "amount": "1000",
+    "to_chain": "arbitrum",
+    "recipient": "0x...",
+    "relayer_fee_bps": "5"
+} }
+```
+
+Rules: native ETH is rejected — pre-wrap with a `wrap` step. `relayer_fee_bps ≤ 50` (0.5%). `current_timestamp` must be set on the script.
+
+### 16. `flashloan` — Balancer V2 flashloan (0% fee)
+
+Use when the user says: "flashloan", "atomic …", or describes a leveraged loop manually. The compiler rejects inner pipelines that can't repay the Vault.
+
+```json
+{ "flashloan": {
+    "via": "balancer",
+    "assets": [{ "asset": "WETH", "amount": "2.0" }],
+    "then": [
+      { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+      { "borrow":  { "asset": "USDC", "amount": "4000", "from": "aave" } },
+      { "swap":    { "from": "USDC", "amount": "4000", "to": "WETH",
+                     "min_amount_out": "2.0" } }
+    ]
+} }
+```
+
+### 17. `long` / `short` — Leveraged position on Aave
+
+Use when the user says: "go long/short with Xx leverage", "open a leveraged position". Desugars to a Balancer flashloan wrapping Aave supply/borrow/swap — emit this rather than authoring the flashloan by hand.
+
+```json
+{ "long": { "collateral": "WETH", "borrow": "USDC", "amount": "1.0",
+            "leverage": "5", "slippage": "50", "price": "3200" } }
+{ "short": { "collateral": "WETH", "borrow": "USDC", "amount": "1.0",
+             "leverage": "3", "slippage": "50", "price": "3200" } }
+```
+
+Rules: `leverage > 1` (use `deposit` when unlevered); capped per-asset via `protocols.aave.ltv_bps` (WETH 80% → max 5x, USDC/DAI 77% → ~4.35x); `slippage ≤ 500` bps; `price` required (borrow tokens per 1 collateral token).
+
+### 18. `close_position` — Close a prior long/short
+
+Use when the user says: "close my position", "unwind the leverage". The UI must supply `current_debt` and `current_collateral` read from Aave off-chain.
+
+```json
+{ "close_position": {
+    "collateral":         "WETH",
+    "borrow":             "USDC",
+    "current_debt":       "4180.0",
+    "current_collateral": "5.0",
+    "slippage":           "50"
+} }
+```
+
+### 19. Morpho Blue lending (via existing `deposit` / `borrow` / `withdraw`)
+
+Morpho markets are key-id'd — always include `market`. Use `as: "collateral"` on `deposit`/`withdraw` to target the collateral side; omit it (or `as: "loan"`) for the loan side.
+
+```json
+{ "deposit": { "asset": "WETH", "amount": "1.0", "into": "morpho",
+               "market": "USDC-WETH-86", "as": "collateral" } }
+{ "borrow":  { "asset": "USDC", "amount": "1500", "from": "morpho",
+               "market": "USDC-WETH-86" } }
 ```
 
 ---

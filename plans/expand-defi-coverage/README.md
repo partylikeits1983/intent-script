@@ -16,11 +16,12 @@ This directory splits the monolithic plan in `../expand-defi-coverage.md` into d
 | 02 | [02-phase1-router-foundations.md](02-phase1-router-foundations.md) | ✅ DONE (2026-04-22) | 03+ |
 | 03 | [03-phase2-compiler-fee-awareness.md](03-phase2-compiler-fee-awareness.md) | ✅ DONE (2026-04-22) | 04+ |
 | 04 | [04-phase3-lido-enhancements.md](04-phase3-lido-enhancements.md) | ✅ DONE (2026-04-23) | — (parallel-safe after 03) |
-| 05 | [05-phase4-morpho-blue.md](05-phase4-morpho-blue.md) | pending | — (parallel-safe after 03) |
-| 06 | [06-phase5-balancer-flashloan-aave-loop.md](06-phase5-balancer-flashloan-aave-loop.md) | pending | 07+ |
+| 05 | [05-phase4-morpho-blue.md](05-phase4-morpho-blue.md) | ✅ DONE (2026-04-23) | — (parallel-safe after 03) |
+| 06 | [06-phase5-balancer-flashloan-aave-loop.md](06-phase5-balancer-flashloan-aave-loop.md) | ✅ DONE (2026-04-23) | 07+ |
 | 07 | [07-phase6-uniswap-v3-lp.md](07-phase6-uniswap-v3-lp.md) | ✅ DONE (2026-04-23) | — (parallel-safe after 02) |
-| 08 | [08-phase7-across-bridging.md](08-phase7-across-bridging.md) | pending | — (parallel-safe after 03) |
-| 09 | [09-phase8-integration.md](09-phase8-integration.md) | pending | final |
+| 08 | [08-phase7-across-bridging.md](08-phase7-across-bridging.md) | ✅ DONE (2026-04-23) | — (parallel-safe after 03) |
+| 09 | [09-phase8-integration.md](09-phase8-integration.md) | ✅ DONE (2026-04-23) | final |
+| 10 | [10-phase9-leverage-trading.md](10-phase9-leverage-trading.md) | ✅ DONE (2026-04-23) | — (builds on 06) |
 
 Sub-tasks marked *parallel-safe* touch disjoint source files; they can be tackled in any order **after** their dependency. Safer default: run them sequentially 02 → 03 → 04 → 05 → 06 → 07 → 08 → 09.
 

@@ -1,6 +1,9 @@
 pub mod aave_v3;
+pub mod across;
+pub mod balancer;
 pub mod erc20;
 pub mod lido;
+pub mod morpho;
 pub mod oneinch;
 pub mod send;
 pub mod uniswap_v3;
@@ -12,7 +15,7 @@ use crate::ir::{ConcreteCall, ResolvedStep};
 use crate::registry::RegistryContext;
 
 /// Lower a resolved step into concrete EVM calls using the appropriate adapter.
-pub fn lower_step(step: &ResolvedStep, _registry: &RegistryContext) -> Result<Vec<ConcreteCall>> {
+pub fn lower_step(step: &ResolvedStep, registry: &RegistryContext) -> Result<Vec<ConcreteCall>> {
     match step {
         ResolvedStep::Wrap { .. } => wrap::lower_wrap(step),
         ResolvedStep::Unwrap { .. } => wrap::lower_unwrap(step),
@@ -21,6 +24,13 @@ pub fn lower_step(step: &ResolvedStep, _registry: &RegistryContext) -> Result<Ve
         ResolvedStep::AaveV3Supply { .. } => aave_v3::lower_supply(step),
         ResolvedStep::AaveV3Borrow { .. } => aave_v3::lower_borrow(step),
         ResolvedStep::AaveV3Withdraw { .. } => aave_v3::lower_withdraw(step),
+        ResolvedStep::AaveV3Repay { .. } => aave_v3::lower_repay(step),
+        ResolvedStep::MorphoSupply { .. } => morpho::lower_supply(step),
+        ResolvedStep::MorphoSupplyCollat { .. } => morpho::lower_supply_collateral(step),
+        ResolvedStep::MorphoBorrow { .. } => morpho::lower_borrow(step),
+        ResolvedStep::MorphoWithdraw { .. } => morpho::lower_withdraw(step),
+        ResolvedStep::MorphoWithdrawCollat { .. } => morpho::lower_withdraw_collateral(step),
+        ResolvedStep::MorphoRepay { .. } => morpho::lower_repay(step),
         ResolvedStep::UniswapV3Swap { .. } => uniswap_v3::lower_swap(step),
         ResolvedStep::LidoStake { .. } => lido::lower_stake(step),
         ResolvedStep::WstETHWrap { .. } => lido::lower_wsteth_wrap(step),
@@ -36,5 +46,7 @@ pub fn lower_step(step: &ResolvedStep, _registry: &RegistryContext) -> Result<Ve
         ResolvedStep::SendErc20 { .. } => send::lower_send_erc20(step),
         ResolvedStep::SendEth { .. } => send::lower_send_eth(step),
         ResolvedStep::SendErc721 { .. } => send::lower_send_erc721(step),
+        ResolvedStep::BalancerFlashloan { .. } => balancer::lower_flashloan(step, registry),
+        ResolvedStep::AcrossDepositV3 { .. } => across::lower_deposit_v3(step),
     }
 }

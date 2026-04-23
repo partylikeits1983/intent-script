@@ -100,6 +100,11 @@ pub enum Step {
     LpDecrease(LpDecreaseStep),
     LpCollect(LpCollectStep),
     Send(SendStep),
+    Flashloan(FlashloanStep),
+    Long(LeverageStep),
+    Short(LeverageStep),
+    ClosePosition(ClosePositionStep),
+    Bridge(BridgeStep),
     Custom(serde_json::Value),
 }
 
@@ -142,6 +147,15 @@ pub struct DepositStep {
     pub asset: String,
     pub amount: String,
     pub into: String,
+    /// Market alias, required for protocols that key actions by market id
+    /// (Morpho Blue). Absent for simple lending pools (Aave V3).
+    #[serde(default)]
+    pub market: Option<String>,
+    /// Supply discriminator for markets with both loan and collateral sides.
+    /// `"collateral"` supplies collateral (no interest), absent or `"loan"`
+    /// supplies on the loan side (earns interest).
+    #[serde(default, rename = "as")]
+    pub r#as: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +163,9 @@ pub struct BorrowStep {
     pub asset: String,
     pub amount: String,
     pub from: String,
+    /// Market alias (Morpho Blue only). Absent for Aave.
+    #[serde(default)]
+    pub market: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +173,13 @@ pub struct WithdrawStep {
     pub asset: String,
     pub amount: String,
     pub from: String,
+    /// Market alias (Morpho Blue only). Absent for Aave.
+    #[serde(default)]
+    pub market: Option<String>,
+    /// Withdraw discriminator: `"collateral"` withdraws from the collateral
+    /// side of the market; absent or `"loan"` withdraws from the supply side.
+    #[serde(default, rename = "as")]
+    pub r#as: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,6 +281,100 @@ pub struct LpCollectStep {
     /// enrich needs these to list the pair for sweep.
     pub token0: String,
     pub token1: String,
+}
+
+/// Flashloan step: borrow `assets` from a flashloan provider, run the `then`
+/// pipeline (which must repay the flashloan), and return remaining balance to
+/// the user. Only Balancer V2 is supported in v1 (`via: "balancer"`, 0% fee).
+#[derive(Debug, Deserialize)]
+pub struct FlashloanStep {
+    /// Flashloan provider key; must be "balancer" in v1.
+    pub via: String,
+    /// Assets to borrow. Each entry specifies one token.
+    pub assets: Vec<FlashloanAsset>,
+    /// Inner pipeline to execute while the flashloaned funds are on this
+    /// contract's balance. Bounded to 5 steps; nesting (flashloan inside
+    /// flashloan) is rejected by validation.
+    pub then: Vec<Step>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FlashloanAsset {
+    pub asset: String,
+    pub amount: String,
+}
+
+/// Leverage sugar — `long` or `short`. Desugared during normalize into a
+/// `Flashloan` (Balancer V2) wrapping Aave supply/borrow/swap. Both sides
+/// share the same shape: `collateral` is what the user deposits into Aave;
+/// `borrow` is what gets borrowed and swapped. A `long ETH` is `collateral=ETH,
+/// borrow=USDC`; a `short ETH` is `collateral=USDC, borrow=ETH`.
+#[derive(Debug, Deserialize)]
+pub struct LeverageStep {
+    pub collateral: String,
+    /// Borrow asset. Defaults: volatile collateral → "USDC"; stable → "WETH".
+    #[serde(default)]
+    pub borrow: Option<String>,
+    pub amount: String,
+    /// Target exposure multiplier. "1" = no leverage. Parsed as fixed-point
+    /// with up to 4 fractional digits (e.g. "3.5" → 3.5x).
+    pub leverage: String,
+    /// Max swap slippage in bps. Default: "50" (= 0.5%). Capped at 500 (5%).
+    #[serde(default)]
+    pub slippage: Option<String>,
+    /// Flashloan provider. Default: "balancer" (only v1-supported option).
+    #[serde(default)]
+    pub via: Option<String>,
+    /// Current market price (borrow tokens per 1 collateral token) — required
+    /// when `leverage > 1` until an on-chain quote primitive lands. Caller
+    /// supplies from a price oracle or UI.
+    #[serde(default)]
+    pub price: Option<String>,
+    /// Optional extra safety margin in bps subtracted from the effective max
+    /// leverage cap. 0 by default (honor raw LTV floor).
+    #[serde(default)]
+    pub safety_margin_bps: Option<u16>,
+    /// Uniswap V3 fee tier for the internal swap. Default "3000" (0.3%).
+    /// Useful when the 0.3% pool has thin liquidity for the pair — e.g.
+    /// USDC/wstETH typically routes better through the 0.05% or 0.01% tier.
+    #[serde(default)]
+    pub fee: Option<String>,
+}
+
+/// Bridge step — single-sided Across V3 deposit emitting only the source-chain
+/// call (`depositV3` on the SpokePool). Receiving on the destination chain is
+/// authored as a separate intent.
+#[derive(Debug, Deserialize)]
+pub struct BridgeStep {
+    /// Bridge provider; must be "across" in v1.
+    pub via: String,
+    /// Asset alias (WETH, USDC, …). Native ETH is rejected — callers must
+    /// pre-wrap to WETH.
+    pub asset: String,
+    pub amount: String,
+    /// Destination chain alias from `chains.json` (e.g. "arbitrum").
+    pub to_chain: String,
+    /// Recipient address on the destination chain.
+    pub recipient: String,
+    /// Relayer fee in basis points — compiler caps at 50 (0.5%).
+    pub relayer_fee_bps: String,
+}
+
+/// Close-position sugar — undoes a prior `long`/`short`. Requires the caller
+/// to thread in the user's current Aave debt and collateral (read off-chain
+/// via `getUserAccountData`) because the compiler has no RPC.
+#[derive(Debug, Deserialize)]
+pub struct ClosePositionStep {
+    pub collateral: String,
+    pub borrow: String,
+    /// Current Aave debt in `borrow`-token units (human decimal string).
+    pub current_debt: String,
+    /// Current Aave collateral in `collateral`-token units.
+    pub current_collateral: String,
+    #[serde(default)]
+    pub slippage: Option<String>,
+    #[serde(default)]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

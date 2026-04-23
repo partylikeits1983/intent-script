@@ -1,5 +1,6 @@
 pub mod build;
 pub mod enrich;
+pub mod leverage;
 pub mod lower;
 pub mod normalize;
 pub mod plan;
@@ -124,7 +125,12 @@ pub fn compile_with_allowances(
     // Stage F: Plan — decide execution strategy
     // Pass router address and sweep tokens for batching decision
     let router = registry.router_address();
-    let plan = plan::plan(&calls, router, enriched.tokens_to_sweep);
+    let plan = plan::plan(
+        &calls,
+        router,
+        enriched.tokens_to_sweep,
+        enriched.requires_router,
+    );
 
     // Stage G: Build — produce final unsigned transactions
     let output = build::build(

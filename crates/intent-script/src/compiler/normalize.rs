@@ -11,8 +11,10 @@ use alloy_primitives::{Address, Bytes, U256};
 use hashbrown::HashMap;
 
 use crate::error::{CompileError, Result, closest_match};
-use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_produces};
-use crate::registry::RegistryContext;
+use crate::ir::{
+    MorphoMarketParams, ResolvedBalances, ResolvedIntent, ResolvedStep, step_produces,
+};
+use crate::registry::{MorphoMarketConfig, RegistryContext};
 use crate::schema::{IntentScript, Step, SwapStep};
 
 /// Collect the list of known protocol aliases for inclusion in `UnknownProtocol` errors.
@@ -72,6 +74,13 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
         None
     };
 
+    // Any step that must run inside the router's call loop (flashloans, whose
+    // callback needs the transient sentinel armed by `_executeCalls`) forces
+    // router batching even for single-call pipelines.
+    let requires_router = steps
+        .iter()
+        .any(|s| matches!(s, ResolvedStep::BalancerFlashloan { .. }));
+
     Ok(NormalizeResult {
         intent: ResolvedIntent {
             chain_id: registry.chain.chain_id,
@@ -83,6 +92,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             user_balances,
             required_pulls: Vec::new(),
             fee_bps: registry.fee_bps(),
+            requires_router,
         },
         warnings,
     })
@@ -217,6 +227,16 @@ fn normalize_step(
             }
         }
         Step::Deposit(d) => {
+            if d.into == "morpho" {
+                return normalize_morpho_deposit(d, signer, registry, previous_steps);
+            }
+            // Aave (and any other simple pool-keyed lending) path.
+            if d.market.is_some() || d.r#as.is_some() {
+                return Err(CompileError::Validation(format!(
+                    "'market' and 'as' are only valid when depositing into 'morpho' (got '{}')",
+                    d.into
+                )));
+            }
             let asset = resolve_asset_address(&d.asset, registry)?;
             let decimals = resolve_asset_decimals(&d.asset, registry)?;
             let amount = resolve_amount_or_all(
@@ -254,6 +274,15 @@ fn normalize_step(
             })
         }
         Step::Borrow(b) => {
+            if b.from == "morpho" {
+                return normalize_morpho_borrow(b, signer, registry, previous_steps);
+            }
+            if b.market.is_some() {
+                return Err(CompileError::Validation(format!(
+                    "'market' is only valid when borrowing from 'morpho' (got '{}')",
+                    b.from
+                )));
+            }
             let asset = resolve_asset_address(&b.asset, registry)?;
             let decimals = resolve_asset_decimals(&b.asset, registry)?;
             let amount = resolve_amount_or_all(
@@ -292,6 +321,15 @@ fn normalize_step(
             })
         }
         Step::Withdraw(w) => {
+            if w.from == "morpho" {
+                return normalize_morpho_withdraw(w, signer, registry, previous_steps);
+            }
+            if w.market.is_some() || w.r#as.is_some() {
+                return Err(CompileError::Validation(format!(
+                    "'market' and 'as' are only valid when withdrawing from 'morpho' (got '{}')",
+                    w.from
+                )));
+            }
             let asset = resolve_asset_address(&w.asset, registry)?;
             let decimals = resolve_asset_decimals(&w.asset, registry)?;
             let amount = resolve_amount_or_all(
@@ -934,10 +972,201 @@ fn normalize_step(
                 }
             }
         }
+        Step::Flashloan(f) => normalize_flashloan(f, signer, registry, warnings, script),
+        Step::Bridge(b) => normalize_bridge(b, signer, registry, script),
+        Step::Long(l) => crate::compiler::leverage::expand_leverage(
+            l,
+            crate::compiler::leverage::Side::Long,
+            signer,
+            registry,
+            script,
+        ),
+        Step::Short(s) => crate::compiler::leverage::expand_leverage(
+            s,
+            crate::compiler::leverage::Side::Short,
+            signer,
+            registry,
+            script,
+        ),
+        Step::ClosePosition(c) => {
+            crate::compiler::leverage::expand_close(c, signer, registry, script)
+        }
         Step::Custom(_) => Err(CompileError::UnsupportedStep(
             "custom steps are not yet implemented in v1".to_string(),
         )),
     }
+}
+
+fn normalize_bridge(
+    b: &crate::schema::BridgeStep,
+    signer: Address,
+    registry: &RegistryContext,
+    script: &IntentScript,
+) -> Result<ResolvedStep> {
+    if b.via != "across" {
+        return Err(CompileError::UnsupportedStep(format!(
+            "bridge via '{}' is not supported (only 'across' in v1)",
+            b.via
+        )));
+    }
+
+    // Native ETH rejected — Across expects pre-wrapped WETH.
+    if registry.is_native(&b.asset) {
+        return Err(CompileError::Validation(
+            "Across bridge does not accept native ETH — wrap to WETH first with a `wrap` step"
+                .to_string(),
+        ));
+    }
+
+    let protocol =
+        registry
+            .protocols
+            .get("across")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "across".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+    let spoke_addr = protocol.contracts.get("spoke_pool").ok_or_else(|| {
+        CompileError::Adapter(
+            "Protocol 'across' has no 'spoke_pool' contract configured".to_string(),
+        )
+    })?;
+    let spoke_pool = parse_address(spoke_addr)?;
+
+    let dest_chain = registry
+        .all_chains
+        .get(&b.to_chain)
+        .ok_or_else(|| CompileError::UnknownNetwork(b.to_chain.clone()))?;
+    let destination_chain_id = U256::from(dest_chain.chain_id);
+
+    let recipient = parse_address(&b.recipient)?;
+    if recipient == Address::ZERO {
+        return Err(CompileError::Validation(
+            "Across recipient cannot be the zero address".to_string(),
+        ));
+    }
+
+    let relayer_fee_bps: u64 = b.relayer_fee_bps.parse().map_err(|_| {
+        CompileError::InvalidAmount(format!(
+            "Invalid relayer_fee_bps '{}' — must be an integer 0..=50",
+            b.relayer_fee_bps
+        ))
+    })?;
+    if relayer_fee_bps > 50 {
+        return Err(CompileError::Validation(format!(
+            "Across relayer_fee_bps {} exceeds cap 50 (0.5%)",
+            relayer_fee_bps
+        )));
+    }
+
+    let input_token = resolve_asset_address(&b.asset, registry)?;
+    let decimals = resolve_asset_decimals(&b.asset, registry)?;
+    let input_amount = parse_amount(&b.amount, decimals)?;
+    let output_amount =
+        input_amount * U256::from(10_000u64 - relayer_fee_bps) / U256::from(10_000u64);
+
+    let quote_timestamp = script.current_timestamp.ok_or_else(|| {
+        CompileError::Validation(
+            "Across bridge requires 'current_timestamp' in the script (used as quote_timestamp)"
+                .to_string(),
+        )
+    })?;
+    let quote_timestamp_u32: u32 = quote_timestamp.try_into().map_err(|_| {
+        CompileError::InvalidAmount(format!(
+            "Across quote_timestamp {} does not fit in uint32",
+            quote_timestamp
+        ))
+    })?;
+    let fill_deadline: u32 = quote_timestamp_u32.saturating_add(4 * 3600);
+
+    Ok(ResolvedStep::AcrossDepositV3 {
+        spoke_pool,
+        depositor: signer,
+        recipient,
+        input_token,
+        output_token: input_token, // v1: same token on destination
+        input_amount,
+        output_amount,
+        destination_chain_id,
+        exclusive_relayer: Address::ZERO,
+        quote_timestamp: quote_timestamp_u32,
+        fill_deadline,
+        exclusivity_deadline: 0,
+        message: Bytes::new(),
+    })
+}
+
+fn normalize_flashloan(
+    f: &crate::schema::FlashloanStep,
+    signer: Address,
+    registry: &RegistryContext,
+    warnings: &mut Vec<String>,
+    script: &IntentScript,
+) -> Result<ResolvedStep> {
+    if f.via != "balancer" {
+        return Err(CompileError::UnsupportedStep(format!(
+            "flashloan via '{}' is not supported (only 'balancer' in v1)",
+            f.via
+        )));
+    }
+    if f.assets.is_empty() {
+        return Err(CompileError::Validation(
+            "flashloan requires at least one asset".to_string(),
+        ));
+    }
+
+    let balancer =
+        registry
+            .protocols
+            .get("balancer")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "balancer".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+    let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
+        CompileError::Adapter("Protocol 'balancer' has no 'vault' contract configured".to_string())
+    })?;
+    let vault = parse_address(vault_addr)?;
+
+    let mut tokens = Vec::with_capacity(f.assets.len());
+    let mut amounts = Vec::with_capacity(f.assets.len());
+    for asset in &f.assets {
+        let addr = resolve_asset_address(&asset.asset, registry)?;
+        if addr == Address::ZERO {
+            return Err(CompileError::Validation(
+                "flashloan asset cannot be native — use WETH or another ERC-20".to_string(),
+            ));
+        }
+        let dec = resolve_asset_decimals(&asset.asset, registry)?;
+        let amt = parse_amount(&asset.amount, dec)?;
+        tokens.push(addr);
+        amounts.push(amt);
+    }
+
+    // Recursively normalize the inner pipeline. Inner "all" keywords and
+    // cross-step amount flow reference only the inner pipeline, not outer
+    // steps — each inner step sees the inner-built-so-far slice.
+    let mut inner_steps: Vec<ResolvedStep> = Vec::new();
+    for step in &f.then {
+        // Reject nested flashloans here for a crisper error than validate's
+        // recursive check would give.
+        if matches!(step, Step::Flashloan(_)) {
+            return Err(CompileError::Validation(
+                "nested flashloans are not allowed (max depth 1)".to_string(),
+            ));
+        }
+        let resolved = normalize_step(step, signer, registry, warnings, script, &inner_steps)?;
+        inner_steps.push(resolved);
+    }
+
+    Ok(ResolvedStep::BalancerFlashloan {
+        vault,
+        tokens,
+        amounts,
+        inner_steps,
+    })
 }
 
 /// Post-normalization pass: elide `Wrap ETH→WETH` steps that immediately
@@ -1395,6 +1624,259 @@ pub(crate) fn parse_amount(amount_str: &str, decimals: u8) -> Result<U256> {
                 + U256::from(frac) * U256::from(frac_multiplier))
         }
         _ => Err(CompileError::InvalidAmount(amount_str.to_string())),
+    }
+}
+
+/// Resolve a Morpho market alias to its parsed parameters.
+fn resolve_morpho_market(
+    market_alias: &str,
+    registry: &RegistryContext,
+) -> Result<(Address, MorphoMarketParams, MorphoMarketConfig)> {
+    let protocol =
+        registry
+            .protocols
+            .get("morpho")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "morpho".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+
+    let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
+        CompileError::Adapter("Protocol 'morpho' has no 'pool' contract configured".to_string())
+    })?;
+    let pool = parse_address(pool_addr)?;
+
+    let markets = protocol.markets.as_ref().ok_or_else(|| {
+        CompileError::Adapter("Protocol 'morpho' has no 'markets' table configured".to_string())
+    })?;
+
+    let market = markets.get(market_alias).ok_or_else(|| {
+        CompileError::Validation(format!(
+            "Unknown Morpho market '{}'. Available: {}",
+            market_alias,
+            {
+                let mut keys: Vec<String> = markets.keys().cloned().collect();
+                keys.sort();
+                keys.join(", ")
+            }
+        ))
+    })?;
+
+    let loan_token = resolve_asset_address(&market.loan, registry)?;
+    let collateral_token = resolve_asset_address(&market.collateral, registry)?;
+    let oracle = parse_address(&market.oracle)?;
+    let irm = parse_address(&market.irm)?;
+    let lltv = U256::from_str_radix(&market.lltv, 10).map_err(|_| {
+        CompileError::InvalidAmount(format!("Invalid Morpho lltv: {}", market.lltv))
+    })?;
+
+    // Parse the 32-byte market id (keccak256 of abi.encode(MarketParams)).
+    let id_hex = market.id.strip_prefix("0x").unwrap_or(&market.id);
+    if id_hex.len() != 64 {
+        return Err(CompileError::Adapter(format!(
+            "Morpho market '{}' has invalid id length: expected 32 bytes, got '{}'",
+            market_alias, market.id
+        )));
+    }
+    let mut id = [0u8; 32];
+    for (i, byte_out) in id.iter_mut().enumerate() {
+        *byte_out = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).map_err(|_| {
+            CompileError::Adapter(format!(
+                "Morpho market '{}' has invalid id hex: {}",
+                market_alias, market.id
+            ))
+        })?;
+    }
+
+    Ok((
+        pool,
+        MorphoMarketParams {
+            loan_token,
+            collateral_token,
+            oracle,
+            irm,
+            lltv,
+            id,
+        },
+        market.clone(),
+    ))
+}
+
+fn normalize_morpho_deposit(
+    d: &crate::schema::DepositStep,
+    signer: Address,
+    registry: &RegistryContext,
+    previous_steps: &[ResolvedStep],
+) -> Result<ResolvedStep> {
+    let market_alias = d.market.as_deref().ok_or_else(|| {
+        CompileError::Validation(
+            "Morpho deposit requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
+        )
+    })?;
+    let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
+
+    let is_collateral = match d.r#as.as_deref() {
+        None | Some("loan") => false,
+        Some("collateral") => true,
+        Some(other) => {
+            return Err(CompileError::Validation(format!(
+                "Morpho deposit 'as' must be 'collateral' or 'loan' (got '{}')",
+                other
+            )));
+        }
+    };
+
+    // Asset must match the market's loan side (for non-collateral deposits)
+    // or collateral side (for collateral deposits).
+    let expected_alias = if is_collateral {
+        &market_cfg.collateral
+    } else {
+        &market_cfg.loan
+    };
+    if &d.asset != expected_alias {
+        return Err(CompileError::Validation(format!(
+            "Morpho market '{}' expects asset '{}' for {} supply (got '{}')",
+            market_alias,
+            expected_alias,
+            if is_collateral { "collateral" } else { "loan" },
+            d.asset
+        )));
+    }
+
+    let asset_addr = resolve_asset_address(&d.asset, registry)?;
+    let decimals = resolve_asset_decimals(&d.asset, registry)?;
+    let amount = resolve_amount_or_all(
+        &d.amount,
+        decimals,
+        asset_addr,
+        previous_steps,
+        &d.asset,
+        registry,
+    )?;
+
+    if is_collateral {
+        Ok(ResolvedStep::MorphoSupplyCollat {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+        })
+    } else {
+        Ok(ResolvedStep::MorphoSupply {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+        })
+    }
+}
+
+fn normalize_morpho_borrow(
+    b: &crate::schema::BorrowStep,
+    signer: Address,
+    registry: &RegistryContext,
+    previous_steps: &[ResolvedStep],
+) -> Result<ResolvedStep> {
+    let market_alias = b.market.as_deref().ok_or_else(|| {
+        CompileError::Validation(
+            "Morpho borrow requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
+        )
+    })?;
+    let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
+
+    if b.asset != market_cfg.loan {
+        return Err(CompileError::Validation(format!(
+            "Morpho market '{}' expects loan asset '{}' (got '{}')",
+            market_alias, market_cfg.loan, b.asset
+        )));
+    }
+
+    let asset_addr = resolve_asset_address(&b.asset, registry)?;
+    let decimals = resolve_asset_decimals(&b.asset, registry)?;
+    let amount = resolve_amount_or_all(
+        &b.amount,
+        decimals,
+        asset_addr,
+        previous_steps,
+        &b.asset,
+        registry,
+    )?;
+
+    Ok(ResolvedStep::MorphoBorrow {
+        pool,
+        market_params: params,
+        amount,
+        on_behalf: signer,
+        receiver: signer,
+    })
+}
+
+fn normalize_morpho_withdraw(
+    w: &crate::schema::WithdrawStep,
+    signer: Address,
+    registry: &RegistryContext,
+    previous_steps: &[ResolvedStep],
+) -> Result<ResolvedStep> {
+    let market_alias = w.market.as_deref().ok_or_else(|| {
+        CompileError::Validation(
+            "Morpho withdraw requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
+        )
+    })?;
+    let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
+
+    let is_collateral = match w.r#as.as_deref() {
+        None | Some("loan") => false,
+        Some("collateral") => true,
+        Some(other) => {
+            return Err(CompileError::Validation(format!(
+                "Morpho withdraw 'as' must be 'collateral' or 'loan' (got '{}')",
+                other
+            )));
+        }
+    };
+    let expected_alias = if is_collateral {
+        &market_cfg.collateral
+    } else {
+        &market_cfg.loan
+    };
+    if &w.asset != expected_alias {
+        return Err(CompileError::Validation(format!(
+            "Morpho market '{}' expects asset '{}' for {} withdraw (got '{}')",
+            market_alias,
+            expected_alias,
+            if is_collateral { "collateral" } else { "loan" },
+            w.asset
+        )));
+    }
+
+    let asset_addr = resolve_asset_address(&w.asset, registry)?;
+    let decimals = resolve_asset_decimals(&w.asset, registry)?;
+    let amount = resolve_amount_or_all(
+        &w.amount,
+        decimals,
+        asset_addr,
+        previous_steps,
+        &w.asset,
+        registry,
+    )?;
+
+    if is_collateral {
+        Ok(ResolvedStep::MorphoWithdrawCollat {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+            receiver: signer,
+        })
+    } else {
+        Ok(ResolvedStep::MorphoWithdraw {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+            receiver: signer,
+        })
     }
 }
 

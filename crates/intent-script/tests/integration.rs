@@ -2664,3 +2664,676 @@ fn test_lp_decrease_rejects_all_liquidity() {
         "expected all-liquidity rejection, got: {err}"
     );
 }
+
+#[test]
+fn test_morpho_supply_collateral_and_borrow() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "deposit": { "asset": "WETH", "amount": "1.0", "into": "morpho",
+                           "market": "USDC-WETH-86", "as": "collateral" } },
+            { "borrow":  { "asset": "USDC", "amount": "1500", "from": "morpho",
+                           "market": "USDC-WETH-86" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            // Expected call sequence: transferFrom WETH, approve WETH→Morpho,
+            // supplyCollateral, borrow — four calls minimum.
+            assert!(
+                intent.intent_batch.calls.len() >= 4,
+                "expected at least 4 calls, got {}",
+                intent.intent_batch.calls.len()
+            );
+            // Last two calls target the Morpho Blue pool.
+            let morpho_pool = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
+            let morpho_calls: Vec<_> = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| format!("{}", c.target).eq_ignore_ascii_case(morpho_pool))
+                .collect();
+            assert_eq!(
+                morpho_calls.len(),
+                2,
+                "expected supplyCollateral + borrow on Morpho"
+            );
+            // USDC appears in sweep list (borrowed loan asset received via router).
+            let usdc = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+            let has_usdc_sweep = intent
+                .intent_batch
+                .tokens_to_sweep
+                .iter()
+                .any(|t| format!("{}", t).eq_ignore_ascii_case(usdc));
+            assert!(has_usdc_sweep, "USDC should be swept back to user");
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_morpho_rejects_wrong_asset() {
+    // Market is USDC-WETH, but user tries to supply DAI as collateral.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "DAI", "amount": "1000", "into": "morpho",
+                           "market": "USDC-WETH-86", "as": "collateral" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("expects asset 'WETH'"),
+        "expected asset mismatch error, got: {err}"
+    );
+}
+
+#[test]
+fn test_morpho_rejects_unknown_market() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "WETH", "amount": "1.0", "into": "morpho",
+                           "market": "NONEXISTENT-9999", "as": "collateral" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("Unknown Morpho market"),
+        "expected unknown market error, got: {err}"
+    );
+}
+
+#[test]
+fn test_morpho_requires_market_field() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "WETH", "amount": "1.0", "into": "morpho" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("requires a 'market' field"),
+        "expected missing-market error, got: {err}"
+    );
+}
+
+#[test]
+fn test_morpho_rejects_as_on_borrow() {
+    // The `as` field doesn't exist on BorrowStep so this is implicitly enforced
+    // by the schema — but a supply with `as: "loan"` should route to the loan
+    // side (default). Sanity check: supply-loan for USDC compiles cleanly.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "1000", "into": "morpho",
+                           "market": "USDC-WETH-86" } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("supply-loan should compile");
+    let json = CompileOutputJson::from(&result);
+    let json_str = serde_json::to_string(&json).unwrap();
+    assert!(json_str.contains("Supply"), "expected Supply step preview");
+}
+
+#[test]
+fn test_balancer_flashloan_simple() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            {
+              "flashloan": {
+                "via": "balancer",
+                "assets": [{ "asset": "WETH", "amount": "2.0" }],
+                "then": [
+                  { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+                  { "borrow":  { "asset": "USDC", "amount": "4000", "from": "aave" } },
+                  { "swap":    { "from": "USDC", "amount": "4000", "to": "WETH",
+                                 "min_amount_out": "2.0" } }
+                ]
+              }
+            }
+        ]
+    }"#;
+    let result = do_compile(input).expect("flashloan compile should succeed");
+    // Flashloans force router batching (sentinel arm happens in
+    // `_executeCalls`), so output is Eip712Intent with the flashLoan call as
+    // one of the inner `calls`.
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
+            let has_vault = intent
+                .intent_batch
+                .calls
+                .iter()
+                .any(|c| format!("{}", c.target).eq_ignore_ascii_case(vault));
+            assert!(has_vault, "expected a call targeting Balancer Vault");
+            // Find the vault call and verify the selector.
+            let vault_call = intent
+                .intent_batch
+                .calls
+                .iter()
+                .find(|c| format!("{}", c.target).eq_ignore_ascii_case(vault))
+                .expect("vault call");
+            assert_eq!(&vault_call.call_data[..4], &[0x5c, 0x38, 0x44, 0x9e]);
+        }
+        other => panic!(
+            "Expected Eip712Intent for router-gated flashloan, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_flashloan_rejects_nested() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            {
+              "flashloan": {
+                "via": "balancer",
+                "assets": [{ "asset": "WETH", "amount": "1.0" }],
+                "then": [
+                  {
+                    "flashloan": {
+                      "via": "balancer",
+                      "assets": [{ "asset": "USDC", "amount": "1000" }],
+                      "then": []
+                    }
+                  }
+                ]
+              }
+            }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("nested flashloans"),
+        "expected nested-flashloan rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_flashloan_rejects_unrepayable() {
+    // Flashloan 2 WETH but inner pipeline only produces 1 WETH (swap out
+    // less than flashloaned).
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            {
+              "flashloan": {
+                "via": "balancer",
+                "assets": [{ "asset": "WETH", "amount": "2.0" }],
+                "then": [
+                  { "swap": { "from": "WETH", "amount": "2.0", "to": "USDC",
+                              "min_amount_out": "3000" } },
+                  { "swap": { "from": "USDC", "amount": "3000", "to": "WETH",
+                              "min_amount_out": "1.0" } }
+                ]
+              }
+            }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("not repayable") || err.contains("leaves only"),
+        "expected unrepayable flashloan rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_flashloan_rejects_too_many_inner_steps() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            {
+              "flashloan": {
+                "via": "balancer",
+                "assets": [{ "asset": "WETH", "amount": "1.0" }],
+                "then": [
+                  { "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } },
+                  { "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } },
+                  { "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } },
+                  { "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } },
+                  { "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } },
+                  { "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } }
+                ]
+              }
+            }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("inner pipeline has 6 steps") || err.contains("inner pipeline"),
+        "expected inner-step count rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_flashloan_rejects_native_asset() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            {
+              "flashloan": {
+                "via": "balancer",
+                "assets": [{ "asset": "ETH", "amount": "1.0" }],
+                "then": []
+              }
+            }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("cannot be native"),
+        "expected native-asset rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_flashloan_userdata_roundtrip_decodes() {
+    use intent_script::adapters::balancer;
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            {
+              "flashloan": {
+                "via": "balancer",
+                "assets": [{ "asset": "WETH", "amount": "2.0" }],
+                "then": [
+                  { "deposit": { "asset": "WETH", "amount": "2.0", "into": "aave" } },
+                  { "borrow":  { "asset": "USDC", "amount": "4000", "from": "aave" } },
+                  { "swap":    { "from": "USDC", "amount": "4000", "to": "WETH",
+                                 "min_amount_out": "2.0" } }
+                ]
+              }
+            }
+        ]
+    }"#;
+    let result = do_compile(input).expect("flashloan compile should succeed");
+    // Router-gated: find the vault.flashLoan inner call inside the batched
+    // Eip712 output.
+    let vault_call_data = match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
+            intent
+                .intent_batch
+                .calls
+                .iter()
+                .find(|c| format!("{}", c.target).eq_ignore_ascii_case(vault))
+                .expect("vault call")
+                .call_data
+                .clone()
+        }
+        other => panic!("expected Eip712Intent, got {:?}", other),
+    };
+
+    // Decode the flashLoan call's userData and verify each inner call
+    // still has a recognizable selector. `abi_decode` expects the full
+    // calldata (selector + args), not args-only.
+    use alloy_sol_types::SolCall;
+    let decoded =
+        balancer::flashLoanCall::abi_decode(&vault_call_data).expect("decode flashLoan call");
+
+    let inner_calls = balancer::decode_inner_calls(&decoded.userData).expect("decode inner calls");
+    assert_eq!(
+        inner_calls.len(),
+        5,
+        "expected 5 inner calls (approve WETH, supply, borrow, approve USDC, swap), got {}",
+        inner_calls.len()
+    );
+    // First inner call should be an approve (selector 0x095ea7b3).
+    assert_eq!(&inner_calls[0].calldata[..4], &[0x09, 0x5e, 0xa7, 0xb3]);
+}
+
+#[test]
+fn test_long_5x_eth_accepts() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "long": {
+                "collateral": "WETH",
+                "borrow":     "USDC",
+                "amount":     "1.0",
+                "leverage":   "5",
+                "slippage":   "50",
+                "price":      "3200"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("5x long should compile at 80% LTV");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
+            let has_vault = intent
+                .intent_batch
+                .calls
+                .iter()
+                .any(|c| format!("{}", c.target).eq_ignore_ascii_case(vault));
+            assert!(has_vault, "expected flashLoan call through router");
+        }
+        other => panic!("expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_long_6x_eth_rejects() {
+    // 6x exceeds max leverage at 80% LTV (max = 1/(1 - 0.8) = 5x).
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "long": {
+                "collateral": "WETH",
+                "amount": "1.0",
+                "leverage": "6",
+                "price": "3200"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("exceeds max"),
+        "expected leverage cap error, got: {err}"
+    );
+}
+
+#[test]
+fn test_long_requires_price() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "long": {
+                "collateral": "WETH",
+                "amount": "1.0",
+                "leverage": "3"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("requires the 'price'"),
+        "expected price-required error, got: {err}"
+    );
+}
+
+#[test]
+fn test_leverage_rejects_wide_slippage() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "long": {
+                "collateral": "WETH",
+                "amount": "1.0",
+                "leverage": "3",
+                "slippage": "600",
+                "price": "3200"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("slippage_bps 600 exceeds"),
+        "expected slippage cap error, got: {err}"
+    );
+}
+
+#[test]
+fn test_leverage_rejects_identical_assets() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "long": {
+                "collateral": "WETH",
+                "borrow":     "WETH",
+                "amount":     "1.0",
+                "leverage":   "2",
+                "price":      "1"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("must differ"),
+        "expected collateral==borrow rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_short_weth_with_usdc_collateral_accepts() {
+    // Short WETH with USDC collateral (77% LTV → max ~4.35x, so 3x is fine).
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "short": {
+                "collateral": "WETH",
+                "borrow":     "USDC",
+                "amount":     "1.0",
+                "leverage":   "3",
+                "price":      "3200"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("3x short should compile");
+    let _ = result;
+}
+
+#[test]
+fn test_leverage_rejects_leverage_equals_one() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "long": {
+                "collateral": "WETH",
+                "amount": "1.0",
+                "leverage": "1"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("plain deposit"),
+        "expected leverage=1 rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_close_position_requires_state() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "close_position": {
+                "collateral": "WETH",
+                "borrow":     "USDC",
+                "current_debt":       "0",
+                "current_collateral": "5.0"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("must be > 0"),
+        "expected zero-state rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_close_position_compiles() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "close_position": {
+                "collateral":         "WETH",
+                "borrow":             "USDC",
+                "current_debt":       "4180.0",
+                "current_collateral": "5.0",
+                "slippage":           "50"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("close_position should compile");
+    let _ = result;
+}
+
+#[test]
+fn test_bridge_across_usdc_to_arbitrum() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "bridge": { "via": "across", "asset": "USDC", "amount": "1000",
+                          "to_chain": "arbitrum",
+                          "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                          "relayer_fee_bps": "5" } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("bridge should compile");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let spoke = "0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5";
+            let has_spoke = intent
+                .intent_batch
+                .calls
+                .iter()
+                .any(|c| format!("{}", c.target).eq_ignore_ascii_case(spoke));
+            assert!(has_spoke, "expected call to Across SpokePool");
+        }
+        other => panic!("expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_bridge_rejects_native_eth() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "bridge": { "via": "across", "asset": "ETH", "amount": "1.0",
+                          "to_chain": "arbitrum",
+                          "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                          "relayer_fee_bps": "5" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("does not accept native ETH"),
+        "expected native ETH rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_bridge_rejects_high_relayer_fee() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "bridge": { "via": "across", "asset": "USDC", "amount": "1000",
+                          "to_chain": "arbitrum",
+                          "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                          "relayer_fee_bps": "100" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("exceeds cap 50"),
+        "expected relayer-fee cap error, got: {err}"
+    );
+}
+
+#[test]
+fn test_bridge_rejects_unknown_chain() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "bridge": { "via": "across", "asset": "USDC", "amount": "1000",
+                          "to_chain": "nonexistent",
+                          "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                          "relayer_fee_bps": "5" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("Unknown network") || err.contains("nonexistent"),
+        "expected unknown-chain error, got: {err}"
+    );
+}
+
+#[test]
+fn test_bridge_requires_current_timestamp() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "bridge": { "via": "across", "asset": "USDC", "amount": "1000",
+                          "to_chain": "arbitrum",
+                          "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                          "relayer_fee_bps": "5" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("requires 'current_timestamp'"),
+        "expected timestamp-required error, got: {err}"
+    );
+}
+
+#[test]
+fn test_aave_rejects_market_field() {
+    // `market` is only valid for Morpho.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "1000", "into": "aave",
+                           "market": "USDC-WETH-86" } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("only valid when depositing into 'morpho'"),
+        "expected rejection of market field on aave, got: {err}"
+    );
+}
