@@ -37,6 +37,18 @@ pub enum CompileError {
     InvalidChain(String),
     Adapter(String),
     Json(String),
+    /// A batched intent was compiled without any source for an EIP-712
+    /// deadline. The on-chain router's `executeSigned` rejects
+    /// `deadline == 0`, so we refuse to emit such an intent at compile
+    /// time instead of producing a tx that is guaranteed to revert.
+    DeadlineMissing,
+    /// An explicit `deadline` is at or before the supplied
+    /// `current_timestamp`. The signed intent would be rejected by the
+    /// router; fail fast at compile time.
+    DeadlineInPast {
+        deadline: u64,
+        current_timestamp: u64,
+    },
 }
 
 impl fmt::Display for CompileError {
@@ -96,6 +108,22 @@ impl fmt::Display for CompileError {
             CompileError::InvalidChain(s) => write!(f, "Invalid intent chain: {s}"),
             CompileError::Adapter(s) => write!(f, "Adapter error: {s}"),
             CompileError::Json(s) => write!(f, "JSON parse error: {s}"),
+            CompileError::DeadlineMissing => write!(
+                f,
+                "Batched intent has no deadline: neither 'deadline' nor 'current_timestamp' \
+                 was provided. The router's executeSigned rejects deadline == 0; set \
+                 'current_timestamp' to the current Unix timestamp to auto-compute a \
+                 30-minute deadline, or pass an explicit 'deadline' > current_timestamp."
+            ),
+            CompileError::DeadlineInPast {
+                deadline,
+                current_timestamp,
+            } => write!(
+                f,
+                "Intent 'deadline' {deadline} is at or before 'current_timestamp' \
+                 {current_timestamp}; the router would reject this signed intent. \
+                 Use a 'deadline' strictly greater than the current timestamp."
+            ),
         }
     }
 }

@@ -26,9 +26,38 @@ fn load_config() -> (String, String, String) {
     (chains, assets, protocols)
 }
 
+/// Auto-inject a default `current_timestamp` when the test JSON doesn't
+/// already supply one (or an explicit `deadline`). Batched intents now hard-
+/// reject without a deadline source; generic integration tests don't care
+/// about the value, they just need one to exist. Tests that exercise
+/// deadline behavior explicitly provide a timestamp.
+const TEST_DEFAULT_CURRENT_TIMESTAMP: u64 = 1_712_344_000;
+fn inject_default_timestamp_if_missing(input: &str) -> String {
+    let mut v: serde_json::Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(_) => return input.to_string(),
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return input.to_string();
+    };
+    let has_deadline = obj
+        .get("deadline")
+        .and_then(|d| d.as_u64())
+        .is_some_and(|d| d > 0);
+    let has_ts = obj.contains_key("current_timestamp");
+    if !has_deadline && !has_ts {
+        obj.insert(
+            "current_timestamp".into(),
+            serde_json::Value::Number(TEST_DEFAULT_CURRENT_TIMESTAMP.into()),
+        );
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| input.to_string())
+}
+
 fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
     let (c, a, p) = load_config();
-    compile(input, &c, &a, &p)
+    let input = inject_default_timestamp_if_missing(input);
+    compile(&input, &c, &a, &p)
 }
 
 #[test]
@@ -1621,28 +1650,9 @@ fn test_uniswap_consumption_flow_validated() {
     );
 }
 
-#[test]
-fn test_missing_timestamp_emits_deadline_warning() {
-    // No current_timestamp, no deadline: deadline = 0.
-    // Single-tx path still succeeds, but a warning must be emitted so the UI
-    // can prompt for a timestamp before trying the batched/Eip712 path.
-    let input = r#"{
-        "network": "anvil",
-        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-        "steps": [
-            { "deposit": { "asset": "USDC", "amount": "100", "into": "aave" } }
-        ]
-    }"#;
-    let result = do_compile(input).expect("compile should succeed");
-    assert!(
-        result
-            .warnings
-            .iter()
-            .any(|w| w.contains("deadline") || w.contains("current_timestamp")),
-        "expected a warning about missing deadline/current_timestamp, got: {:?}",
-        result.warnings
-    );
-}
+// `test_missing_timestamp_emits_deadline_warning` was removed: batched
+// intents without a deadline source are now a hard CompileError::DeadlineMissing,
+// and the dedicated coverage lives in `deadline_warning_tests.rs`.
 
 #[test]
 fn test_slippage_precision_large_amount() {
@@ -1705,7 +1715,8 @@ fn load_sepolia_config() -> (String, String, String) {
 
 fn do_compile_sepolia(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
     let (c, a, p) = load_sepolia_config();
-    compile(input, &c, &a, &p)
+    let input = inject_default_timestamp_if_missing(input);
+    compile(&input, &c, &a, &p)
 }
 
 #[test]
@@ -1825,7 +1836,8 @@ fn do_compile_with_allowances(
     allowances_json: Option<&str>,
 ) -> Result<CompileResult, intent_script::error::CompileError> {
     let (c, a, p) = load_config();
-    compile_with_allowances(input, &c, &a, &p, allowances_json)
+    let input = inject_default_timestamp_if_missing(input);
+    compile_with_allowances(&input, &c, &a, &p, allowances_json)
 }
 
 /// A USDC deposit triggers a `transferFrom(user, router, 5000e6)` inner call.
@@ -3254,7 +3266,11 @@ fn test_bridge_requires_current_timestamp() {
                           "relayer_fee_bps": "5" } }
         ]
     }"#;
-    let err = do_compile(input).unwrap_err().to_string();
+    // Bypass the default-timestamp injection — this test specifically asserts
+    // that the normalize step rejects an Across bridge when no current_timestamp
+    // was supplied (it is used as `quote_timestamp`).
+    let (c, a, p) = load_config();
+    let err = compile(input, &c, &a, &p).unwrap_err().to_string();
     assert!(
         err.contains("requires 'current_timestamp'"),
         "expected timestamp-required error, got: {err}"

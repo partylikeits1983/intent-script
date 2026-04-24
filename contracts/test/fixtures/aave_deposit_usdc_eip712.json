@@ -85,7 +85,7 @@
       ],
       "tokensToSweep": [],
       "nonce": "0",
-      "deadline": "0"
+      "deadline": "1712345800"
     }
   },
   "directTx": {
@@ -97,9 +97,6 @@
     "description": "Batched via router: [TransferFrom 100000000 wei of token 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 from 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 to 0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120, Approve 100000000 wei of token 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 for spender 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, Supply 100000000 wei of asset 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 to Aave V3]"
   },
   "description": "Batched via router: [TransferFrom 100000000 wei of token 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 from 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 to 0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120, Approve 100000000 wei of token 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 for spender 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, Supply 100000000 wei of asset 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 to Aave V3]",
-  "warnings": [
-    "Intent has no deadline: neither 'deadline' nor 'current_timestamp' was provided. Batched intents will be rejected by the router (deadline > 0 required). Set 'current_timestamp' to the current Unix timestamp to auto-compute a 30-minute deadline."
-  ],
   "preview": {
     "inputs": [
       {

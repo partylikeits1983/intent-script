@@ -88,7 +88,7 @@
         "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
       ],
       "nonce": "0",
-      "deadline": "0"
+      "deadline": "1712345800"
     }
   },
   "directTx": {
@@ -100,9 +100,6 @@
     "description": "Batched via router: [Stake 10000000000000000000 wei ETH in Lido for stETH, Approve 9990000000000000000 wei of token 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84 for spender 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0, Wrap 9990000000000000000 wei stETH into wstETH]"
   },
   "description": "Batched via router: [Stake 10000000000000000000 wei ETH in Lido for stETH, Approve 9990000000000000000 wei of token 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84 for spender 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0, Wrap 9990000000000000000 wei stETH into wstETH]",
-  "warnings": [
-    "Intent has no deadline: neither 'deadline' nor 'current_timestamp' was provided. Batched intents will be rejected by the router (deadline > 0 required). Set 'current_timestamp' to the current Unix timestamp to auto-compute a 30-minute deadline."
-  ],
   "preview": {
     "inputs": [],
     "outputs": [

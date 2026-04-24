@@ -145,16 +145,28 @@ pub fn compile_with_allowances(
 
     // Only batched (Eip712Intent) outputs need a deadline — `executeSigned`
     // rejects `deadline == 0`. `executeDirect` (the single-tx path) does not
-    // check the deadline, so warning there would just be noise.
-    let has_deadline_source =
-        script.deadline.unwrap_or(0) > 0 || script.current_timestamp.is_some();
-    if matches!(output, CompileOutput::Eip712Intent(_)) && !has_deadline_source {
-        all_warnings.push(
-            "Intent has no deadline: neither 'deadline' nor 'current_timestamp' was provided. \
-             Batched intents will be rejected by the router (deadline > 0 required). \
-             Set 'current_timestamp' to the current Unix timestamp to auto-compute a 30-minute deadline."
-                .into(),
-        );
+    // check the deadline, so silence is fine there.
+    //
+    // Previously this was a warning. A hallucinating LLM that omits the
+    // deadline produces an intent the router will reject — cheaper and safer
+    // to reject at compile time than to let the user sign a doomed
+    // transaction. TxSequence outputs also skip the check because they are a
+    // fallback path executed as a series of raw EOA calls, not through the
+    // signed-intent flow.
+    if matches!(output, CompileOutput::Eip712Intent(_)) {
+        let has_deadline_source =
+            script.deadline.unwrap_or(0) > 0 || script.current_timestamp.is_some();
+        if !has_deadline_source {
+            return Err(crate::error::CompileError::DeadlineMissing);
+        }
+        if let (Some(explicit), Some(current)) = (script.deadline, script.current_timestamp) {
+            if explicit > 0 && explicit <= current {
+                return Err(crate::error::CompileError::DeadlineInPast {
+                    deadline: explicit,
+                    current_timestamp: current,
+                });
+            }
+        }
     }
 
     Ok(CompileResult {
