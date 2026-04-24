@@ -117,8 +117,13 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
         }
     }
 
-    // Task 5: Cross-step amount flow validation
-    validate_amount_flow(&intent.steps, intent.fee_bps)?;
+    // Task 5: Cross-step amount flow validation (wallet-balance-aware).
+    //
+    // Seed the running balance with the user's on-chain wallet amounts when
+    // the caller supplied them, so a hallucinated `deposit 1_000_000 USDC`
+    // against a 100-USDC wallet is caught at compile time instead of
+    // bubbling up as an on-chain revert after fees were already taken.
+    validate_amount_flow(&intent.steps, intent.fee_bps, intent.user_balances.as_ref())?;
 
     // B1: Recipient pinning. Every step with a recipient-like address must
     // name the signer (or, once the enricher has redirected, the router).
@@ -349,12 +354,25 @@ fn validate_health_factor(
     Ok(())
 }
 
-/// Task 5: Cross-step amount flow validation.
+/// Task 5: Cross-step amount flow validation (wallet-balance-aware).
 ///
-/// Track tokens produced by previous steps. Only validate consumption when
-/// a step uses a token that a prior step produced. Wallet-sourced tokens
-/// are not checked.
-fn validate_amount_flow(steps: &[ResolvedStep], fee_bps: u16) -> Result<()> {
+/// Walks the pipeline and tracks a running balance per token. A step that
+/// consumes more of a token than is currently available is rejected.
+///
+/// The running balance is seeded from the user's wallet when `balances`
+/// is `Some` — that's the B3 extension. With seeding, a hallucinated
+/// `deposit 1_000_000 USDC` against a 100-USDC wallet is caught at
+/// compile time instead of bubbling up as an on-chain revert after the
+/// router has already taken its sweep fee.
+///
+/// Without seeding (`balances == None`), the behavior matches the pre-B3
+/// contract: only steps whose consumed token appears in an earlier
+/// produce are validated; wallet-sourced tokens are trusted.
+fn validate_amount_flow(
+    steps: &[ResolvedStep],
+    fee_bps: u16,
+    balances: Option<&ResolvedBalances>,
+) -> Result<()> {
     // Intra-batch hand-offs stay inside the router; no fee is skimmed between
     // steps. The sweep fee only applies when leftover tokens flow back to the
     // signer at the end. Pass `fee_bps = 0` here so an exact-amount `deposit`
@@ -363,21 +381,37 @@ fn validate_amount_flow(steps: &[ResolvedStep], fee_bps: u16) -> Result<()> {
     // (tokens returned to the Vault also bypass sweep).
     let _ = fee_bps;
     let mut produced: HashMap<Address, U256> = HashMap::new();
+    let seeded_from_wallet = if let Some(b) = balances {
+        for (token, amount) in b.tokens.iter() {
+            *produced.entry(*token).or_insert(U256::ZERO) += *amount;
+        }
+        !b.tokens.is_empty()
+    } else {
+        false
+    };
 
     for (i, step) in steps.iter().enumerate() {
         if let Some((token, required)) = step_consumes(step) {
             if let Some(available) = produced.get(&token) {
                 if required > *available {
                     return Err(CompileError::InvalidChain(format!(
-                        "Step {} requires {} of token {} but previous steps only guarantee {}",
+                        "Step {} requires {} of token {} but the running balance only \
+                         guarantees {} (wallet seed {} prior-step produce).",
                         i + 1,
                         required,
                         token,
-                        available
+                        available,
+                        if seeded_from_wallet { "+" } else { "disabled;" }
                     )));
                 }
                 produced.insert(token, *available - required);
             }
+            // When `balances` is Some and this token is listed in wallet but
+            // with zero amount, `produced.get(&token)` returned Some(0) and
+            // the > check above handled it. When the token isn't in wallet
+            // and no prior step produced it, we fall through without a check
+            // — matches the pre-B3 trust contract for token streams the
+            // caller didn't give us info about.
         }
         if let Some((token, guaranteed)) = step_produces(step, 0) {
             *produced.entry(token).or_insert(U256::ZERO) += guaranteed;
@@ -869,7 +903,7 @@ mod tests {
                 on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             },
         ];
-        let result = validate_amount_flow(&steps, 0);
+        let result = validate_amount_flow(&steps, 0, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires"));
     }
@@ -895,7 +929,7 @@ mod tests {
                 on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             },
         ];
-        let result = validate_amount_flow(&steps, 0);
+        let result = validate_amount_flow(&steps, 0, None);
         assert!(result.is_ok());
     }
 
@@ -908,7 +942,7 @@ mod tests {
             amount: U256::from(5_000_000_000u64),
             on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
         }];
-        let result = validate_amount_flow(&steps, 0);
+        let result = validate_amount_flow(&steps, 0, None);
         assert!(result.is_ok());
     }
 
