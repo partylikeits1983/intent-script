@@ -71,6 +71,14 @@ pub struct AllowancesInput {
     /// router per chain, configured in the protocol registry.
     #[serde(default)]
     pub tokens: HashMap<String, String>,
+    /// Optional per-token spend cap in base units as a decimal string.
+    /// When set, the compiler rejects any intent whose aggregate
+    /// required-pull for that token exceeds the cap. Lets the UI bound
+    /// what a single session can consume regardless of what the LLM
+    /// produces — the user pre-authorizes an envelope and the compiler
+    /// refuses to emit anything outside it. Missing keys mean no cap.
+    #[serde(default)]
+    pub max_spend: HashMap<String, String>,
 }
 
 /// Aave V3 position information for balance-aware validation.

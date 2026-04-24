@@ -83,10 +83,12 @@ pub fn compile_with_allowances(
     let registry =
         RegistryContext::load(chains_json, assets_json, protocols_json, &script.network)?;
 
-    // Parse the optional allowances blob into a (token_address → allowance) map.
-    // Unknown symbols are dropped with a warning; malformed numeric values bubble
-    // up as a parse error (bad UI data is a bug, not silently ignorable).
+    // Parse the optional allowances blob into a (token_address → allowance) map
+    // plus an optional (token_address → max_spend) cap map. Unknown symbols are
+    // dropped with a warning; malformed numeric values bubble up as a parse
+    // error (bad UI data is a bug, not silently ignorable).
     let mut parse_warnings: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+    let mut max_spend_map: HashMap<Address, U256> = HashMap::new();
     let current_allowances: Option<HashMap<Address, U256>> = match allowances_json {
         Some(raw) if !raw.is_empty() => {
             let input: AllowancesInput = serde_json::from_str(raw)?;
@@ -113,6 +115,34 @@ pub fn compile_with_allowances(
                     }
                 }
             }
+            // B4: Parse optional max_spend caps. Same alias-resolution and
+            // error handling as `tokens`. Unknown aliases are dropped with a
+            // warning rather than erroring so a UI that ships a stale alias
+            // list doesn't brick compile — the worst-case outcome is the
+            // cap silently not applying, which only ever *lets* things
+            // through, not the other way around.
+            for (alias, base_units) in input.max_spend.iter() {
+                match registry.assets.get(alias) {
+                    Some(cfg) if cfg.address != "native" => {
+                        let addr: Address = cfg.address.parse().map_err(|_| {
+                            crate::error::CompileError::Adapter(alloc::format!(
+                                "Invalid address in asset config for '{}'",
+                                alias
+                            ))
+                        })?;
+                        let amount = U256::from_str_radix(base_units, 10).map_err(|_| {
+                            crate::error::CompileError::InvalidAmount(base_units.to_string())
+                        })?;
+                        max_spend_map.insert(addr, amount);
+                    }
+                    _ => {
+                        parse_warnings.push(alloc::format!(
+                            "max_spend entry for unknown asset '{}' ignored",
+                            alias
+                        ));
+                    }
+                }
+            }
             Some(map)
         }
         _ => None,
@@ -134,6 +164,23 @@ pub fn compile_with_allowances(
 
     // Stage D: Enrich — insert approvals, wraps, track sweep tokens
     let enriched = enrich::enrich(resolved, &registry)?;
+
+    // B4: Per-token spend cap. required_pulls is the aggregate amount the
+    // router will pull from the signer for each ERC-20 during this batch.
+    // If the caller supplied `max_spend` for a token and the required pull
+    // exceeds it, reject — the intent outruns what the user pre-authorized
+    // for this session.
+    for (token, required) in enriched.required_pulls.iter() {
+        if let Some(cap) = max_spend_map.get(token) {
+            if required > cap {
+                return Err(crate::error::CompileError::Validation(alloc::format!(
+                    "Token {} required-pull {} exceeds the caller's max_spend cap {}. \
+                     The intent tries to spend more than was pre-authorized for this session.",
+                    token, required, cap
+                )));
+            }
+        }
+    }
 
     // Stage E: Lower — convert resolved steps to concrete EVM calls
     let calls = lower::lower(&enriched, &registry)?;
