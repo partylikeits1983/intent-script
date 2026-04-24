@@ -30,6 +30,36 @@
 
 ---
 
+## DSL at a glance
+
+One-line index into the step types detailed below. Each row shows the primitive, what it's for, and a minimal JSON shape — follow the links for full field tables and variations.
+
+| Primitive | Purpose | Minimal shape |
+|---|---|---|
+| [`swap`](#swap--token-swap) | Uniswap V3 or 1inch token swap | `{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }` |
+| [`deposit`](#deposit--aave-v3-or-morpho-blue-supply) | Supply to Aave V3 or Morpho Blue | `{ "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }` |
+| [`borrow`](#borrow--aave-v3-or-morpho-blue-borrow) | Borrow against existing collateral | `{ "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }` |
+| [`withdraw`](#withdraw--aave-v3-or-morpho-blue-withdraw) | Pull supplied collateral back | `{ "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }` |
+| [`wrap`](#wrap--wrap-native-or-steth) | ETH → WETH or stETH → wstETH | `{ "wrap": { "asset": "ETH", "amount": "1.5" } }` |
+| [`unwrap`](#unwrap--unwrap-weth-or-wsteth) | WETH → ETH or wstETH → stETH | `{ "unwrap": { "asset": "WETH", "amount": "2.0" } }` |
+| [`stake`](#stake--lido-staking) | Lido native-ETH staking (no wrap) | `{ "stake": { "asset": "ETH", "amount": "10.0", "into": "lido" } }` |
+| [`request_withdrawal`](#request_withdrawal--lido-withdrawal-queue-request) | Queue stETH/wstETH for unstaking | `{ "request_withdrawal": { "asset": "stETH", "amounts": ["0.5"], "from": "lido" } }` |
+| [`claim_withdrawal`](#claim_withdrawal--lido-withdrawal-queue-claim) | Redeem a mature Lido NFT | `{ "claim_withdrawal": { "protocol": "lido", "request_ids": [1234], "hints": [42] } }` |
+| [`lp_mint`](#lp_mint--uniswap-v3-lp-mint) | New Uni V3 concentrated position | `{ "lp_mint": { "protocol": "uniswap", "token0": "USDC", "token1": "WETH", "fee": "3000", "tick_lower": -200040, "tick_upper": -199980, "amount0": "1000", "amount1": "0.3", "min_amount0": "990", "min_amount1": "0.29" } }` |
+| [`lp_increase`](#lp_increase--uniswap-v3-lp-increase-liquidity) | Add liquidity to existing LP NFT | `{ "lp_increase": { "position_id": "123", "token0": "USDC", "token1": "WETH", "amount0": "500", "amount1": "0.15", "min_amount0": "495", "min_amount1": "0.148" } }` |
+| [`lp_decrease`](#lp_decrease--uniswap-v3-lp-decrease-liquidity) | Remove liquidity (usually + collect) | `{ "lp_decrease": { "position_id": "123", "token0": "USDC", "token1": "WETH", "liquidity": "1000000000000000000", "min_amount0": "495", "min_amount1": "0.148" } }` |
+| [`lp_collect`](#lp_collect--uniswap-v3-lp-collect) | Sweep owed tokens/fees | `{ "lp_collect": { "position_id": "123", "token0": "USDC", "token1": "WETH" } }` |
+| [`send`](#send--transfer-tokensethnfts) | ERC-20 / ETH / ERC-721 transfer | `{ "send": { "asset": "USDC", "amount": "100", "to": "0x..." } }` |
+| [`bridge`](#bridge--across-v3-cross-chain-transfer) | Across V3 source-chain deposit | `{ "bridge": { "via": "across", "asset": "USDC", "amount": "1000", "to_chain": "arbitrum", "recipient": "0x...", "relayer_fee_bps": "5" } }` |
+| [`flashloan`](#flashloan--balancer-v2-flashloan-with-inner-pipeline) | Balancer V2 flashloan wrapping an inner pipeline | `{ "flashloan": { "via": "balancer", "assets": [{"asset":"WETH","amount":"2.0"}], "then": [ ... ] } }` |
+| [`long`](#long--short--leverage-open) | **Aave-backed** leverage open (sugar) | `{ "long": { "collateral": "WETH", "borrow": "USDC", "amount": "1.0", "leverage": "5", "slippage": "50", "price": "3200" } }` |
+| [`short`](#long--short--leverage-open) | **Aave-backed** leverage open (sugar) | `{ "short": { "collateral": "WETH", "borrow": "USDC", "amount": "1.0", "leverage": "3", "price": "3200" } }` |
+| [`close_position`](#close_position--leverage-close) | **Aave-backed** leverage close (sugar) | `{ "close_position": { "collateral": "WETH", "borrow": "USDC", "current_debt": "4180.0", "current_collateral": "5.0", "slippage": "50" } }` |
+
+> **Leverage is Aave-only.** `long` / `short` / `close_position` compile to an Aave V3 supply→borrow→swap pipeline wrapped in a Balancer flashloan (`compiler/leverage.rs`). There is no Morpho branch in the sugar; use the non-levered Morpho `deposit` / `borrow` / `withdraw` primitives for Morpho positions.
+
+---
+
 ## Step Types
 
 Each step is a JSON object with exactly one key (the action name) mapping to its parameters. The `Step` enum is in `crates/intent-script/src/schema/public_ast.rs:70`.
@@ -411,6 +441,11 @@ Desugars to a Balancer flashloan wrapping an Aave `supply → borrow → swap` i
 | `via` | string | — | Flashloan provider; default `"balancer"`. |
 | `safety_margin_bps` | number | — | Extra per-call margin subtracted from effective LTV. Default 0. |
 
+Important authoring rules:
+- Do **not** prepend a separate `wrap` step before `long` / `short` just because the user said `ETH`. Author the leverage step directly and use the leverage step's `collateral` field (`"WETH"` for ETH exposure, `"wstETH"` for wrapped staked ETH exposure).
+- `long` / `short` only compile when the active config includes the Aave leverage metadata the sugar depends on, especially `protocols.aave.ltv_bps`. If that metadata is missing, the correct behavior is to treat leveraged sugar as unavailable in that environment rather than retrying the same step shape.
+- When leverage sugar is unavailable, fall back to plain-text explanation or a non-levered alternative such as `wrap` + `deposit`, rather than emitting a broken `long` / `short` intent.
+
 ### `close_position` — Leverage Close
 
 Undoes a prior `long`/`short`. Requires the frontend to thread in the current Aave debt and collateral (read off-chain via `getUserAccountData`) because the compiler has no RPC.
@@ -494,7 +529,7 @@ Implemented in `crates/intent-script/src/compiler/validate.rs`:
 8. **Send targets**: Cannot send to the zero address
 9. **Bridge**: `relayer_fee_bps ≤ 50`; rejects native ETH (pre-wrap to WETH); requires `current_timestamp` at the script top level
 10. **Flashloan**: only `via: "balancer"` in v1; inner pipeline must be repayable per-token (validated in `validate_flashloan` with `fee_bps = 0` — inner tokens are returned to the Vault, not swept)
-11. **Leverage**: `leverage >= 1` (literal 1 rejected — use plain `deposit`); per-asset cap derived from `protocols.aave.ltv_bps`; `slippage ≤ 500 bps`; `collateral != borrow`; `leverage > 1` requires explicit `price` field
+11. **Leverage**: `leverage >= 1` (literal 1 rejected — use plain `deposit`); per-asset cap derived from `protocols.aave.ltv_bps`; `slippage ≤ 500 bps`; `collateral != borrow`; `leverage > 1` requires explicit `price` field; leverage sugar is unavailable when the active config omits required Aave metadata such as `ltv_bps`
 12. **LP fees**: Uniswap V3 LP fee tier restricted to `{500, 3000, 10000}`; `position_id` must be explicit (no `"last_minted"`)
 
 ---

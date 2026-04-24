@@ -302,6 +302,13 @@ Use when the user says: "go long/short with Xx leverage", "open a leveraged posi
 
 Rules: `leverage > 1` (use `deposit` when unlevered); capped per-asset via `protocols.aave.ltv_bps` (WETH 80% → max 5x, USDC/DAI 77% → ~4.35x); `slippage ≤ 500` bps; `price` required (borrow tokens per 1 collateral token).
 
+Additional leverage rules:
+- Do **not** add a separate `wrap` step before `long` / `short` just because the user said `ETH`. Express the position directly with `collateral: "WETH"` for ETH longs/shorts.
+- Only emit `long` / `short` when the runtime/config supports leverage sugar. If compilation fails with an error like `Aave protocol config missing 'ltv_bps' table`, do **not** regenerate the same JSON with cosmetic edits.
+- In that failure case, explain that leveraged Aave sugar is unavailable in the current environment/config and offer either:
+  - a non-levered fallback such as `wrap` + `deposit`, or
+  - the same leverage request on an environment whose Aave config includes leverage metadata.
+
 ### 18. `close_position` — Close a prior long/short
 
 Use when the user says: "close my position", "unwind the leverage". The UI must supply `current_debt` and `current_collateral` read from Aave off-chain.
@@ -411,6 +418,8 @@ Common patterns:
 8. **The `from` field must be a valid Ethereum address** (0x-prefixed, 42 hex characters). If the user doesn't provide one, ask for it — do not make one up.
 9. **Amounts must be positive.** `"0"` is invalid.
 10. **`"all"` cannot be used on the first step** or when no prior step produces that token.
+11. **Do not prepend `wrap` before leverage sugar.** For an ETH long, emit `long` with `collateral: "WETH"` instead of `wrap ETH` then `long`.
+12. **Do not retry unsupported leverage sugar.** If the environment/config lacks `protocols.aave.ltv_bps` or similar leverage metadata, explain that `long` / `short` is unavailable there.
 
 ---
 

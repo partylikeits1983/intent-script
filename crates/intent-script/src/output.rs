@@ -40,6 +40,10 @@ pub struct PreviewStepInfo {
     pub action: String,
     pub protocol: String,
     pub description: String,
+    /// For composite steps (currently only `BalancerFlashloan`), the
+    /// user-meaningful inner steps in execution order. Empty for leaf steps.
+    /// Auto-inserted approvals / transferFroms / permits are filtered out.
+    pub inner_steps: Vec<PreviewStepInfo>,
 }
 
 /// The result of compiling an intent script.
@@ -174,6 +178,8 @@ pub struct PreviewStepJson {
     pub action: String,
     pub protocol: String,
     pub description: String,
+    #[serde(rename = "innerSteps", skip_serializing_if = "Vec::is_empty")]
+    pub inner_steps: Vec<PreviewStepJson>,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,6 +464,7 @@ impl From<&PreviewStepInfo> for PreviewStepJson {
             action: s.action.clone(),
             protocol: s.protocol.clone(),
             description: s.description.clone(),
+            inner_steps: s.inner_steps.iter().map(PreviewStepJson::from).collect(),
         }
     }
 }

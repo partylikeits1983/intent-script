@@ -27,6 +27,30 @@ pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Pre
         if let Some((token, amount)) = step_produces(step, intent.fee_bps) {
             *outputs.entry(token).or_insert(U256::ZERO) += amount;
         }
+        // Flashloans are self-contained router-side accounting — the vault
+        // seeds the inner pipeline and the pipeline repays at the end, so
+        // `step_consumes` / `step_produces` above correctly return None for
+        // the outer `BalancerFlashloan`. What does NOT net inside that scope
+        // is the user's equity contribution, which the leverage-sugar expander
+        // emits as an explicit `Erc20TransferFrom` from the signer to the
+        // router. Surface those transferFroms as user-visible inputs so the
+        // preview card can show "You send: 5 WETH" for a leveraged long
+        // instead of an empty "inputs" list.
+        if let ResolvedStep::BalancerFlashloan { inner_steps, .. } = step {
+            for inner in inner_steps {
+                if let ResolvedStep::Erc20TransferFrom {
+                    from,
+                    token,
+                    amount,
+                    ..
+                } = inner
+                {
+                    if *from == intent.signer {
+                        *inputs.entry(*token).or_insert(U256::ZERO) += *amount;
+                    }
+                }
+            }
+        }
     }
 
     // Net out: tokens that appear on both sides are intermediate — drop the
@@ -145,6 +169,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     registry.chain.native_asset,
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::Unwrap {
@@ -162,6 +187,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     sym,
                     registry.chain.native_asset
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::UniswapV3Swap {
@@ -197,6 +223,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount_out_minimum, out_dec),
                     out_sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::OneInchSwap {
@@ -217,6 +244,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     in_sym,
                     out_sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::AaveV3Supply { asset, amount, .. } => {
@@ -226,6 +254,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 action: "deposit".into(),
                 protocol: "aave_v3".into(),
                 description: format!("Deposit {} {} to Aave V3", format_amount(*amount, dec), sym),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::AaveV3Borrow { asset, amount, .. } => {
@@ -239,6 +268,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::AaveV3Withdraw { asset, amount, .. } => {
@@ -252,6 +282,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::AaveV3Repay { asset, amount, .. } => {
@@ -261,6 +292,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 action: "repay".into(),
                 protocol: "aave_v3".into(),
                 description: format!("Repay {} {} to Aave V3", format_amount(*amount, dec), sym),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::MorphoSupply {
@@ -278,6 +310,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::MorphoSupplyCollat {
@@ -295,6 +328,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::MorphoBorrow {
@@ -312,6 +346,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::MorphoWithdraw {
@@ -329,6 +364,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::MorphoWithdrawCollat {
@@ -346,6 +382,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::MorphoRepay {
@@ -363,6 +400,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount, dec),
                     sym
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::LidoStake { amount, .. } => Some(PreviewStepInfo {
@@ -373,16 +411,19 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 format_amount(*amount, 18),
                 registry.chain.native_asset
             ),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::WstETHWrap { amount, .. } => Some(PreviewStepInfo {
             action: "wrap".into(),
             protocol: "lido".into(),
             description: format!("Wrap {} stETH to wstETH", format_amount(*amount, 18)),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::WstETHUnwrap { amount, .. } => Some(PreviewStepInfo {
             action: "unwrap".into(),
             protocol: "lido".into(),
             description: format!("Unwrap {} wstETH to stETH", format_amount(*amount, 18)),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::LidoRequestWithdrawal {
             amounts, is_wsteth, ..
@@ -402,6 +443,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     amounts.len(),
                     if amounts.len() == 1 { "" } else { "s" }
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::LidoClaimWithdrawal { request_ids, .. } => Some(PreviewStepInfo {
@@ -412,6 +454,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 request_ids.len(),
                 if request_ids.len() == 1 { "" } else { "s" }
             ),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::UniswapV3LpMint {
             token0,
@@ -438,6 +481,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount1, dec1),
                     sym1
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::UniswapV3LpIncrease {
@@ -463,6 +507,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format_amount(*amount1, dec1),
                     sym1
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::UniswapV3LpDecrease {
@@ -476,6 +521,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 "Decrease Uniswap V3 LP #{} by {} liquidity units",
                 token_id, liquidity
             ),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::UniswapV3LpCollect {
             token0,
@@ -489,6 +535,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 action: "lp_collect".into(),
                 protocol: "uniswap".into(),
                 description: format!("Collect Uniswap V3 LP #{} ({}/{})", token_id, sym0, sym1),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::SendErc20 { token, amount, to } => {
@@ -498,6 +545,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 action: "send".into(),
                 protocol: "erc20".into(),
                 description: format!("Send {} {} to {:?}", format_amount(*amount, dec), sym, to),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::SendEth { amount, to } => Some(PreviewStepInfo {
@@ -509,11 +557,13 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 registry.chain.native_asset,
                 to
             ),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::SendErc721 { token_id, to, .. } => Some(PreviewStepInfo {
             action: "send".into(),
             protocol: "erc721".into(),
             description: format!("Send NFT #{} to {:?}", token_id, to),
+            inner_steps: Vec::new(),
         }),
         ResolvedStep::AcrossDepositV3 {
             input_token,
@@ -532,6 +582,7 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     sym,
                     destination_chain_id
                 ),
+                inner_steps: Vec::new(),
             })
         }
         ResolvedStep::BalancerFlashloan {
@@ -549,14 +600,23 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                     format!("{} {}", format_amount(*a, dec), sym)
                 })
                 .collect();
+            // Recurse: the inner pipeline is where the user-meaningful work
+            // happens (supply, borrow, swap, …). Describing only the flashloan
+            // envelope would hide the user's actual actions from the preview.
+            let described_inner: Vec<PreviewStepInfo> = inner_steps
+                .iter()
+                .filter_map(|s| describe_step(s, registry))
+                .collect();
+            let inner_count = described_inner.len();
             Some(PreviewStepInfo {
                 action: "flashloan".into(),
                 protocol: "balancer".into(),
                 description: format!(
                     "Flashloan {} via Balancer V2 with {} inner step(s)",
                     token_summary.join(" + "),
-                    inner_steps.len()
+                    inner_count
                 ),
+                inner_steps: described_inner,
             })
         }
     }
