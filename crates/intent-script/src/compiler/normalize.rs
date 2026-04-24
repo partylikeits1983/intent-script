@@ -1284,6 +1284,20 @@ fn compute_amount_out_minimum(
                 swap.slippage.as_deref().unwrap_or("?")
             )));
         }
+        // B2: Absolute slippage floor. 5% is the ceiling; anything above
+        // indicates either a hallucinated value or a pool so thin that the
+        // user should reconsider. Matches the leverage-sugar cap already
+        // enforced in leverage.rs.
+        if slippage_bps > crate::compiler::validate::MAX_SLIPPAGE_BPS {
+            return Err(CompileError::InvalidAmount(format!(
+                "Slippage {} bps exceeds the absolute cap of {} bps ({}%). \
+                 If you genuinely need wider slippage, re-quote or split the \
+                 swap; otherwise tighten the value.",
+                slippage_bps,
+                crate::compiler::validate::MAX_SLIPPAGE_BPS,
+                crate::compiler::validate::MAX_SLIPPAGE_BPS / 100
+            )));
+        }
 
         // expected_output_smallest = amount_in * price_scaled / 10^in_decimals
         //   where price_scaled is price * 10^out_decimals.

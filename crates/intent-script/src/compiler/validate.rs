@@ -23,6 +23,12 @@ pub const MAX_STEPS: usize = 5;
 /// Maximum inner-pipeline step count for a flashloan.
 pub const MAX_FLASHLOAN_INNER_STEPS: usize = 5;
 
+/// B2: Absolute slippage floor in basis points. Swaps that specify a
+/// slippage tolerance are capped at 500 bps (5%) — anything above that
+/// indicates either a hallucinated value or a pathological market, and
+/// the signed intent should be re-quoted rather than broadcast.
+pub const MAX_SLIPPAGE_BPS: u64 = 500;
+
 /// B5: Per-call ETH value cap. 1000 ETH is generous — well above any
 /// realistic user action — while still catching hallucinated `value: 10^30`
 /// overflow shapes.
