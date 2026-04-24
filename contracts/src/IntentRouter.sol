@@ -50,12 +50,28 @@ contract IntentRouter is ReentrancyGuard {
     address public pendingFeeRecipient; // queued recipient
     uint64  public pendingFeeApplyAt;   // earliest timestamp at which queued fee may be applied; 0 = none queued
 
+    // ─── Pause (B11) ────────────────────────────────────────
+    /// Emergency kill-switch. Owner can pause immediately to halt the
+    /// blast radius when a compromised target / exploit is detected.
+    /// Unpausing is time-locked by FEE_TIMELOCK so a compromised owner
+    /// key can't toggle the router back on at will.
+    bool public paused;
+    uint64 public pendingUnpauseAt; // 0 = none pending
+
     event FeeQueued(uint16 bps, address recipient, uint64 applyAt);
     event FeeApplied(uint16 bps, address recipient);
     event FeeCollected(address indexed token, address indexed recipient, uint256 amount);
+    event Paused();
+    event UnpauseQueued(uint64 applyAt);
+    event Unpaused();
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused, "Router paused");
         _;
     }
 
@@ -124,6 +140,38 @@ contract IntentRouter is ReentrancyGuard {
         emit FeeApplied(feeBps, feeRecipient);
     }
 
+    // ─── Pause ───────────────────────────────────────────────
+
+    /// @notice Immediate pause (owner only). No timelock — speed matters
+    ///         when halting a live exploit.
+    function pause() external onlyOwner {
+        paused = true;
+        pendingUnpauseAt = 0; // cancel any in-flight unpause
+        emit Paused();
+    }
+
+    /// @notice Queue an unpause. Must wait FEE_TIMELOCK seconds before
+    ///         applyUnpause() can take effect. Timelocking the *unpause*
+    ///         side prevents a compromised owner key from flipping the
+    ///         switch back on at will.
+    function queueUnpause() external onlyOwner {
+        require(paused, "not paused");
+        pendingUnpauseAt = uint64(block.timestamp + FEE_TIMELOCK);
+        emit UnpauseQueued(pendingUnpauseAt);
+    }
+
+    /// @notice Apply a queued unpause once the timelock has elapsed.
+    ///         Permissionless so the owner can't delay the unpause beyond
+    ///         the timelock by withholding their key.
+    function applyUnpause() external {
+        require(paused, "not paused");
+        require(pendingUnpauseAt != 0, "no pending unpause");
+        require(block.timestamp >= pendingUnpauseAt, "timelock");
+        paused = false;
+        pendingUnpauseAt = 0;
+        emit Unpaused();
+    }
+
     // ─── ERC721 receiver ────────────────────────────────────
 
     /// @notice Accept ERC-721 safe transfers into the router. No custody logic — NFTs that
@@ -141,7 +189,7 @@ contract IntentRouter is ReentrancyGuard {
     function executeDirect(
         Call[] calldata calls,
         address[] calldata tokensToSweep
-    ) external payable nonReentrant {
+    ) external payable nonReentrant whenNotPaused {
         _executeCalls(calls);
         _sweep(tokensToSweep, msg.sender);
         _refundETH(msg.sender);
@@ -155,7 +203,7 @@ contract IntentRouter is ReentrancyGuard {
     function executeSigned(
         IntentBatch calldata batch,
         bytes calldata signature
-    ) external payable nonReentrant {
+    ) external payable nonReentrant whenNotPaused {
         // Verify deadline (Task 2: require non-zero deadline)
         require(batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline");
 
@@ -329,7 +377,20 @@ contract IntentRouter is ReentrancyGuard {
             s := calldataload(add(sig.offset, 32))
             v := byte(0, calldataload(add(sig.offset, 64)))
         }
-        return ecrecover(digest, v, r, s);
+        // EIP-2 canonical signature: reject the high-s half (malleable form).
+        // The nonce check already prevents same-signer replay, so this is
+        // defense-in-depth — but future changes that key on signature bytes
+        // (dedup, receipt indexing, off-chain verifiers) break silently
+        // without the canonical check. The bound is n/2 where n is the
+        // secp256k1 curve order.
+        require(
+            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+            "Signature s value not canonical"
+        );
+        require(v == 27 || v == 28, "Invalid signature v value");
+        address recovered = ecrecover(digest, v, r, s);
+        require(recovered != address(0), "ecrecover returned zero");
+        return recovered;
     }
 
     /// @notice Accept ETH transfers (e.g., from WETH.withdraw()).
