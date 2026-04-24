@@ -30,6 +30,19 @@ contract IntentRouter is ReentrancyGuard {
     address public owner;
     mapping(address => bool) public allowedTargets;
 
+    // ─── Selector allowlist (B7) ────────────────────────────
+    /// Per-target function-selector allowlist. Once `selectorAllowlistEnforced`
+    /// is true, every call in the batch must have its calldata's first 4
+    /// bytes in `allowedSelectors[target]`. Without this, allowlisting
+    /// `pool` for `supply(...)` also implicitly allowed every other public
+    /// function that happens to be callable by anyone on that target
+    /// (including, e.g., emergency helpers with loose access control).
+    mapping(address => mapping(bytes4 => bool)) public allowedSelectors;
+    bool public selectorAllowlistEnforced;
+
+    event SelectorAllowed(address indexed target, bytes4 indexed selector, bool allowed);
+    event SelectorAllowlistEnforced(bool enforced);
+
     // ─── Balancer V2 flashloan ──────────────────────────────
     /// Balancer V2 Vault mainnet address — used for 0% flashloans.
     address public constant BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
@@ -114,6 +127,38 @@ contract IntentRouter is ReentrancyGuard {
         for (uint256 i = 0; i < targets.length; i++) {
             allowedTargets[targets[i]] = allowed;
         }
+    }
+
+    /// @notice Set whether a `(target, selector)` pair is allowed. Takes
+    ///         effect once `setSelectorAllowlistEnforced(true)` has been
+    ///         called. Idempotent.
+    function setAllowedSelector(address target, bytes4 selector, bool allowed)
+        external onlyOwner
+    {
+        allowedSelectors[target][selector] = allowed;
+        emit SelectorAllowed(target, selector, allowed);
+    }
+
+    /// @notice Batch-set allowed selectors for a single target.
+    function setAllowedSelectors(
+        address target,
+        bytes4[] calldata selectors,
+        bool allowed
+    ) external onlyOwner {
+        for (uint256 i = 0; i < selectors.length; i++) {
+            allowedSelectors[target][selectors[i]] = allowed;
+            emit SelectorAllowed(target, selectors[i], allowed);
+        }
+    }
+
+    /// @notice Toggle selector-allowlist enforcement. Deploy with
+    ///         `false`, populate the allowlist, then flip to `true`.
+    ///         Grandfathering existing deployments avoids a
+    ///         big-bang migration; an empty allowlist with enforcement
+    ///         on would brick every call.
+    function setSelectorAllowlistEnforced(bool enforced) external onlyOwner {
+        selectorAllowlistEnforced = enforced;
+        emit SelectorAllowlistEnforced(enforced);
     }
 
     // ─── Fee governance ─────────────────────────────────────
@@ -225,8 +270,19 @@ contract IntentRouter is ReentrancyGuard {
     // ─── Internal helpers ───────────────────────────────────
 
     function _executeCalls(Call[] calldata calls) internal {
+        bool enforceSelectors = selectorAllowlistEnforced;
         for (uint256 i = 0; i < calls.length; i++) {
             require(allowedTargets[calls[i].target], "Target not allowed");
+            if (enforceSelectors) {
+                require(
+                    calls[i].callData.length >= 4,
+                    "Selector required"
+                );
+                require(
+                    allowedSelectors[calls[i].target][bytes4(calls[i].callData[:4])],
+                    "Selector not allowed"
+                );
+            }
 
             // Just before dispatching a Balancer flashLoan, arm the transient
             // sentinel. `receiveFlashLoan` requires it to be set and clears it
@@ -254,9 +310,19 @@ contract IntentRouter is ReentrancyGuard {
     }
 
     /// Execute a single call held in memory (used by `receiveFlashLoan`).
-    /// Applies the same allowlist check as `_executeCalls`.
+    /// Applies the same target + selector allowlist check as `_executeCalls`.
     function _execOne(Call memory call) internal {
         require(allowedTargets[call.target], "Target not allowed");
+        if (selectorAllowlistEnforced) {
+            require(call.callData.length >= 4, "Selector required");
+            bytes4 sel;
+            bytes memory cd = call.callData;
+            assembly { sel := mload(add(cd, 32)) }
+            require(
+                allowedSelectors[call.target][sel],
+                "Selector not allowed"
+            );
+        }
         (bool success, bytes memory result) = call.target.call{ value: call.value }(call.callData);
         if (!success) {
             assembly { revert(add(result, 32), mload(result)) }
