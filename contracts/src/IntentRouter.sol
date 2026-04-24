@@ -19,7 +19,7 @@ contract IntentRouter is ReentrancyGuard {
         "Call(address target,bytes callData,uint256 value)"
     );
     bytes32 public constant INTENT_BATCH_TYPEHASH = keccak256(
-        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)"
+        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)"
     );
 
     bytes32 public immutable DOMAIN_SEPARATOR;
@@ -96,12 +96,20 @@ contract IntentRouter is ReentrancyGuard {
     }
 
     /// @notice A signed batch of calls with replay protection.
+    ///
+    /// `totalValue` (B9) is the sum of every inner call's `value`. The
+    /// relayer must attach exactly that amount of ETH when calling
+    /// `executeSigned` — otherwise a hallucinated / adversarial relayer
+    /// could top up the batch with extra ETH and trigger native-value
+    /// semantics on a permissive allowlisted target. The signature binds
+    /// this sum into the EIP-712 digest.
     struct IntentBatch {
         address signer;
         Call[] calls;
         address[] tokensToSweep;
         uint256 nonce;
         uint256 deadline;
+        uint256 totalValue;
     }
 
     constructor() {
@@ -251,6 +259,13 @@ contract IntentRouter is ReentrancyGuard {
     ) external payable nonReentrant whenNotPaused {
         // Verify deadline (Task 2: require non-zero deadline)
         require(batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline");
+
+        // B9: Bound attached ETH to the signed total. Without this a
+        // relayer could top msg.value up beyond what any inner call
+        // requested and trigger native-value semantics on a permissive
+        // allowlisted target. Equality (not <=) so excess ETH cannot
+        // accumulate in the router either.
+        require(msg.value == batch.totalValue, "msg.value mismatch");
 
         // Verify nonce
         require(batch.nonce == nonces[batch.signer], "Invalid nonce");
@@ -416,7 +431,8 @@ contract IntentRouter is ReentrancyGuard {
             _hashCalls(batch.calls),
             keccak256(abi.encodePacked(batch.tokensToSweep)),
             batch.nonce,
-            batch.deadline
+            batch.deadline,
+            batch.totalValue
         ));
     }
 

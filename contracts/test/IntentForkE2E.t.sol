@@ -154,7 +154,7 @@ contract IntentForkE2E is Test {
 
     bytes32 constant CALL_TYPEHASH = keccak256("Call(address target,bytes callData,uint256 value)");
     bytes32 constant INTENT_BATCH_TYPEHASH = keccak256(
-        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)"
+        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)"
     );
 
     function _buildDigest(IntentRouter.IntentBatch memory batch) internal view returns (bytes32) {
@@ -175,7 +175,8 @@ contract IntentForkE2E is Test {
                 callsHash,
                 keccak256(abi.encodePacked(batch.tokensToSweep)),
                 batch.nonce,
-                batch.deadline
+                batch.deadline,
+                batch.totalValue
             )
         );
 
@@ -549,7 +550,8 @@ contract IntentForkE2E is Test {
             calls: _buildComplexDefiCalls(signer, address(signedRouter), usdcAmount, 1 ether, borrowAmount),
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 0
         });
 
         // Sign and submit via relayer
@@ -600,7 +602,8 @@ contract IntentForkE2E is Test {
                 callsHash,
                 keccak256(abi.encodePacked(batch.tokensToSweep)),
                 batch.nonce,
-                batch.deadline
+                batch.deadline,
+                batch.totalValue
             )
         );
 

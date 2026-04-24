@@ -109,6 +109,10 @@ pub struct IntentBatchData {
     pub tokens_to_sweep: Vec<Address>,
     pub nonce: u64,
     pub deadline: u64,
+    /// B9: sum of every inner call's `value`. The relayer must attach
+    /// exactly this much ETH when calling `executeSigned`; bound into the
+    /// EIP-712 digest so a relayer can't top up the batch.
+    pub total_value: U256,
 }
 
 /// A single call in the intent batch.

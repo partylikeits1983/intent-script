@@ -150,8 +150,22 @@ pub fn build(
                 .map(|c| (c.target, c.call_data.clone(), c.value))
                 .collect();
 
-            let struct_hash =
-                eip712::hash_intent_batch(signer, &eip712_calls, &tokens_to_sweep, nonce, deadline);
+            // B9: sum of every inner call's ETH value becomes part of the
+            // signed struct. The relayer must attach exactly this amount
+            // when submitting executeSigned.
+            let total_value: U256 = eip712_calls
+                .iter()
+                .map(|(_, _, v)| *v)
+                .fold(U256::ZERO, |acc, v| acc.saturating_add(v));
+
+            let struct_hash = eip712::hash_intent_batch(
+                signer,
+                &eip712_calls,
+                &tokens_to_sweep,
+                nonce,
+                deadline,
+                total_value,
+            );
 
             let typed_data_hash = eip712::compute_typed_data_hash(&domain_separator, &struct_hash);
 
@@ -161,6 +175,7 @@ pub fn build(
                 tokens_to_sweep,
                 nonce,
                 deadline,
+                total_value,
             };
 
             // Build prerequisite approvals. When `current_allowances` is None
