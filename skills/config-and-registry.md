@@ -159,13 +159,6 @@ Maps protocol aliases to contract addresses.
       "wsteth": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
     }
   },
-  "1inch": {
-    "type": "dex_aggregator",
-    "version": "v6",
-    "contracts": {
-      "router": "0x111111125421cA6dc452d289314280a0f8842A65"
-    }
-  },
   "intent_router": {
     "type": "router",
     "version": "v1",

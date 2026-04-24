@@ -302,7 +302,6 @@ If the protocol uses new tokens, also add them to `config/assets/ethereum.json`:
 | `aave_v3.rs` | `crates/intent-script/src/adapters/aave_v3.rs` | Medium | Supply/borrow/withdraw pattern |
 | `uniswap_v3.rs` | `crates/intent-script/src/adapters/uniswap_v3.rs` | Medium | Struct parameters, complex ABI |
 | `lido.rs` | `crates/intent-script/src/adapters/lido.rs` | Medium | ETH staking + token wrapping |
-| `oneinch.rs` | `crates/intent-script/src/adapters/oneinch.rs` | Simple | Calldata passthrough pattern |
 | `send.rs` | `crates/intent-script/src/adapters/send.rs` | Medium | ERC-20/ETH/ERC-721 transfers |
 
 ---

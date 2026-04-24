@@ -68,7 +68,6 @@ Use when the user says: "swap", "exchange", "trade", "convert", "buy X with Y", 
 | `to` | ✅ | Output token (same options as `from`) |
 | `min_amount_out` | ✅ | Minimum acceptable output amount (slippage protection). If the user doesn't specify, estimate conservatively. |
 | `fee` | ❌ | Uniswap fee tier: `"500"` (0.05%), `"3000"` (0.3%, default), `"10000"` (1%). Omit to use default. |
-| `via` | ❌ | `"uniswap"` (default) or `"1inch"`. Omit for default. |
 
 **Slippage alternative:** Instead of `min_amount_out`, you can use `price` + `slippage`:
 ```json

@@ -36,7 +36,7 @@ One-line index into the step types detailed below. Each row shows the primitive,
 
 | Primitive | Purpose | Minimal shape |
 |---|---|---|
-| [`swap`](#swap--token-swap) | Uniswap V3 or 1inch token swap | `{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }` |
+| [`swap`](#swap--token-swap) | Uniswap V3 token swap | `{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }` |
 | [`deposit`](#deposit--aave-v3-or-morpho-blue-supply) | Supply to Aave V3 or Morpho Blue | `{ "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } }` |
 | [`borrow`](#borrow--aave-v3-or-morpho-blue-borrow) | Borrow against existing collateral | `{ "borrow": { "asset": "DAI", "amount": "2000", "from": "aave" } }` |
 | [`withdraw`](#withdraw--aave-v3-or-morpho-blue-withdraw) | Pull supplied collateral back | `{ "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }` |
@@ -79,8 +79,7 @@ Each step is a JSON object with exactly one key (the action name) mapping to its
 | `price` | string | ❌ | Market price (output per 1 input). Alternative to `min_amount_out` |
 | `slippage` | string | ❌ | Max slippage % (default: 0.5 when `price` set) |
 | `fee` | string | ❌ | Uniswap V3 fee tier (default: `"3000"`) |
-| `via` | string | ❌ | Router: `"uniswap"` (default) or `"1inch"` |
-| `calldata` | string | ❌ | Pre-fetched calldata (required for `via: "1inch"`) |
+| `via` | string | ❌ | Reserved for future multi-provider support; only `"uniswap"` is supported. |
 | `deadline` | number | ❌ | Swap-specific deadline as Unix timestamp |
 
 *Either `min_amount_out` or `price` must be provided. Zero slippage protection is rejected by the validator.
@@ -94,7 +93,7 @@ Each step is a JSON object with exactly one key (the action name) mapping to its
 { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "price": "0.0005" } }
 ```
 
-> **Note:** 1inch swaps handle slippage via the 1inch Fusion protocol, not via these fields.
+> **Note:** The 1inch calldata-passthrough adapter was removed — it was an untrusted-calldata path with no compile-time validation. Swaps route through Uniswap V3 only.
 
 ### `deposit` — Aave V3 or Morpho Blue Supply
 

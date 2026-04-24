@@ -447,41 +447,6 @@ fn enrich_steps(
                     }
                 }
             }
-            ResolvedStep::OneInchSwap {
-                router: oneinch_router,
-                token_in,
-                token_out,
-                amount_in,
-                ..
-            } => {
-                // When batching via router, pull token_in from user if not already in router
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(token_in) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *token_in,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount_in,
-                        });
-                        *required_pulls.entry(*token_in).or_insert(U256::ZERO) += *amount_in;
-                    }
-                }
-                // Insert ERC-20 approve for token_in → 1inch router before swap
-                enriched_steps.push(ResolvedStep::Erc20Approve {
-                    token: *token_in,
-                    spender: *oneinch_router,
-                    amount: *amount_in,
-                });
-                enriched_steps.push(step.clone());
-
-                // Track output token for sweep when batching
-                if router.is_some() {
-                    tokens_in_router.insert(*token_out);
-                    if !sweep_tokens.contains(token_out) {
-                        sweep_tokens.push(*token_out);
-                    }
-                }
-            }
             ResolvedStep::LidoRequestWithdrawal {
                 queue,
                 token,

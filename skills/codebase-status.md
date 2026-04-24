@@ -14,7 +14,6 @@
 | **Morpho Blue** | — | `deposit`/`borrow`/`withdraw` with required `market`; optional `as: "collateral"` discriminator | `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` | `adapters/morpho.rs` |
 | **Lido** | — | `stake` (ETH→stETH), `wrap` (stETH→wstETH), `unwrap` (wstETH→stETH), `request_withdrawal`, `claim_withdrawal` | stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84`, Queue `0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1` | `adapters/lido.rs` |
 | **WETH9** | — | `wrap` (ETH→WETH), `unwrap` (WETH→ETH) | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | `adapters/wrap.rs` |
-| **1inch** | Fusion v6 | `swap` (calldata passthrough) | `0x111111125421cA6dc452d289314280a0f8842A65` | `adapters/oneinch.rs` |
 | **Balancer V2** | — | `flashloan` (0% fee, recursive inner pipeline) + `long`/`short`/`close_position` leverage sugar | Vault `0xBA12222222228d8Ba445958a75a0704d566BF2C8` | `adapters/balancer.rs`, `compiler/leverage.rs` |
 | **Across** | V3 | `bridge` (source-chain `depositV3` only) | SpokePool `0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5` | `adapters/across.rs` |
 | **ERC-20** | — | `approve`, `transferFrom`, `permit`, `transfer` | Any ERC-20 | `adapters/erc20.rs` |

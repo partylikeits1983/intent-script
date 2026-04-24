@@ -226,27 +226,6 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 inner_steps: Vec::new(),
             })
         }
-        ResolvedStep::OneInchSwap {
-            token_in,
-            token_out,
-            amount_in,
-            ..
-        } => {
-            let in_sym = registry.symbol_for_address(token_in);
-            let out_sym = registry.symbol_for_address(token_out);
-            let in_dec = registry.decimals_for_address(token_in);
-            Some(PreviewStepInfo {
-                action: "swap".into(),
-                protocol: "1inch".into(),
-                description: format!(
-                    "Swap {} {} for {}",
-                    format_amount(*amount_in, in_dec),
-                    in_sym,
-                    out_sym
-                ),
-                inner_steps: Vec::new(),
-            })
-        }
         ResolvedStep::AaveV3Supply { asset, amount, .. } => {
             let sym = registry.symbol_for_address(asset);
             let dec = registry.decimals_for_address(asset);

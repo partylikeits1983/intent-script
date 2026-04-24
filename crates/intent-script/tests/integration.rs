@@ -468,7 +468,11 @@ fn test_swap_without_fee_defaults_to_3000() {
 }
 
 #[test]
-fn test_swap_via_1inch_with_calldata() {
+fn test_swap_via_1inch_now_rejected() {
+    // The 1inch adapter was removed: it was a calldata passthrough with no
+    // compile-time validation, the single largest hallucination-escape hatch
+    // in the system. Attempting to use it now fails with an unsupported-step
+    // error directing the caller at Uniswap V3.
     let input = r#"{
         "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
@@ -477,41 +481,12 @@ fn test_swap_via_1inch_with_calldata() {
         ]
     }"#;
 
-    let result = do_compile(input).expect("compile should succeed");
-    let output = &result.output;
-
-    match output {
-        CompileOutput::Eip712Intent(intent) => {
-            assert!(intent.direct_tx.data.len() > 4);
-            assert!(
-                intent.description.contains("1inch"),
-                "Description should mention 1inch: {}",
-                intent.description
-            );
-        }
-        other => panic!(
-            "Expected Eip712Intent (batched via router), got {:?}",
-            other
-        ),
-    }
-}
-
-#[test]
-fn test_swap_via_1inch_missing_calldata_fails() {
-    let input = r#"{
-        "network": "anvil",
-        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-        "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch" } }
-        ]
-    }"#;
-
     let result = do_compile(input);
-    assert!(result.is_err());
+    assert!(result.is_err(), "1inch path must no longer compile");
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("calldata"),
-        "Error should mention missing calldata: {err}"
+        err.contains("1inch") && err.contains("uniswap"),
+        "Error should tell the caller to use uniswap instead: {err}"
     );
 }
 
@@ -1540,25 +1515,6 @@ fn test_swap_min_amount_out_overrides_slippage() {
 }
 
 #[test]
-fn test_swap_1inch_ignores_slippage_params() {
-    // 1inch swaps use pre-fetched calldata — slippage params are ignored
-    let input = r#"{
-        "network": "anvil",
-        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-        "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef", "min_amount_out": "0.48" } }
-        ]
-    }"#;
-
-    let result = do_compile(input).expect("compile should succeed");
-    // 1inch swap should compile fine regardless of slippage params
-    match &result.output {
-        CompileOutput::Eip712Intent(_) => {}
-        other => panic!("Expected Eip712Intent for 1inch swap, got {:?}", other),
-    }
-}
-
-#[test]
 fn test_swap_negative_slippage_fails() {
     let input = r#"{
         "network": "anvil",
@@ -1609,20 +1565,6 @@ fn test_all_after_uniswap_swap() {
 }
 
 #[test]
-fn test_all_after_oneinch_swap() {
-    let input = r#"{
-        "network": "anvil",
-        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-        "steps": [
-            { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeef" } },
-            { "deposit": { "asset": "WETH", "amount": "all", "into": "aave" } }
-        ]
-    }"#;
-    do_compile(input)
-        .expect("1inch swap → deposit-all should compile (step_produces must include OneInchSwap)");
-}
-
-#[test]
 fn test_all_after_wsteth_wrap() {
     let input = r#"{
         "network": "anvil",
@@ -1660,17 +1602,16 @@ fn test_all_after_aave_withdraw() {
 }
 
 #[test]
-fn test_oneinch_consumption_flow_validated() {
-    // Attempt to 1inch-swap more than the prior step produces.
-    // Without OneInchSwap in step_consumes, cross-step flow validation would
-    // silently accept this.
+fn test_uniswap_consumption_flow_validated() {
+    // Attempt to swap more than the prior step produces.
+    // Cross-step flow validation must reject this for any swap adapter.
     let input = r#"{
         "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
         "current_timestamp": 1712344000,
         "steps": [
             { "swap": { "from": "USDC", "amount": "100", "to": "WETH", "min_amount_out": "0.04" } },
-            { "swap": { "from": "WETH", "amount": "1000", "to": "DAI", "via": "1inch", "calldata": "0xdeadbeef" } }
+            { "swap": { "from": "WETH", "amount": "1000", "to": "DAI", "min_amount_out": "900" } }
         ]
     }"#;
     let err = do_compile(input).unwrap_err().to_string();
@@ -3336,4 +3277,45 @@ fn test_aave_rejects_market_field() {
         err.contains("only valid when depositing into 'morpho'"),
         "expected rejection of market field on aave, got: {err}"
     );
+}
+
+#[test]
+fn test_wrap_then_deposit_exact_amount_accepts_with_router_fee() {
+    // Regression: user reported that on a network with router fee_bps > 0
+    // (anvil ships fee_bps=10 = 0.1%), an exact-amount intra-batch hand-off
+    // was falsely rejected because the validator discounted produced tokens
+    // by fee_bps even though the router takes the fee only at sweep time.
+    // The produced 50 WETH from `wrap` is consumed by the next `deposit`
+    // inside the same router execution — no sweep, no fee.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1712700000,
+        "steps": [
+            { "wrap":    { "asset": "ETH",  "amount": "50" } },
+            { "deposit": { "asset": "WETH", "amount": "50", "into": "aave" } }
+        ]
+    }"#;
+    do_compile(input).expect(
+        "exact-amount intra-batch hand-off must compile with router fee_bps set",
+    );
+}
+
+#[test]
+fn test_wrap_deposit_borrow_chain_accepts_exact_amounts() {
+    // Regression: companion to the wrap→deposit test above, exercising the
+    // borrow tail the user originally tried. All three steps use exact
+    // amounts with no `"all"` escape, so any residual fee_bps leakage in
+    // the validator would show up here.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1712700000,
+        "steps": [
+            { "wrap":    { "asset": "ETH",  "amount": "50" } },
+            { "deposit": { "asset": "WETH", "amount": "50", "into": "aave" } },
+            { "borrow":  { "asset": "USDT", "amount": "10000", "from": "aave" } }
+        ]
+    }"#;
+    do_compile(input).expect("wrap→deposit→borrow with exact amounts must compile");
 }

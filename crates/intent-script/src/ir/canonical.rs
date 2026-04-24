@@ -291,14 +291,6 @@ pub enum ResolvedStep {
         amount0_max: u128,
         amount1_max: u128,
     },
-    /// 1inch swap with pre-fetched calldata passthrough
-    OneInchSwap {
-        router: Address,
-        token_in: Address,
-        token_out: Address,
-        amount_in: U256,
-        calldata: Bytes,
-    },
     /// ERC-20 permit (v, r, s are placeholder zeros — frontend fills after signing)
     Erc20Permit {
         token: Address,
@@ -402,11 +394,6 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
             };
             Some((consumed, *amount_in))
         }
-        ResolvedStep::OneInchSwap {
-            token_in,
-            amount_in,
-            ..
-        } => Some((*token_in, *amount_in)),
         ResolvedStep::Unwrap {
             wrapped_token,
             amount,
@@ -445,14 +432,6 @@ pub fn step_produces(step: &ResolvedStep, fee_bps: u16) -> Option<(Address, U256
             amount_out_minimum,
             ..
         } => (*token_out, *amount_out_minimum),
-        // 1inch calldata is opaque — we use amount_in as a conservative lower bound
-        // on production. The router's sweep will still return whatever arrives.
-        // Downstream `"all"` consumers must not over-consume.
-        ResolvedStep::OneInchSwap {
-            token_out,
-            amount_in,
-            ..
-        } => (*token_out, *amount_in),
         ResolvedStep::AaveV3Borrow { asset, amount, .. } => (*asset, *amount),
         ResolvedStep::AaveV3Withdraw { asset, amount, .. } => (*asset, *amount),
         ResolvedStep::MorphoBorrow {

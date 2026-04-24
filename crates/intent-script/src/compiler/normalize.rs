@@ -469,63 +469,8 @@ fn normalize_step(
                         native_input,
                     })
                 }
-                "1inch" => {
-                    // Require pre-fetched calldata
-                    let calldata_hex = s.calldata.as_deref().ok_or_else(|| {
-                        CompileError::Adapter(
-                            "1inch swap requires 'calldata' field with pre-fetched calldata"
-                                .to_string(),
-                        )
-                    })?;
-
-                    // Parse hex calldata (strip 0x prefix if present)
-                    let hex_str = calldata_hex.strip_prefix("0x").unwrap_or(calldata_hex);
-                    let calldata_bytes = hex_decode(hex_str).map_err(|_| {
-                        CompileError::Adapter(format!(
-                            "Invalid hex calldata for 1inch swap: {}",
-                            calldata_hex
-                        ))
-                    })?;
-
-                    // Look up 1inch router from protocol config
-                    let protocol = registry.protocols.get("1inch").ok_or_else(|| {
-                        CompileError::UnknownProtocol {
-                            protocol: "1inch".to_string(),
-                            network: registry.network.clone(),
-                            available: known_protocols(registry),
-                        }
-                    })?;
-
-                    let router_addr = protocol.contracts.get("router").ok_or_else(|| {
-                        CompileError::Adapter(
-                            "Protocol '1inch' has no 'router' contract configured".to_string(),
-                        )
-                    })?;
-                    let router = parse_address(router_addr)?;
-
-                    // If swapping from native ETH, use WETH address as token_in
-                    let effective_token_in = if token_in == Address::ZERO {
-                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
-                    } else {
-                        token_in
-                    };
-
-                    let effective_token_out = if token_out == Address::ZERO {
-                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
-                    } else {
-                        token_out
-                    };
-
-                    Ok(ResolvedStep::OneInchSwap {
-                        router,
-                        token_in: effective_token_in,
-                        token_out: effective_token_out,
-                        amount_in,
-                        calldata: Bytes::from(calldata_bytes),
-                    })
-                }
                 other => Err(CompileError::UnsupportedStep(format!(
-                    "swap via '{}' is not supported; use 'uniswap' or '1inch'",
+                    "swap via '{}' is not supported; only 'uniswap' is supported",
                     other
                 ))),
             }
@@ -1878,17 +1823,6 @@ fn normalize_morpho_withdraw(
             receiver: signer,
         })
     }
-}
-
-/// Decode a hex string into bytes.
-fn hex_decode(hex: &str) -> core::result::Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
-        return Err("Odd-length hex string".to_string());
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| format!("Invalid hex: {}", e)))
-        .collect()
 }
 
 #[cfg(test)]

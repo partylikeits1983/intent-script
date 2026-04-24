@@ -116,10 +116,12 @@ pub struct SwapStep {
     /// Optional fee tier for Uniswap V3 (default: 3000 = 0.3%)
     #[serde(default)]
     pub fee: Option<String>,
-    /// Optional routing provider: "uniswap" (default), "1inch"
+    /// Optional routing provider: only "uniswap" is supported.
+    /// Reserved for future multi-provider support; defaults to "uniswap".
     #[serde(default)]
     pub via: Option<String>,
-    /// Pre-fetched calldata for aggregator swaps (required when via = "1inch")
+    /// Deprecated. Pre-fetched calldata passthrough was removed with the
+    /// 1inch adapter to close an untrusted-calldata path. Ignored.
     #[serde(default)]
     pub calldata: Option<String>,
     /// Explicit minimum output amount in human-readable output-token units.

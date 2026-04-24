@@ -4,7 +4,6 @@ pub mod balancer;
 pub mod erc20;
 pub mod lido;
 pub mod morpho;
-pub mod oneinch;
 pub mod send;
 pub mod uniswap_v3;
 pub mod uniswap_v3_lp;
@@ -41,7 +40,6 @@ pub fn lower_step(step: &ResolvedStep, registry: &RegistryContext) -> Result<Vec
         ResolvedStep::UniswapV3LpIncrease { .. } => uniswap_v3_lp::lower_lp_increase(step),
         ResolvedStep::UniswapV3LpDecrease { .. } => uniswap_v3_lp::lower_lp_decrease(step),
         ResolvedStep::UniswapV3LpCollect { .. } => uniswap_v3_lp::lower_lp_collect(step),
-        ResolvedStep::OneInchSwap { .. } => oneinch::lower_oneinch_swap(step),
         ResolvedStep::Erc20Permit { .. } => erc20::lower_permit(step),
         ResolvedStep::SendErc20 { .. } => send::lower_send_erc20(step),
         ResolvedStep::SendEth { .. } => send::lower_send_eth(step),

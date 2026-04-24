@@ -51,13 +51,6 @@
       "withdrawal_queue": "0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1"
     }
   },
-  "1inch": {
-    "type": "dex_aggregator",
-    "version": "v6",
-    "contracts": {
-      "router": "0x111111125421cA6dc452d289314280a0f8842A65"
-    }
-  },
   "balancer": {
     "type": "flashloan_provider",
     "version": "v2",

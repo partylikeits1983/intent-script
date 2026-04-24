@@ -253,6 +253,13 @@ fn validate_health_factor(
 /// a step uses a token that a prior step produced. Wallet-sourced tokens
 /// are not checked.
 fn validate_amount_flow(steps: &[ResolvedStep], fee_bps: u16) -> Result<()> {
+    // Intra-batch hand-offs stay inside the router; no fee is skimmed between
+    // steps. The sweep fee only applies when leftover tokens flow back to the
+    // signer at the end. Pass `fee_bps = 0` here so an exact-amount `deposit`
+    // after an exact-amount `wrap`/`swap`/`borrow` isn't falsely rejected as
+    // a 0.1% shortfall. Mirrors the flashloan-inner-pipeline rule above
+    // (tokens returned to the Vault also bypass sweep).
+    let _ = fee_bps;
     let mut produced: HashMap<Address, U256> = HashMap::new();
 
     for (i, step) in steps.iter().enumerate() {
@@ -270,7 +277,7 @@ fn validate_amount_flow(steps: &[ResolvedStep], fee_bps: u16) -> Result<()> {
                 produced.insert(token, *available - required);
             }
         }
-        if let Some((token, guaranteed)) = step_produces(step, fee_bps) {
+        if let Some((token, guaranteed)) = step_produces(step, 0) {
             *produced.entry(token).or_insert(U256::ZERO) += guaranteed;
         }
     }
@@ -394,7 +401,6 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         ResolvedStep::LidoStake { amount, .. } => Some(("stake", amount)),
         ResolvedStep::WstETHWrap { amount, .. } => Some(("wrap stETH", amount)),
         ResolvedStep::WstETHUnwrap { amount, .. } => Some(("unwrap wstETH", amount)),
-        ResolvedStep::OneInchSwap { amount_in, .. } => Some(("swap", amount_in)),
         ResolvedStep::SendErc20 { amount, .. } => Some(("send", amount)),
         ResolvedStep::SendEth { amount, .. } => Some(("send", amount)),
         ResolvedStep::AcrossDepositV3 { input_amount, .. } => Some(("bridge", input_amount)),
@@ -519,16 +525,6 @@ fn validate_asset_compatibility(step: &ResolvedStep) -> Result<()> {
         }
         // Can't swap from an asset to the same asset
         ResolvedStep::UniswapV3Swap {
-            token_in,
-            token_out,
-            ..
-        } if token_in == token_out => Err(CompileError::InvalidChain(
-            "Cannot swap an asset to itself. \
-             The source and destination tokens must be different."
-                .to_string(),
-        )),
-        // Can't 1inch swap from an asset to the same asset
-        ResolvedStep::OneInchSwap {
             token_in,
             token_out,
             ..
