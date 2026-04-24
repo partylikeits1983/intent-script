@@ -27,6 +27,7 @@ const MIN_HEALTH_FACTOR: f64 = 1.2;
 const WARN_HEALTH_FACTOR: f64 = 1.5;
 
 /// Result of validation: Ok with a list of warnings, or Err on hard failure.
+#[derive(Debug)]
 pub struct ValidationResult {
     pub warnings: Vec<String>,
 }
@@ -119,7 +120,108 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
     // Task 5: Cross-step amount flow validation
     validate_amount_flow(&intent.steps, intent.fee_bps)?;
 
+    // B1: Recipient pinning. Every step with a recipient-like address must
+    // name the signer (or, once the enricher has redirected, the router).
+    // This runs pre-enrich, so the expected value is always the signer.
+    //
+    // The LLM has no input into these fields today — the normalizer sets
+    // them to `signer` on every happy path. This guardrail enforces that
+    // invariant explicitly so that a future schema change or a regression
+    // in normalize can't silently leak user funds to an attacker-controlled
+    // address. User-directed transfers (SendErc20 / SendEth / SendErc721)
+    // are exempt — those are the explicit exit from this invariant and are
+    // already zero-address-checked by `validate_send`.
+    for (step_index, step) in intent.steps.iter().enumerate() {
+        validate_recipient_pinning(step, intent.signer, step_index)?;
+    }
+
     Ok(ValidationResult { warnings })
+}
+
+/// B1: Every step with an internal recipient-like field must name the
+/// signer. Send steps and Across bridges are explicit exits and opt out.
+fn validate_recipient_pinning(
+    step: &ResolvedStep,
+    signer: Address,
+    step_index: usize,
+) -> Result<()> {
+    // Returns the pair of (field_name, actual_value) to check, or None when
+    // the step has no internal recipient that must be pinned to the signer.
+    let check_pairs: Vec<(&'static str, Address)> = match step {
+        // Auto-inserted by the enricher — we should never see these pre-enrich,
+        // but if we do (e.g. via a direct IR test), they must name the signer
+        // as the payer.
+        ResolvedStep::Erc20TransferFrom { from, .. } => alloc::vec![("from", *from)],
+        ResolvedStep::AaveV3Supply { on_behalf_of, .. } => {
+            alloc::vec![("on_behalf_of", *on_behalf_of)]
+        }
+        // Borrow's `on_behalf_of` is the debt holder — MUST be the signer.
+        // Aave's credit delegation lets other accounts borrow against a
+        // user's collateral, which is a well-known footgun; lock it down.
+        ResolvedStep::AaveV3Borrow { on_behalf_of, .. } => {
+            alloc::vec![("on_behalf_of", *on_behalf_of)]
+        }
+        ResolvedStep::AaveV3Withdraw { to, .. } => alloc::vec![("to", *to)],
+        ResolvedStep::AaveV3Repay { on_behalf_of, .. } => {
+            alloc::vec![("on_behalf_of", *on_behalf_of)]
+        }
+        ResolvedStep::MorphoSupply { on_behalf, .. } => alloc::vec![("on_behalf", *on_behalf)],
+        ResolvedStep::MorphoSupplyCollat { on_behalf, .. } => {
+            alloc::vec![("on_behalf", *on_behalf)]
+        }
+        ResolvedStep::MorphoBorrow {
+            on_behalf, receiver, ..
+        } => alloc::vec![("on_behalf", *on_behalf), ("receiver", *receiver)],
+        ResolvedStep::MorphoWithdraw {
+            on_behalf, receiver, ..
+        } => alloc::vec![("on_behalf", *on_behalf), ("receiver", *receiver)],
+        ResolvedStep::MorphoWithdrawCollat {
+            on_behalf, receiver, ..
+        } => alloc::vec![("on_behalf", *on_behalf), ("receiver", *receiver)],
+        ResolvedStep::MorphoRepay { on_behalf, .. } => alloc::vec![("on_behalf", *on_behalf)],
+        ResolvedStep::UniswapV3Swap { recipient, .. } => alloc::vec![("recipient", *recipient)],
+        ResolvedStep::UniswapV3LpMint { recipient, .. } => alloc::vec![("recipient", *recipient)],
+        ResolvedStep::UniswapV3LpCollect { recipient, .. } => {
+            alloc::vec![("recipient", *recipient)]
+        }
+        ResolvedStep::LidoRequestWithdrawal { owner, .. } => alloc::vec![("owner", *owner)],
+        ResolvedStep::Erc20Permit { owner, .. } => alloc::vec![("owner", *owner)],
+        // Across recipient is an explicit cross-chain destination chosen by
+        // the user; depositor must still be the signer.
+        ResolvedStep::AcrossDepositV3 { depositor, .. } => alloc::vec![("depositor", *depositor)],
+        // Explicit user-directed transfers — already zero-checked; the user
+        // chose the `to` address and we don't second-guess it.
+        ResolvedStep::SendErc20 { .. }
+        | ResolvedStep::SendEth { .. }
+        | ResolvedStep::SendErc721 { .. } => alloc::vec![],
+        // Steps without a recipient-like field.
+        ResolvedStep::Wrap { .. }
+        | ResolvedStep::Unwrap { .. }
+        | ResolvedStep::Erc20Approve { .. }
+        | ResolvedStep::LidoStake { .. }
+        | ResolvedStep::WstETHWrap { .. }
+        | ResolvedStep::WstETHUnwrap { .. }
+        | ResolvedStep::LidoClaimWithdrawal { .. }
+        | ResolvedStep::UniswapV3LpIncrease { .. }
+        | ResolvedStep::UniswapV3LpDecrease { .. }
+        | ResolvedStep::BalancerFlashloan { .. } => alloc::vec![],
+    };
+
+    for (field, actual) in check_pairs {
+        if actual != signer {
+            return Err(CompileError::Validation(format!(
+                "Step {}: field '{}' is {} but must be the intent signer ({}). \
+                 Recipient pinning rejects any internal step whose recipient is \
+                 neither the signer nor a router-mediated hop; use an explicit \
+                 send step for third-party transfers.",
+                step_index + 1,
+                field,
+                actual,
+                signer
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Flashloan validation: enforce bounded depth, bounded inner step count,
