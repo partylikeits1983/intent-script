@@ -60,8 +60,24 @@ pub fn compile_with_allowances(
     protocols_json: &str,
     allowances_json: Option<&str>,
 ) -> Result<CompileResult> {
-    // Stage A: Parse JSON into public AST
+    // Stage A: Parse JSON into public AST. `#[serde(deny_unknown_fields)]`
+    // on IntentScript and every *Step rejects hallucinated fields like
+    // `recipient_override` up front — a pure-parser defense.
     let script: IntentScript = serde_json::from_str(json_input)?;
+
+    // B12: Schema version gate. Accept absent (backward-compat) or exactly
+    // "1.0". Reject any other value so a compiler built against schema 1.0
+    // cannot silently reinterpret a schema-2.0 intent that happens to
+    // deserialize cleanly.
+    if let Some(v) = script.schema_version.as_deref() {
+        if v != "1.0" {
+            return Err(crate::error::CompileError::Validation(alloc::format!(
+                "Unsupported schema_version '{}': this compiler accepts '1.0' (or omitted). \
+                 Upgrade the compiler or emit an intent matching the supported schema.",
+                v
+            )));
+        }
+    }
 
     // Load registry for the target network
     let registry =

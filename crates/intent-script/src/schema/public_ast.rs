@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 /// Top-level intent script document.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentScript {
     /// Network alias, e.g. "ethereum", "base", "arbitrum"
     pub network: String,
@@ -32,10 +33,18 @@ pub struct IntentScript {
     /// The caller (CLI/frontend) provides this.
     #[serde(default)]
     pub current_timestamp: Option<u64>,
+    /// Optional schema version. Compiler enforces `== "1.0"` when present;
+    /// missing is permitted for backward compatibility but a future major
+    /// release will make this required. Lets the UI pin the schema version
+    /// it was built against so a divergent compiler rebuild doesn't
+    /// silently reinterpret old intents.
+    #[serde(default)]
+    pub schema_version: Option<String>,
 }
 
 /// User's on-chain balance information, provided optionally by the frontend.
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct UserBalances {
     /// Token alias → human-readable balance (e.g. "USDC" → "10000.0")
     #[serde(default)]
@@ -54,6 +63,7 @@ pub struct UserBalances {
 /// UnsignedTx for any ERC-20 the user is spending whose current allowance is
 /// below the aggregate amount pulled into the router.
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AllowancesInput {
     /// Token alias → current allowance in base units as a decimal string
     /// (e.g. "USDT" → "0" or "USDC" → "115792...639935"). Missing keys are
@@ -65,6 +75,7 @@ pub struct AllowancesInput {
 
 /// Aave V3 position information for balance-aware validation.
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AavePositions {
     /// Token alias → supplied amount (e.g. "USDC" → "50000.0")
     #[serde(default)]
@@ -109,6 +120,7 @@ pub enum Step {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SwapStep {
     pub from: String,
     pub amount: String,
@@ -145,6 +157,7 @@ pub struct SwapStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DepositStep {
     pub asset: String,
     pub amount: String,
@@ -161,6 +174,7 @@ pub struct DepositStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BorrowStep {
     pub asset: String,
     pub amount: String,
@@ -171,6 +185,7 @@ pub struct BorrowStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WithdrawStep {
     pub asset: String,
     pub amount: String,
@@ -185,18 +200,21 @@ pub struct WithdrawStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WrapStep {
     pub asset: String,
     pub amount: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnwrapStep {
     pub asset: String,
     pub amount: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StakeStep {
     pub asset: String,
     pub amount: String,
@@ -204,6 +222,7 @@ pub struct StakeStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestWithdrawalStep {
     /// "stETH" or "wstETH".
     pub asset: String,
@@ -214,6 +233,7 @@ pub struct RequestWithdrawalStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimWithdrawalStep {
     /// Protocol key; must be "lido".
     pub protocol: String,
@@ -224,6 +244,7 @@ pub struct ClaimWithdrawalStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpMintStep {
     /// Protocol key; must be "uniswap" in v1.
     pub protocol: String,
@@ -242,6 +263,7 @@ pub struct LpMintStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpIncreaseStep {
     /// NFT position token id as a decimal string (matches Solidity uint256).
     pub position_id: String,
@@ -260,6 +282,7 @@ pub struct LpIncreaseStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpDecreaseStep {
     pub position_id: String,
     /// Pool's token0 alias. Required so the compiler can parse
@@ -276,6 +299,7 @@ pub struct LpDecreaseStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LpCollectStep {
     pub position_id: String,
     /// Pool's token0 alias (must match the position's actual token0).
@@ -289,6 +313,7 @@ pub struct LpCollectStep {
 /// pipeline (which must repay the flashloan), and return remaining balance to
 /// the user. Only Balancer V2 is supported in v1 (`via: "balancer"`, 0% fee).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlashloanStep {
     /// Flashloan provider key; must be "balancer" in v1.
     pub via: String,
@@ -301,6 +326,7 @@ pub struct FlashloanStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlashloanAsset {
     pub asset: String,
     pub amount: String,
@@ -312,6 +338,7 @@ pub struct FlashloanAsset {
 /// `borrow` is what gets borrowed and swapped. A `long ETH` is `collateral=ETH,
 /// borrow=USDC`; a `short ETH` is `collateral=USDC, borrow=ETH`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LeverageStep {
     pub collateral: String,
     /// Borrow asset. Defaults: volatile collateral → "USDC"; stable → "WETH".
@@ -347,6 +374,7 @@ pub struct LeverageStep {
 /// call (`depositV3` on the SpokePool). Receiving on the destination chain is
 /// authored as a separate intent.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BridgeStep {
     /// Bridge provider; must be "across" in v1.
     pub via: String,
@@ -366,6 +394,7 @@ pub struct BridgeStep {
 /// to thread in the user's current Aave debt and collateral (read off-chain
 /// via `getUserAccountData`) because the compiler has no RPC.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClosePositionStep {
     pub collateral: String,
     pub borrow: String,
@@ -380,6 +409,7 @@ pub struct ClosePositionStep {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendStep {
     /// ERC20/ETH token alias (e.g. "USDC", "ETH")
     #[serde(default)]
