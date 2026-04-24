@@ -5,6 +5,7 @@ pub mod lower;
 pub mod normalize;
 pub mod plan;
 pub mod preview;
+pub mod uniswap_ticks;
 pub mod validate;
 
 use alloc::string::ToString;
@@ -176,7 +177,9 @@ pub fn compile_with_allowances(
                 return Err(crate::error::CompileError::Validation(alloc::format!(
                     "Token {} required-pull {} exceeds the caller's max_spend cap {}. \
                      The intent tries to spend more than was pre-authorized for this session.",
-                    token, required, cap
+                    token,
+                    required,
+                    cap
                 )));
             }
         }

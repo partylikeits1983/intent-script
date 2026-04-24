@@ -260,12 +260,39 @@ pub struct LpMintStep {
     pub token1: String,
     /// Fee tier in hundredths of a bip: "500" | "3000" | "10000".
     pub fee: String,
-    pub tick_lower: i32,
-    pub tick_upper: i32,
+    /// Price form (preferred): human-readable lower bound expressed as
+    /// `quote_token` per 1 unit of the other token, or the sentinel `"min"`.
+    /// Mutually exclusive with `tick_lower`.
+    #[serde(default)]
+    pub price_lower: Option<String>,
+    /// Price form (preferred): human-readable upper bound, or `"max"`.
+    /// Mutually exclusive with `tick_upper`.
+    #[serde(default)]
+    pub price_upper: Option<String>,
+    /// Which of `token0` / `token1` the prices are denominated in. Required
+    /// when `price_lower` / `price_upper` are used.
+    #[serde(default)]
+    pub quote_token: Option<String>,
+    /// Advanced escape hatch: raw tick lower bound. Mutually exclusive with
+    /// `price_lower`. Must be a multiple of the fee tier's tick spacing.
+    #[serde(default)]
+    pub tick_lower: Option<i32>,
+    /// Advanced escape hatch: raw tick upper bound. Mutually exclusive with
+    /// `price_upper`.
+    #[serde(default)]
+    pub tick_upper: Option<i32>,
     pub amount0: String,
     pub amount1: String,
-    pub min_amount0: String,
-    pub min_amount1: String,
+    /// Per-token floor passed to NPM's `mint` as `amount0Min`. Optional —
+    /// when omitted, defaults to `"0"`. For narrow ranges the price range
+    /// itself is the slippage guard; a positive `min_amount0` can force a
+    /// `Price slippage check` revert when the current tick is off-center
+    /// inside the range even in calm markets.
+    #[serde(default)]
+    pub min_amount0: Option<String>,
+    /// See `min_amount0`. Optional; defaults to `"0"`.
+    #[serde(default)]
+    pub min_amount1: Option<String>,
     #[serde(default)]
     pub deadline: Option<u64>,
 }
@@ -283,8 +310,12 @@ pub struct LpIncreaseStep {
     pub token1: String,
     pub amount0: String,
     pub amount1: String,
-    pub min_amount0: String,
-    pub min_amount1: String,
+    /// Optional; defaults to `"0"`. See `LpMintStep::min_amount0`.
+    #[serde(default)]
+    pub min_amount0: Option<String>,
+    /// Optional; defaults to `"0"`. See `LpMintStep::min_amount1`.
+    #[serde(default)]
+    pub min_amount1: Option<String>,
     #[serde(default)]
     pub deadline: Option<u64>,
 }
@@ -300,8 +331,14 @@ pub struct LpDecreaseStep {
     /// Liquidity amount to remove as a decimal string, or "all" for the
     /// full on-chain liquidity. Liquidity is a u128 in Uniswap V3.
     pub liquidity: String,
-    pub min_amount0: String,
-    pub min_amount1: String,
+    /// Optional; defaults to `"0"`. Unlike `lp_mint` this actually *does*
+    /// protect against sandwich attacks at removal time — a positive value
+    /// is sensible when the user gives one.
+    #[serde(default)]
+    pub min_amount0: Option<String>,
+    /// Optional; defaults to `"0"`. See `LpDecreaseStep::min_amount0`.
+    #[serde(default)]
+    pub min_amount1: Option<String>,
     #[serde(default)]
     pub deadline: Option<u64>,
 }
@@ -328,8 +365,9 @@ pub struct FlashloanStep {
     /// Assets to borrow. Each entry specifies one token.
     pub assets: Vec<FlashloanAsset>,
     /// Inner pipeline to execute while the flashloaned funds are on this
-    /// contract's balance. Bounded to 5 steps; nesting (flashloan inside
-    /// flashloan) is rejected by validation.
+    /// contract's balance. Bounded to MAX_FLASHLOAN_INNER_STEPS (see
+    /// validate.rs); nesting (flashloan inside flashloan) is rejected by
+    /// validation.
     pub then: Vec<Step>,
 }
 

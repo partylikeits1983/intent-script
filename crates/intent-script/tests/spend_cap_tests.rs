@@ -26,8 +26,7 @@ fn deposit_within_max_spend_compiles() {
         "max_spend": { "USDC": "1000000000" }
     }"#;
 
-    compile_anvil_with_allowances(input, Some(allowances))
-        .expect("pull within cap should compile");
+    compile_anvil_with_allowances(input, Some(allowances)).expect("pull within cap should compile");
 }
 
 #[test]

@@ -55,7 +55,20 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
 
     let mut steps = Vec::new();
     for step in &script.steps {
-        let resolved = normalize_step(step, signer, registry, &mut warnings, script, &steps)?;
+        // Scratch buffer for steps a branch may want to emit *before* its
+        // primary resolved step (e.g. lp_mint auto-injects a Wrap when one
+        // side is native ETH). Almost every branch leaves this untouched.
+        let mut prepend = Vec::new();
+        let resolved = normalize_step(
+            step,
+            signer,
+            registry,
+            &mut warnings,
+            script,
+            &steps,
+            &mut prepend,
+        )?;
+        steps.extend(prepend);
         steps.push(resolved);
     }
 
@@ -105,6 +118,10 @@ fn normalize_step(
     warnings: &mut Vec<String>,
     script: &IntentScript,
     previous_steps: &[ResolvedStep],
+    // Scratch buffer for branches that need to emit resolved steps *before*
+    // their primary returned step — currently only `Step::LpMint` uses it,
+    // to inject a `Wrap` when one side of the pair is native ETH.
+    prepend_steps: &mut Vec<ResolvedStep>,
 ) -> Result<ResolvedStep> {
     match step {
         Step::Wrap(w) => {
@@ -638,33 +655,80 @@ fn normalize_step(
 
             let fee = parse_uniswap_fee_tier(&m.fee)?;
             let tick_spacing = uniswap_tick_spacing(fee);
-            validate_uniswap_tick_range(m.tick_lower, m.tick_upper, tick_spacing)?;
 
             let npm = resolve_uniswap_position_manager(registry)?;
+
+            // Substitute native ETH with the chain's wrapped-native (WETH):
+            // Uniswap's NPM mint takes two ERC-20 addresses as token0/token1,
+            // so a native sentinel (Address::ZERO) can't appear there. When
+            // the user names ETH, we rewrite the alias to WETH and later
+            // inject a `Wrap` step before the mint so the router holds WETH
+            // by the time NPM pulls it. Both-native is nonsensical and is
+            // rejected by `validate_asset_compatibility`.
+            let addr0_raw = resolve_asset_address(&m.token0, registry)?;
+            let addr1_raw = resolve_asset_address(&m.token1, registry)?;
+            let native0 = addr0_raw == Address::ZERO;
+            let native1 = addr1_raw == Address::ZERO;
+            if native0 && native1 {
+                return Err(CompileError::InvalidChain(
+                    "lp_mint requires at least one non-native token: \
+                     both token0 and token1 are the chain's native asset."
+                        .to_string(),
+                ));
+            }
+            let weth_alias = registry.chain.wrapped_native.clone();
+            let token0_alias_owned: String = if native0 {
+                weth_alias.clone()
+            } else {
+                m.token0.clone()
+            };
+            let token1_alias_owned: String = if native1 {
+                weth_alias.clone()
+            } else {
+                m.token1.clone()
+            };
 
             // Lexicographically sort (token0, token1) by address, swapping
             // paired amount / min fields in lockstep so the NPM sees the
             // pair in canonical order regardless of DSL-side ordering.
-            let (token0_alias, token1_alias, amount0_raw, amount1_raw, min0_raw, min1_raw) = {
-                let token0_addr = resolve_asset_address(&m.token0, registry)?;
-                let token1_addr = resolve_asset_address(&m.token1, registry)?;
+            // Sort *after* the ETH→WETH substitution so the canonical order
+            // uses WETH's real address (not the Address::ZERO sentinel).
+            // `min_amount0` / `min_amount1` are optional in the public schema:
+            // omitting them (or `null`) is equivalent to `"0"`. The range itself
+            // is the slippage guard for `lp_mint`; see the discussion in the
+            // LLM system prompt.
+            let m_min0 = m.min_amount0.as_deref().unwrap_or("0");
+            let m_min1 = m.min_amount1.as_deref().unwrap_or("0");
+            let (
+                token0_alias,
+                token1_alias,
+                amount0_raw,
+                amount1_raw,
+                min0_raw,
+                min1_raw,
+                tokens_swapped,
+            ) = {
+                let token0_addr = resolve_asset_address(&token0_alias_owned, registry)?;
+                let token1_addr = resolve_asset_address(&token1_alias_owned, registry)?;
                 if token0_addr <= token1_addr {
                     (
-                        m.token0.as_str(),
-                        m.token1.as_str(),
+                        token0_alias_owned.as_str(),
+                        token1_alias_owned.as_str(),
                         m.amount0.as_str(),
                         m.amount1.as_str(),
-                        m.min_amount0.as_str(),
-                        m.min_amount1.as_str(),
+                        m_min0,
+                        m_min1,
+                        false,
                     )
                 } else {
                     (
-                        m.token1.as_str(),
-                        m.token0.as_str(),
+                        token1_alias_owned.as_str(),
+                        token0_alias_owned.as_str(),
                         m.amount1.as_str(),
                         m.amount0.as_str(),
-                        m.min_amount1.as_str(),
-                        m.min_amount0.as_str(),
+                        m_min1,
+                        m_min0,
+                        true,
                     )
                 }
             };
@@ -673,6 +737,34 @@ fn normalize_step(
             let token1 = resolve_asset_address(token1_alias, registry)?;
             let dec0 = resolve_asset_decimals(token0_alias, registry)?;
             let dec1 = resolve_asset_decimals(token1_alias, registry)?;
+
+            // If the user wrote the native alias (e.g. "ETH") as `quote_token`,
+            // substitute it with the wrapped-native alias so the string-equality
+            // check in `classify_quote_direction` lines up against the token
+            // aliases we've already rewritten above.
+            let quote_token_override: Option<String> =
+                m.quote_token
+                    .as_deref()
+                    .and_then(|qt| match resolve_asset_address(qt, registry) {
+                        Ok(addr) if addr == Address::ZERO => Some(weth_alias.clone()),
+                        _ => None,
+                    });
+
+            // Resolve tick range from either the price form (preferred) or
+            // the raw tick form (advanced escape hatch). Exactly one of the
+            // two shapes must be supplied, per bound.
+            let (tick_lower, tick_upper) = resolve_lp_mint_ticks(
+                m,
+                token0_alias,
+                token1_alias,
+                tokens_swapped,
+                dec0,
+                dec1,
+                tick_spacing,
+                warnings,
+                quote_token_override.as_deref(),
+            )?;
+            validate_uniswap_tick_range(tick_lower, tick_upper, tick_spacing)?;
 
             reject_all_amount("lp_mint", "amount0", amount0_raw)?;
             reject_all_amount("lp_mint", "amount1", amount1_raw)?;
@@ -686,13 +778,37 @@ fn normalize_step(
 
             let deadline = resolve_step_deadline(m.deadline, script);
 
+            // If one side was native ETH, inject a preceding `Wrap` step for
+            // the exact amount the mint needs on that side. The wrap pulls
+            // msg.value → WETH into the router, which the enricher sees via
+            // `tokens_in_router`; it then skips the user-side transferFrom /
+            // prerequisite-approval for WETH and only pulls the ERC-20 side.
+            // Amount-zero single-sided mints on the native side — legitimate
+            // for out-of-range positions — must not emit a zero-value wrap
+            // (the builder rejects zero-amount steps).
+            let wrap_amount = match (native0, native1, tokens_swapped) {
+                (true, false, false) | (false, true, true) => Some(amount0),
+                (false, true, false) | (true, false, true) => Some(amount1),
+                (false, false, _) => None,
+                (true, true, _) => unreachable!("both-native lp_mint rejected above"),
+            };
+            if let Some(amt) = wrap_amount {
+                if amt > U256::ZERO {
+                    let weth_addr = resolve_asset_address(&weth_alias, registry)?;
+                    prepend_steps.push(ResolvedStep::Wrap {
+                        wrapped_token: weth_addr,
+                        amount: amt,
+                    });
+                }
+            }
+
             Ok(ResolvedStep::UniswapV3LpMint {
                 npm,
                 token0,
                 token1,
                 fee,
-                tick_lower: m.tick_lower,
-                tick_upper: m.tick_upper,
+                tick_lower,
+                tick_upper,
                 amount0,
                 amount1,
                 amount0_min,
@@ -705,6 +821,10 @@ fn normalize_step(
             let npm = resolve_uniswap_position_manager(registry)?;
             let token_id = parse_u256_decimal("position_id", &inc.position_id)?;
 
+            // `min_amount0` / `min_amount1` are optional — default to `"0"`.
+            // See the `LpMintStep` branch for the rationale.
+            let inc_min0 = inc.min_amount0.as_deref().unwrap_or("0");
+            let inc_min1 = inc.min_amount1.as_deref().unwrap_or("0");
             // Sort (token0, token1) + amounts in lockstep so the compiler's
             // canonical ordering always matches the NFT's on-chain ordering.
             let (token0_alias, token1_alias, amount0_raw, amount1_raw, min0_raw, min1_raw) = {
@@ -716,8 +836,8 @@ fn normalize_step(
                         inc.token1.as_str(),
                         inc.amount0.as_str(),
                         inc.amount1.as_str(),
-                        inc.min_amount0.as_str(),
-                        inc.min_amount1.as_str(),
+                        inc_min0,
+                        inc_min1,
                     )
                 } else {
                     (
@@ -725,8 +845,8 @@ fn normalize_step(
                         inc.token0.as_str(),
                         inc.amount1.as_str(),
                         inc.amount0.as_str(),
-                        inc.min_amount1.as_str(),
-                        inc.min_amount0.as_str(),
+                        inc_min1,
+                        inc_min0,
                     )
                 }
             };
@@ -778,25 +898,21 @@ fn normalize_step(
                 })?
             };
 
+            // `min_amount0` / `min_amount1` are optional — default to `"0"`.
+            // Unlike `lp_mint`, a positive min is a legitimate sandwich guard
+            // for `lp_decrease` (prices can be pushed at removal time). We
+            // still accept omission so symmetric intents are valid.
+            let dec_min0 = dec.min_amount0.as_deref().unwrap_or("0");
+            let dec_min1 = dec.min_amount1.as_deref().unwrap_or("0");
             // Sort token aliases so min_amount{0,1} line up with the position's
             // canonical (token0, token1) ordering.
             let (token0_alias, token1_alias, min0_raw, min1_raw) = {
                 let a = resolve_asset_address(&dec.token0, registry)?;
                 let b = resolve_asset_address(&dec.token1, registry)?;
                 if a <= b {
-                    (
-                        dec.token0.as_str(),
-                        dec.token1.as_str(),
-                        dec.min_amount0.as_str(),
-                        dec.min_amount1.as_str(),
-                    )
+                    (dec.token0.as_str(), dec.token1.as_str(), dec_min0, dec_min1)
                 } else {
-                    (
-                        dec.token1.as_str(),
-                        dec.token0.as_str(),
-                        dec.min_amount1.as_str(),
-                        dec.min_amount0.as_str(),
-                    )
+                    (dec.token1.as_str(), dec.token0.as_str(), dec_min1, dec_min0)
                 }
             };
             let dec0 = resolve_asset_decimals(token0_alias, registry)?;
@@ -1102,7 +1218,19 @@ fn normalize_flashloan(
                 "nested flashloans are not allowed (max depth 1)".to_string(),
             ));
         }
-        let resolved = normalize_step(step, signer, registry, warnings, script, &inner_steps)?;
+        // Inner pipelines can prepend auto-injected steps (e.g. Wrap for a
+        // native-ETH lp_mint inside a flashloan) just like the top-level loop.
+        let mut prepend: Vec<ResolvedStep> = Vec::new();
+        let resolved = normalize_step(
+            step,
+            signer,
+            registry,
+            warnings,
+            script,
+            &inner_steps,
+            &mut prepend,
+        )?;
+        inner_steps.extend(prepend);
         inner_steps.push(resolved);
     }
 
@@ -1428,6 +1556,114 @@ fn uniswap_tick_spacing(fee: u32) -> i32 {
         // here signals a caller bug.
         _ => 1,
     }
+}
+
+/// Decide whether the user's `quote_token` refers to token1 (canonical
+/// direction) or token0 (inverted). `token0_alias` / `token1_alias` are the
+/// *sorted* aliases — i.e. the ones that match the pool's on-chain ordering
+/// — so the returned direction is correct regardless of how the user wrote
+/// the pair in the DSL.
+fn classify_quote_direction(
+    quote_token: &str,
+    token0_alias: &str,
+    token1_alias: &str,
+) -> Result<bool> {
+    if quote_token == token1_alias {
+        Ok(true)
+    } else if quote_token == token0_alias {
+        Ok(false)
+    } else {
+        Err(CompileError::InvalidChain(format!(
+            "LP quote_token '{}' must equal token0 ('{}') or token1 ('{}')",
+            quote_token, token0_alias, token1_alias
+        )))
+    }
+}
+
+/// Resolve an `lp_mint` step's tick range, accepting either the price form
+/// (preferred, human-friendly) or the raw tick form (advanced). Exactly one
+/// of the two shapes must be supplied per bound. Price-derived ticks are
+/// snapped to the fee tier's spacing with a warning describing the snap.
+fn resolve_lp_mint_ticks(
+    m: &crate::schema::public_ast::LpMintStep,
+    token0_alias: &str,
+    token1_alias: &str,
+    tokens_swapped: bool,
+    dec0: u8,
+    dec1: u8,
+    spacing: i32,
+    _warnings: &mut Vec<String>,
+    // When the caller rewrote the DSL's `quote_token` alias to match a
+    // substituted pair token (e.g. native "ETH" → "WETH"), pass it here so
+    // the string-equality match below sees the same normalized name.
+    quote_token_override: Option<&str>,
+) -> Result<(i32, i32)> {
+    use crate::compiler::uniswap_ticks::{
+        maybe_swap_inverted, resolve_lower_bound, resolve_upper_bound, snap_range,
+    };
+
+    let has_price = m.price_lower.is_some() || m.price_upper.is_some();
+    let has_tick = m.tick_lower.is_some() || m.tick_upper.is_some();
+
+    // Reject mixed / missing shapes up front.
+    if has_price && has_tick {
+        return Err(CompileError::InvalidChain(
+            "lp_mint accepts EITHER price_lower/price_upper OR tick_lower/tick_upper, not both"
+                .to_string(),
+        ));
+    }
+    if !has_price && !has_tick {
+        return Err(CompileError::InvalidChain(
+            "lp_mint is missing a range: supply price_lower + price_upper (preferred) or tick_lower + tick_upper"
+                .to_string(),
+        ));
+    }
+
+    if has_tick {
+        let lower = m.tick_lower.ok_or_else(|| {
+            CompileError::InvalidChain(
+                "lp_mint tick_lower is required when using the tick form".to_string(),
+            )
+        })?;
+        let upper = m.tick_upper.ok_or_else(|| {
+            CompileError::InvalidChain(
+                "lp_mint tick_upper is required when using the tick form".to_string(),
+            )
+        })?;
+        return Ok((lower, upper));
+    }
+
+    // Price form.
+    let lower_raw = m.price_lower.as_deref().ok_or_else(|| {
+        CompileError::InvalidChain(
+            "lp_mint price_lower is required when using the price form".to_string(),
+        )
+    })?;
+    let upper_raw = m.price_upper.as_deref().ok_or_else(|| {
+        CompileError::InvalidChain(
+            "lp_mint price_upper is required when using the price form".to_string(),
+        )
+    })?;
+    let quote_token_raw = m.quote_token.as_deref().ok_or_else(|| {
+        CompileError::InvalidChain(
+            "lp_mint quote_token is required when using price_lower / price_upper".to_string(),
+        )
+    })?;
+    let quote_token = quote_token_override.unwrap_or(quote_token_raw);
+
+    let quote_is_token1 = classify_quote_direction(quote_token, token0_alias, token1_alias)?;
+
+    let lower_tick = resolve_lower_bound(lower_raw, quote_is_token1, dec0, dec1)?;
+    let upper_tick = resolve_upper_bound(upper_raw, quote_is_token1, dec0, dec1)?;
+    // Inverting the quote direction flips which bound is numerically smaller,
+    // so swap the pair back into (low, high) tick order.
+    let (lower_tick, upper_tick) = maybe_swap_inverted(lower_tick, upper_tick, quote_is_token1);
+
+    let (snapped_lo, snapped_hi) = snap_range(lower_tick, upper_tick, spacing);
+    // Snapping is an implementation detail — the realized range always
+    // contains the user's requested prices, so we don't emit a warning.
+    let _ = tokens_swapped; // kept for signature symmetry.
+    Ok((snapped_lo, snapped_hi))
 }
 
 /// Validate that an LP tick range is non-empty, bounded, and aligned with

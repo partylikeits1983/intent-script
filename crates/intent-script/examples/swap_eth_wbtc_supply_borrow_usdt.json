@@ -1,0 +1,9 @@
+{
+  "network": "anvil",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    { "swap":    { "from": "ETH", "amount": "50", "to": "WBTC", "min_amount_out": "1.0", "fee": "3000" } },
+    { "deposit": { "asset": "WBTC", "amount": "all", "into": "aave" } },
+    { "borrow":  { "asset": "USDT", "amount": "20000", "from": "aave" } }
+  ]
+}

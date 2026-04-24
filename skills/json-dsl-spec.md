@@ -229,6 +229,51 @@ The caller (signer or router) must own the NFTs. ETH is sent to the caller, not 
 
 Mints a new concentrated-liquidity position NFT via the `NonfungiblePositionManager`.
 
+Preferred **price form** — describe the range with human-readable prices and the compiler snaps to the fee tier's tick spacing automatically:
+
+```json
+{
+  "lp_mint": {
+    "protocol": "uniswap",
+    "token0": "USDC",
+    "token1": "USDT",
+    "fee": "500",
+    "price_lower": "0.999",
+    "price_upper": "1.001",
+    "quote_token": "USDT",
+    "amount0": "5000",
+    "amount1": "5000",
+    "min_amount0": "4975",
+    "min_amount1": "4975"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol` | string | ✅ | Must be `"uniswap"` in v1 |
+| `token0` | string | ✅ | First token alias — must be the lexicographically smaller address |
+| `token1` | string | ✅ | Second token alias — the larger address |
+| `fee` | string | ✅ | Uniswap V3 fee tier: `"500"`, `"3000"`, or `"10000"` |
+| `price_lower` | string | ✅† | Lower price bound as `quote_token` per 1 unit of the other token; `"min"` selects `MIN_TICK`. Mutually exclusive with `tick_lower`. |
+| `price_upper` | string | ✅† | Upper price bound; `"max"` selects `MAX_TICK`. Mutually exclusive with `tick_upper`. |
+| `quote_token` | string | ✅† | Which of `token0` / `token1` the prices are denominated in. Required with `price_*`. |
+| `tick_lower` | number | ✅‡ | Advanced escape hatch: raw tick. Must be a multiple of the fee tier's tick spacing. Mutually exclusive with `price_lower`. |
+| `tick_upper` | number | ✅‡ | Advanced escape hatch: raw tick. Mutually exclusive with `price_upper`. |
+| `amount0` | string | ✅ | Desired token0 deposit (human-readable) |
+| `amount1` | string | ✅ | Desired token1 deposit (human-readable) |
+| `min_amount0` | string | ✅ | Minimum token0 to deposit (slippage protection) |
+| `min_amount1` | string | ✅ | Minimum token1 to deposit (slippage protection) |
+| `deadline` | number | ❌ | Swap-specific deadline as Unix timestamp |
+
+† Required when using the price form. ‡ Required when using the tick form. Exactly one of the two forms must be used per bound.
+
+**Token ordering constraint:** Uniswap V3 requires `token0 < token1` by address. If the user provides them in the wrong order the normalizer swaps them along with their amounts/mins.
+
+**Tick spacing** per fee tier: 500→10, 3000→60, 10000→200. `MAX_TICK` is `887272`; `MIN_TICK` is `-887272`. Full-range positions use `"price_lower": "min", "price_upper": "max"` (or `tick_lower = -887220`, `tick_upper = 887220` in the advanced form).
+
+**Advanced (tick) form example:**
+
 ```json
 {
   "lp_mint": {
@@ -245,24 +290,6 @@ Mints a new concentrated-liquidity position NFT via the `NonfungiblePositionMana
   }
 }
 ```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `protocol` | string | ✅ | Must be `"uniswap"` in v1 |
-| `token0` | string | ✅ | First token alias — must be the lexicographically smaller address |
-| `token1` | string | ✅ | Second token alias — the larger address |
-| `fee` | string | ✅ | Uniswap V3 fee tier: `"500"`, `"3000"`, or `"10000"` |
-| `tick_lower` | number | ✅ | Lower price bound; must be a multiple of the tick spacing |
-| `tick_upper` | number | ✅ | Upper price bound; must be `> tick_lower` and `≤ MAX_TICK` |
-| `amount0` | string | ✅ | Desired token0 deposit (human-readable) |
-| `amount1` | string | ✅ | Desired token1 deposit (human-readable) |
-| `min_amount0` | string | ✅ | Minimum token0 to deposit (slippage protection) |
-| `min_amount1` | string | ✅ | Minimum token1 to deposit (slippage protection) |
-| `deadline` | number | ❌ | Swap-specific deadline as Unix timestamp |
-
-**Token ordering constraint:** Uniswap V3 requires `token0 < token1` by address. If the user provides them in the wrong order the normalizer swaps them along with their amounts/mins and emits a warning.
-
-**Tick spacing** per fee tier: 500→10, 3000→60, 10000→200. `MAX_TICK` is `887272`; `MIN_TICK` is `-887272`. Full-range positions typically use `±887220` (a multiple of 60).
 
 ### `lp_increase` — Uniswap V3 LP Increase Liquidity
 

@@ -1,0 +1,20 @@
+{
+  "network": "anvil",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    {
+      "lp_mint": {
+        "protocol": "uniswap",
+        "token0": "WBTC",
+        "token1": "WETH",
+        "fee": "3000",
+        "tick_lower": 252000,
+        "tick_upper": 264000,
+        "amount0": "0.6",
+        "amount1": "10",
+        "min_amount0": "0.0",
+        "min_amount1": "0.0"
+      }
+    }
+  ]
+}

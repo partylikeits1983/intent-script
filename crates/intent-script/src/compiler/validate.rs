@@ -19,9 +19,9 @@ use crate::ir::{
 use crate::registry::RegistryContext;
 
 /// Maximum number of user-facing steps allowed in a single intent.
-pub const MAX_STEPS: usize = 5;
+pub const MAX_STEPS: usize = 8;
 /// Maximum inner-pipeline step count for a flashloan.
-pub const MAX_FLASHLOAN_INNER_STEPS: usize = 5;
+pub const MAX_FLASHLOAN_INNER_STEPS: usize = 8;
 
 /// B2: Absolute slippage floor in basis points. Swaps that specify a
 /// slippage tolerance are capped at 500 bps (5%) — anything above that
@@ -38,9 +38,11 @@ pub const MAX_PER_CALL_WEI: u128 = 1_000 * 10u128.pow(18);
 /// and low enough to flag obviously-bogus sums.
 pub const MAX_TOTAL_WEI: u128 = 10_000 * 10u128.pow(18);
 /// B5: Maximum concrete-call count after enrichment. User steps are
-/// capped at 5 (MAX_STEPS); approvals + transferFroms + sweeps can
-/// realistically triple that. 24 is a soft ceiling.
-pub const MAX_CALLS_AFTER_ENRICH: usize = 24;
+/// capped at MAX_STEPS (8); approvals + transferFroms + sweeps can
+/// realistically triple that. 40 keeps headroom over the worst-case
+/// 8-step batch (8 × 3 enrichment calls + a few sweeps) without losing
+/// the "obviously bogus" guardrail.
+pub const MAX_CALLS_AFTER_ENRICH: usize = 40;
 
 /// Minimum Aave health factor — below this, borrows are rejected.
 const MIN_HEALTH_FACTOR: f64 = 1.2;
@@ -238,13 +240,19 @@ fn validate_recipient_pinning(
             alloc::vec![("on_behalf", *on_behalf)]
         }
         ResolvedStep::MorphoBorrow {
-            on_behalf, receiver, ..
+            on_behalf,
+            receiver,
+            ..
         } => alloc::vec![("on_behalf", *on_behalf), ("receiver", *receiver)],
         ResolvedStep::MorphoWithdraw {
-            on_behalf, receiver, ..
+            on_behalf,
+            receiver,
+            ..
         } => alloc::vec![("on_behalf", *on_behalf), ("receiver", *receiver)],
         ResolvedStep::MorphoWithdrawCollat {
-            on_behalf, receiver, ..
+            on_behalf,
+            receiver,
+            ..
         } => alloc::vec![("on_behalf", *on_behalf), ("receiver", *receiver)],
         ResolvedStep::MorphoRepay { on_behalf, .. } => alloc::vec![("on_behalf", *on_behalf)],
         ResolvedStep::UniswapV3Swap { recipient, .. } => alloc::vec![("recipient", *recipient)],
@@ -637,33 +645,25 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
             None
         }
         ResolvedStep::UniswapV3LpMint {
-            amount0,
-            amount1,
-            amount0_min,
-            amount1_min,
-            ..
+            amount0, amount1, ..
         }
         | ResolvedStep::UniswapV3LpIncrease {
-            amount0,
-            amount1,
-            amount0_min,
-            amount1_min,
-            ..
+            amount0, amount1, ..
         } => {
             if *amount0 == U256::ZERO && *amount1 == U256::ZERO {
                 return Err(CompileError::InvalidChain(
                     "LP mint/increase requires a non-zero amount on at least one side".to_string(),
                 ));
             }
-            // Slippage protection: at least one min must be > 0 (the
-            // other may legitimately be zero for single-sided out-of-range
-            // liquidity deposits).
-            if *amount0_min == U256::ZERO && *amount1_min == U256::ZERO {
-                return Err(CompileError::InvalidChain(
-                    "LP mint/increase requires slippage protection: min_amount0 or min_amount1 must be > 0"
-                        .to_string(),
-                ));
-            }
+            // Deliberately NOT enforcing a positive `amount0_min` /
+            // `amount1_min` here. The price range (`tick_lower` / `tick_upper`)
+            // is the real slippage guard for concentrated liquidity; a tight
+            // per-token `amount_min` actively *causes* `Price slippage check`
+            // reverts when the current tick is off-center inside a narrow
+            // range, even in perfectly calm markets (the LP's token0:token1
+            // ratio is a function of where the current tick sits inside the
+            // range, not of price movement). Leave both `"0"` by default and
+            // trust the range.
             None
         }
         ResolvedStep::UniswapV3LpDecrease {
@@ -732,6 +732,20 @@ fn validate_asset_compatibility(step: &ResolvedStep) -> Result<()> {
              The source and destination tokens must be different."
                 .to_string(),
         )),
+        // Uniswap V3 LP positions need two distinct ERC-20 tokens on-chain.
+        // Native ETH is substituted with the chain's wrapped-native (WETH)
+        // during normalize for the single-native case; the double-native
+        // case is nonsense and would leave token0 == token1 == Address::ZERO
+        // in the IR if it reached here.
+        ResolvedStep::UniswapV3LpMint { token0, token1, .. }
+            if *token0 == Address::ZERO || *token1 == Address::ZERO =>
+        {
+            Err(CompileError::InvalidChain(
+                "lp_mint token addresses must resolve to ERC-20 contracts. \
+                 Use WETH (or another ERC-20) instead of native ETH."
+                    .to_string(),
+            ))
+        }
         _ => Ok(()),
     }
 }

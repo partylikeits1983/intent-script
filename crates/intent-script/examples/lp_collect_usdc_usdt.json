@@ -1,0 +1,13 @@
+{
+  "network": "anvil",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    {
+      "lp_collect": {
+        "position_id": "{{POSITION_ID}}",
+        "token0": "USDC",
+        "token1": "USDT"
+      }
+    }
+  ]
+}

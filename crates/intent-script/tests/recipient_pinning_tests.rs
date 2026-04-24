@@ -84,7 +84,10 @@ fn aave_supply_with_attacker_on_behalf_of_is_rejected() {
     let err = validate::validate(&i, &registry()).expect_err("must reject non-signer on_behalf_of");
     match err {
         CompileError::Validation(msg) => {
-            assert!(msg.contains("on_behalf_of"), "err should name the field: {msg}");
+            assert!(
+                msg.contains("on_behalf_of"),
+                "err should name the field: {msg}"
+            );
             assert!(msg.contains("signer"), "err should name signer: {msg}");
         }
         other => panic!("expected Validation error, got {other:?}"),
@@ -221,8 +224,8 @@ fn send_steps_are_exempt_from_pinning() {
     let i = intent(vec![ResolvedStep::SendErc20 {
         token: USDC,
         to: ATTACKER, // explicit user-chosen address — allowed here, even
-                      // if the destination *looks* adversarial — because the
-                      // user authored the send step themselves.
+        // if the destination *looks* adversarial — because the
+        // user authored the send step themselves.
         amount: U256::from(1_000_000u64),
     }]);
     validate::validate(&i, &registry()).expect("explicit send must not be pinning-rejected");

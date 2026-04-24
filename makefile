@@ -8,8 +8,9 @@ export
 ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
 
 .PHONY: format build test test-compiler generate-calldata generate-fixtures \
-	test-foundry test-router e2e-test test-anvil test-fork-e2e \
-	test-fork-local test-all compile-intent start-anvil
+	generate-integration-fixtures test-foundry test-router e2e-test \
+	test-anvil test-fork-e2e test-fork-integration test-fork-local \
+	test-all compile-intent start-anvil
 
 format:
 	cargo fmt --all
@@ -31,8 +32,13 @@ generate-calldata:
 	cargo test -p intent-script --test generate_calldata -- --nocapture
 
 # Generate EIP-712 batch fixture files for fork tests
-generate-fixtures: generate-calldata
+generate-fixtures: generate-calldata generate-integration-fixtures
 	cargo test -p intent-script --test generate_eip712_fixtures -- --nocapture
+
+# Generate the *_batch.bin / *_single.bin fixtures consumed by
+# IntentForkIntegration.t.sol's eight DSL-driven scenarios.
+generate-integration-fixtures:
+	cargo test -p intent-script --test generate_integration_fixtures -- --nocapture
 
 # Run Foundry tests excluding fork E2E (requires: make generate-calldata first)
 # Fork E2E tests need --fork-url and are run separately via make test-fork-e2e
@@ -54,6 +60,10 @@ test-anvil:
 # These deploy IntentRouter on a fork and execute against real protocols
 test-fork-e2e: generate-fixtures
 	cd contracts && forge test --mc IntentForkE2E --fork-url $(ETH_RPC_URL) -vvv
+
+# Run the DSL → compile → sign → executeSigned integration suite on fork.
+test-fork-integration: generate-integration-fixtures
+	cd contracts && forge test --mc IntentForkIntegration --fork-url $(ETH_RPC_URL) -vvv
 
 # Run legacy fork tests (local mock-based, misleadingly named)
 test-fork-local:

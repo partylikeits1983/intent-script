@@ -1772,6 +1772,36 @@ fn test_sepolia_swap_usdc_to_weth() {
 }
 
 #[test]
+fn test_preview_wrap_then_deposit_nets_to_native_eth_in() {
+    // Regression: `wrap 100 ETH + deposit 100 WETH` previously showed
+    // "You send: 0.1 WETH" because the router fee_bps was applied to the
+    // intermediate wrap output (100 → 99.9 WETH), then netted against the
+    // deposit's 100 WETH consume to yield 0.1 WETH spurious input. The
+    // preview should now show a clean 100 ETH outflow and nothing else.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "wrap":    { "asset": "ETH",  "amount": "100" } },
+            { "deposit": { "asset": "WETH", "amount": "100", "into": "aave" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile");
+    let preview = result.preview.as_ref().expect("preview emitted");
+
+    assert_eq!(preview.inputs.len(), 1, "inputs: {:?}", preview.inputs);
+    assert_eq!(preview.inputs[0].symbol, "ETH");
+    assert_eq!(preview.inputs[0].amount, "100");
+
+    assert!(
+        preview.outputs.is_empty(),
+        "outputs should be empty (all WETH flows into Aave): {:?}",
+        preview.outputs
+    );
+}
+
+#[test]
 fn test_preview_swap_inputs_outputs() {
     let input = r#"{
         "network": "anvil",
@@ -2485,8 +2515,11 @@ fn test_lp_mint_rejects_invalid_fee_tier() {
 }
 
 #[test]
-fn test_lp_mint_requires_slippage_protection() {
-    // Both mins zero — must be rejected.
+fn test_lp_mint_accepts_zero_min_amounts() {
+    // Both mins zero — must compile. The range (tick_lower/tick_upper) is
+    // the real slippage guard for concentrated liquidity; a positive
+    // min_amount0/min_amount1 actively *causes* `Price slippage check`
+    // reverts when the current tick is off-center inside a narrow range.
     let input = r#"{
         "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
@@ -2501,11 +2534,400 @@ fn test_lp_mint_requires_slippage_protection() {
             } }
         ]
     }"#;
+    let _ = do_compile(input).expect("compile should succeed with zero min_amounts");
+}
+
+#[test]
+fn test_lp_mint_price_form_tight_stables() {
+    // The user's case from the transcript: 5k USDC + 5k USDT, tight LP.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "USDT",
+                "fee": "500",
+                "price_lower": "0.999",
+                "price_upper": "1.001",
+                "quote_token": "USDT",
+                "amount0": "5000", "amount1": "5000",
+                "min_amount0": "4975", "min_amount1": "4975"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(_) => {}
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_lp_mint_price_form_full_range_sentinels() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "WETH",
+                "fee": "3000",
+                "price_lower": "min", "price_upper": "max",
+                "quote_token": "WETH",
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "990", "min_amount1": "0.297"
+            } }
+        ]
+    }"#;
+    let _ = do_compile(input).expect("full-range price form should compile");
+}
+
+#[test]
+fn test_lp_mint_price_form_accepts_either_quote_token() {
+    // Both quote_token directions must compile to valid batched intents.
+    // (Byte-exact equality isn't possible because floor-rounding ticks through
+    // a reciprocal is asymmetric — both ranges are valid, just slightly
+    // different bounds.)
+    for quote in &["USDT", "USDC"] {
+        let input = format!(
+            r#"{{
+                "network": "anvil",
+                "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                "steps": [ {{ "lp_mint": {{
+                    "protocol": "uniswap",
+                    "token0": "USDC", "token1": "USDT", "fee": "500",
+                    "price_lower": "0.999", "price_upper": "1.001", "quote_token": "{}",
+                    "amount0": "5000", "amount1": "5000",
+                    "min_amount0": "4975", "min_amount1": "4975"
+                }} }} ]
+            }}"#,
+            quote
+        );
+        let r = do_compile(&input).expect("compile should succeed for both quote_tokens");
+        assert!(matches!(r.output, CompileOutput::Eip712Intent(_)));
+    }
+}
+
+#[test]
+fn test_lp_mint_rejects_both_price_and_tick() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "USDT", "fee": "500",
+                "price_lower": "0.999", "price_upper": "1.001", "quote_token": "USDT",
+                "tick_lower": -10, "tick_upper": 10,
+                "amount0": "5000", "amount1": "5000",
+                "min_amount0": "4975", "min_amount1": "4975"
+            } }
+        ]
+    }"#;
     let err = do_compile(input).unwrap_err().to_string();
     assert!(
-        err.contains("slippage protection"),
-        "expected slippage-required error, got: {err}"
+        err.contains("not both"),
+        "expected mutual-exclusion error, got: {err}"
     );
+}
+
+#[test]
+fn test_lp_mint_rejects_missing_quote_token() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "USDT", "fee": "500",
+                "price_lower": "0.999", "price_upper": "1.001",
+                "amount0": "5000", "amount1": "5000",
+                "min_amount0": "4975", "min_amount1": "4975"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("quote_token"),
+        "expected missing-quote_token error, got: {err}"
+    );
+}
+
+#[test]
+fn test_lp_mint_rejects_quote_token_not_in_pair() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "USDT", "fee": "500",
+                "price_lower": "0.999", "price_upper": "1.001", "quote_token": "WETH",
+                "amount0": "5000", "amount1": "5000",
+                "min_amount0": "4975", "min_amount1": "4975"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("quote_token"),
+        "expected quote_token-membership error, got: {err}"
+    );
+}
+
+/// Mainnet WETH9. Used by tests that assert ETH→WETH substitution in LP mint.
+const WETH_ADDR: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+/// Mainnet USDC. Used by the same tests for prerequisite_approvals assertions.
+const USDC_ADDR: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+
+/// A user writing "ETH" (native) as one side of an LP pair must compile to:
+///   1. A preceding `WETH.deposit{value: ethAmount}()` wrap call.
+///   2. A mint call where the native side's token address is the wrapped-native.
+///   3. Exactly one USDC prerequisite approval — WETH is already in the router
+///      from the wrap step, so no user-side approval is emitted for it.
+///   4. `direct_tx.value == ethAmount` (the router forwards it into the wrap).
+#[test]
+fn test_lp_mint_native_eth_auto_wraps_and_substitutes_weth() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "ETH",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "990", "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+
+    // Report zero allowance for both tokens so the compiler would emit an
+    // approve for anything it thinks the user must pre-approve. That way the
+    // "zero approvals for WETH" assertion is actually proving the wrap step
+    // short-circuited the WETH pull, not that the allowance happened to
+    // already be sufficient.
+    let allowances = r#"{
+        "tokens": { "USDC": "0", "WETH": "0" }
+    }"#;
+    let result =
+        do_compile_with_allowances(input, Some(allowances)).expect("compile should succeed");
+
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            // (1) The Wrap step lowered to a WETH.deposit() call with value
+            // equal to the user's ETH amount (0.3 ETH = 3e17 wei). Multiple
+            // calls target WETH (a router→NPM approve on the WETH contract
+            // also lands there), so select by the deposit() selector.
+            let wrap_deposits: Vec<_> = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| {
+                    format!("{}", c.target).eq_ignore_ascii_case(WETH_ADDR)
+                        && c.call_data.len() >= 4
+                        && c.call_data[..4] == [0xd0, 0xe3, 0x0d, 0xb0]
+                })
+                .collect();
+            assert_eq!(
+                wrap_deposits.len(),
+                1,
+                "expected exactly one WETH.deposit call"
+            );
+            assert_eq!(
+                wrap_deposits[0].value.to_string(),
+                "300000000000000000",
+                "wrap msg.value must equal the specified ETH amount"
+            );
+
+            // (2) The top-level direct_tx aggregates the wrap's msg.value so
+            // the router receives enough ETH to forward into WETH.deposit.
+            assert_eq!(
+                intent.direct_tx.value.to_string(),
+                "300000000000000000",
+                "direct_tx.value must carry the wrap's msg.value to the router"
+            );
+            assert_eq!(
+                intent.intent_batch.total_value.to_string(),
+                "300000000000000000"
+            );
+
+            // (3) Prerequisite approvals: only USDC. No zero-address entry,
+            // no WETH entry (the wrap-produced WETH lives in the router).
+            assert_eq!(
+                intent.prerequisite_approvals.len(),
+                1,
+                "expected one prerequisite approval (USDC only)"
+            );
+            let approve = &intent.prerequisite_approvals[0];
+            assert!(
+                format!("{}", approve.to).eq_ignore_ascii_case(USDC_ADDR),
+                "prerequisite approval must target USDC, got: {}",
+                approve.to
+            );
+            // approve() selector 0x095ea7b3
+            assert_eq!(&approve.data[..4], &[0x09, 0x5e, 0xa7, 0xb3]);
+
+            // (4) No prerequisite approval should ever be addressed to the
+            // zero address — that's the bug this fix guards against.
+            for tx in &intent.prerequisite_approvals {
+                assert_ne!(
+                    format!("{}", tx.to),
+                    "0x0000000000000000000000000000000000000000",
+                    "must never emit an ERC-20 approve to the zero address"
+                );
+            }
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+/// Identical semantics when the user puts ETH in the first slot instead of
+/// the second — the canonical-ordering sort must happen *after* the ETH→WETH
+/// substitution so the pair still lexicographically resolves to (USDC, WETH).
+#[test]
+fn test_lp_mint_native_eth_token0_still_substitutes() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "ETH", "token1": "USDC",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "0.3", "amount1": "1000",
+                "min_amount0": "0.29", "min_amount1": "990"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("compile should succeed");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let wrap_calls: Vec<_> = intent
+                .intent_batch
+                .calls
+                .iter()
+                .filter(|c| format!("{}", c.target).eq_ignore_ascii_case(WETH_ADDR))
+                .collect();
+            // Exactly one WETH.deposit (from the auto-injected Wrap step) —
+            // other WETH-targeted calls in this pipeline are ERC-20 approves
+            // to the NPM, which hit the same target but a different selector.
+            let wrap_deposits: Vec<_> = wrap_calls
+                .iter()
+                .filter(|c| {
+                    c.call_data.len() >= 4 && &c.call_data[..4] == &[0xd0, 0xe3, 0x0d, 0xb0]
+                })
+                .collect();
+            assert_eq!(wrap_deposits.len(), 1);
+            assert_eq!(wrap_deposits[0].value.to_string(), "300000000000000000");
+            assert_eq!(intent.direct_tx.value.to_string(), "300000000000000000");
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
+}
+
+/// The price-form quote_token needs the same ETH→WETH substitution so it
+/// matches the rewritten pair aliases. Using "ETH" as quote_token for an
+/// ETH-side pair must compile, not error with "quote_token must equal token0
+/// or token1".
+#[test]
+fn test_lp_mint_native_eth_quote_token_is_normalized() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "ETH",
+                "fee": "3000",
+                "price_lower": "2000", "price_upper": "3000",
+                "quote_token": "ETH",
+                "amount0": "1000", "amount1": "0.3",
+                "min_amount0": "990", "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+    let _ = do_compile(input).expect("compile should succeed with quote_token='ETH'");
+}
+
+/// Both sides native is nonsense — reject cleanly rather than producing an
+/// IR with token0 == token1 == 0x0 that would silently pass through to
+/// calldata generation.
+#[test]
+fn test_lp_mint_rejects_both_sides_native() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "ETH", "token1": "ETH",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "0.3", "amount1": "0.3",
+                "min_amount0": "0.29", "min_amount1": "0.29"
+            } }
+        ]
+    }"#;
+    let err = do_compile(input).unwrap_err().to_string();
+    assert!(
+        err.contains("non-native") || err.contains("native"),
+        "expected both-native reject error, got: {err}"
+    );
+}
+
+/// `min_amount0` / `min_amount1` are optional on lp_mint — omitting them must
+/// compile and emit `amount0Min = amount1Min = 0` in the NPM mint calldata.
+/// This closes the "narrow range + tight amount_min → `Price slippage check`
+/// revert" footgun that hit the ETH/WBTC LP flow.
+#[test]
+fn test_lp_mint_without_min_amounts_defaults_to_zero() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "lp_mint": {
+                "protocol": "uniswap",
+                "token0": "USDC", "token1": "WETH",
+                "fee": "3000",
+                "tick_lower": -200040, "tick_upper": -199980,
+                "amount0": "1000", "amount1": "0.3"
+            } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("compile should succeed without min_amounts");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            // Find the NPM mint call (selector 0x88316456). Its struct layout
+            // is [token0, token1, fee, tickLower, tickUpper, amount0Desired,
+            // amount1Desired, amount0Min, amount1Min, recipient, deadline] —
+            // `amount0Min` is the 8th 32-byte word after the selector, and
+            // `amount1Min` is the 9th.
+            let mint = intent
+                .intent_batch
+                .calls
+                .iter()
+                .find(|c| c.call_data.len() >= 4 && c.call_data[..4] == [0x88, 0x31, 0x64, 0x56])
+                .expect("expected an NPM mint call");
+            let body = &mint.call_data[4..];
+            let read_word = |idx: usize| -> &[u8] { &body[idx * 32..(idx + 1) * 32] };
+            let amount0_min = read_word(7);
+            let amount1_min = read_word(8);
+            assert!(
+                amount0_min.iter().all(|b| *b == 0),
+                "amount0Min must be 0 when min_amount0 is omitted, got {amount0_min:?}"
+            );
+            assert!(
+                amount1_min.iter().all(|b| *b == 0),
+                "amount1Min must be 0 when min_amount1 is omitted, got {amount1_min:?}"
+            );
+        }
+        other => panic!("Expected Eip712Intent, got {:?}", other),
+    }
 }
 
 #[test]
@@ -2851,30 +3273,41 @@ fn test_flashloan_rejects_unrepayable() {
 
 #[test]
 fn test_flashloan_rejects_too_many_inner_steps() {
-    let input = r#"{
-        "network": "anvil",
-        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-        "current_timestamp": 1714000000,
-        "steps": [
-            {
-              "flashloan": {
-                "via": "balancer",
-                "assets": [{ "asset": "WETH", "amount": "1.0" }],
-                "then": [
-                  { "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } },
-                  { "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } },
-                  { "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } },
-                  { "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } },
-                  { "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } },
-                  { "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } }
-                ]
-              }
+    // Build MAX_FLASHLOAN_INNER_STEPS+1 alternating deposit/withdraw steps so
+    // the test scales automatically when the cap moves.
+    use intent_script::compiler::validate::MAX_FLASHLOAN_INNER_STEPS;
+    let inner_count = MAX_FLASHLOAN_INNER_STEPS + 1;
+    let inner_steps: Vec<String> = (0..inner_count)
+        .map(|i| {
+            if i % 2 == 0 {
+                r#"{ "deposit": { "asset": "WETH", "amount": "1.0", "into": "aave" } }"#.to_string()
+            } else {
+                r#"{ "withdraw": { "asset": "WETH", "amount": "1.0", "from": "aave" } }"#
+                    .to_string()
             }
-        ]
-    }"#;
-    let err = do_compile(input).unwrap_err().to_string();
+        })
+        .collect();
+    let input = format!(
+        r#"{{
+            "network": "anvil",
+            "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "current_timestamp": 1714000000,
+            "steps": [
+                {{
+                  "flashloan": {{
+                    "via": "balancer",
+                    "assets": [{{ "asset": "WETH", "amount": "1.0" }}],
+                    "then": [{}]
+                  }}
+                }}
+            ]
+        }}"#,
+        inner_steps.join(",")
+    );
+    let err = do_compile(&input).unwrap_err().to_string();
+    let expected = format!("inner pipeline has {inner_count} steps");
     assert!(
-        err.contains("inner pipeline has 6 steps") || err.contains("inner pipeline"),
+        err.contains(&expected) || err.contains("inner pipeline"),
         "expected inner-step count rejection, got: {err}"
     );
 }
@@ -3312,9 +3745,8 @@ fn test_wrap_then_deposit_exact_amount_accepts_with_router_fee() {
             { "deposit": { "asset": "WETH", "amount": "50", "into": "aave" } }
         ]
     }"#;
-    do_compile(input).expect(
-        "exact-amount intra-batch hand-off must compile with router fee_bps set",
-    );
+    do_compile(input)
+        .expect("exact-amount intra-batch hand-off must compile with router fee_bps set");
 }
 
 #[test]

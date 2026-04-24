@@ -15,11 +15,12 @@ fn preview_wrap_shows_native_input_and_wrapped_output() {
     let result = compile_anvil(input).expect("compile should succeed");
     let preview = result.preview.as_ref().expect("preview emitted");
 
-    assert_eq!(
-        preview.inputs.len(),
-        0,
-        "wrap does not use step_consumes today"
-    );
+    // Wrap now registers native ETH as an input so "You send" reflects the
+    // user's actual outflow. The wrapped WETH is the produced output; as the
+    // surviving output it gets the 10bps router sweep fee applied.
+    assert_eq!(preview.inputs.len(), 1);
+    assert_eq!(preview.inputs[0].symbol, "ETH");
+    assert_eq!(preview.inputs[0].amount, "1.5");
     assert_eq!(preview.outputs.len(), 1);
     assert_eq!(preview.outputs[0].symbol, "WETH");
     assert_eq!(preview.outputs[0].amount, "1.4985");

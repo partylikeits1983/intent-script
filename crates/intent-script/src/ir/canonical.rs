@@ -370,6 +370,13 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
             amount,
             ..
         } => Some((market_params.loan_token, *amount)),
+        // Wrap (ETH→WETH) consumes native ETH; the produced WETH is surfaced
+        // via `step_produces`. Without this case, the preview builder treats
+        // wrap as a net WETH inflow and then mis-aggregates wrap+deposit flows
+        // as a tiny WETH *input* (fee_bps mismatch on the intermediate).
+        ResolvedStep::Wrap { amount, .. } => Some((Address::ZERO, *amount)),
+        // LidoStake consumes native ETH and produces stETH — same rationale.
+        ResolvedStep::LidoStake { amount, .. } => Some((Address::ZERO, *amount)),
         ResolvedStep::WstETHWrap { steth, amount, .. } => Some((*steth, *amount)),
         ResolvedStep::WstETHUnwrap { wsteth, amount, .. } => Some((*wsteth, *amount)),
         ResolvedStep::LidoRequestWithdrawal { token, amounts, .. } => {
