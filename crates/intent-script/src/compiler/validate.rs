@@ -13,13 +13,28 @@ use alloy_primitives::{Address, U256};
 use hashbrown::{HashMap, HashSet};
 
 use crate::error::{CompileError, Result};
-use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_consumes, step_produces};
+use crate::ir::{
+    ConcreteCall, ResolvedBalances, ResolvedIntent, ResolvedStep, step_consumes, step_produces,
+};
 use crate::registry::RegistryContext;
 
 /// Maximum number of user-facing steps allowed in a single intent.
 pub const MAX_STEPS: usize = 5;
 /// Maximum inner-pipeline step count for a flashloan.
 pub const MAX_FLASHLOAN_INNER_STEPS: usize = 5;
+
+/// B5: Per-call ETH value cap. 1000 ETH is generous — well above any
+/// realistic user action — while still catching hallucinated `value: 10^30`
+/// overflow shapes.
+pub const MAX_PER_CALL_WEI: u128 = 1_000 * 10u128.pow(18);
+/// B5: Total ETH value cap across all calls in a batch. Set high enough
+/// for realistic leverage flows (which route ETH through multiple hops)
+/// and low enough to flag obviously-bogus sums.
+pub const MAX_TOTAL_WEI: u128 = 10_000 * 10u128.pow(18);
+/// B5: Maximum concrete-call count after enrichment. User steps are
+/// capped at 5 (MAX_STEPS); approvals + transferFroms + sweeps can
+/// realistically triple that. 24 is a soft ceiling.
+pub const MAX_CALLS_AFTER_ENRICH: usize = 24;
 
 /// Minimum Aave health factor — below this, borrows are rejected.
 const MIN_HEALTH_FACTOR: f64 = 1.2;
@@ -141,6 +156,48 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
     }
 
     Ok(ValidationResult { warnings })
+}
+
+/// B5: Budget the lowered concrete-call stream. Rejects obvious overflow
+/// shapes and dust-flood griefs. Runs after `lower::lower` so it sees the
+/// exact calls that would be executed on-chain.
+pub fn validate_call_budget(calls: &[ConcreteCall]) -> Result<()> {
+    if calls.len() > MAX_CALLS_AFTER_ENRICH {
+        return Err(CompileError::Validation(format!(
+            "Batch has {} concrete calls after enrichment but the limit is {}. \
+             Either reduce the number of user steps (max {}) or split this \
+             intent into multiple transactions.",
+            calls.len(),
+            MAX_CALLS_AFTER_ENRICH,
+            MAX_STEPS
+        )));
+    }
+
+    let max_per_call = U256::from(MAX_PER_CALL_WEI);
+    let max_total = U256::from(MAX_TOTAL_WEI);
+    let mut total = U256::ZERO;
+    for (i, c) in calls.iter().enumerate() {
+        if c.value > max_per_call {
+            return Err(CompileError::Validation(format!(
+                "Call {} sends {} wei (> {} wei per-call cap). This usually \
+                 indicates a hallucinated amount; if you truly need to move \
+                 this much ETH, split it across multiple batches.",
+                i + 1,
+                c.value,
+                max_per_call
+            )));
+        }
+        // Saturate — a total that would wrap obviously exceeds the cap.
+        total = total.saturating_add(c.value);
+        if total > max_total {
+            return Err(CompileError::Validation(format!(
+                "Aggregate call value {} wei exceeds the batch cap {} wei. \
+                 Split the intent or reduce the per-call values.",
+                total, max_total
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// B1: Every step with an internal recipient-like field must name the

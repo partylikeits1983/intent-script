@@ -138,6 +138,12 @@ pub fn compile_with_allowances(
     // Stage E: Lower — convert resolved steps to concrete EVM calls
     let calls = lower::lower(&enriched, &registry)?;
 
+    // B5: Call budget — cap per-call ETH value, total ETH value, and
+    // post-enrichment call count. These are defensive bounds that catch
+    // obvious overflows (`value: 10^30`) and dust-flood shapes without
+    // constraining any legitimate intent.
+    validate::validate_call_budget(&calls)?;
+
     // Stage F: Plan — decide execution strategy
     // Pass router address and sweep tokens for batching decision
     let router = registry.router_address();

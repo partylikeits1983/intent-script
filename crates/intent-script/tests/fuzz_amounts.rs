@@ -92,7 +92,9 @@ fn test_integer_amount() {
 
 #[test]
 fn test_large_integer_amount() {
-    assert!(compile_with_amount("999999999999").is_ok());
+    // B5 caps per-call ETH at 1000 ETH. Use 999 to prove the parser
+    // handles multi-digit integers without touching the budget ceiling.
+    assert!(compile_with_amount("999").is_ok());
 }
 
 #[test]
@@ -263,8 +265,12 @@ fn test_hex_amount_rejected() {
 
 #[test]
 fn test_very_large_amount() {
-    // Very large but valid amount
-    assert!(compile_with_amount("999999999999999999").is_ok());
+    // Largest value that fits under the B5 per-call cap of 1000 ETH.
+    // The original "999999999999999999" was a parser boundary test, but
+    // that amount is 10^36 wei — well past any plausible user action.
+    // 999.999999999999 ETH exercises the fractional parser without
+    // tripping the call-budget guardrail.
+    assert!(compile_with_amount("999.999999999999").is_ok());
 }
 
 #[test]
