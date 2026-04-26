@@ -199,6 +199,80 @@ fn deposit_without_wallet_balances_still_accepted_backcompat() {
     compile_anvil(input).expect("without balances, wallet-sourced consume is not checked");
 }
 
+// WS-3D additions: protocol-specific rejections the advisor flow has to
+// surface as a clear "no, that's not supported" instead of a generic
+// compiler error. Each one asserts that compilation fails (the advisor
+// must never present an unsafe intent for signing) and that the failure
+// carries text the UI can match on.
+
+#[test]
+fn across_bridge_to_unsupported_chain_is_rejected() {
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1712344000,
+        "steps": [
+            {
+                "bridge": {
+                    "via": "across",
+                    "asset": "USDC",
+                    "amount": "1000",
+                    "to_chain": "definitely-not-a-chain",
+                    "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                    "relayer_fee_bps": "5"
+                }
+            }
+        ]
+    }"#;
+
+    let err = compile_anvil(input)
+        .expect_err("bridging to a fictional chain must reject")
+        .to_string()
+        .to_lowercase();
+    assert!(
+        err.contains("chain") || err.contains("destination") || err.contains("not supported"),
+        "across-unsupported-chain error must mention the destination, got: {err}",
+    );
+}
+
+#[test]
+fn lp_mint_inverted_tick_range_is_rejected() {
+    // tick_lower > tick_upper is structurally invalid for a Uniswap V3
+    // position — the planner has to refuse before reaching the position
+    // manager. Otherwise the user signs a tx that always reverts.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1712344000,
+        "balances": { "tokens": { "USDC": "10000", "WETH": "5" } },
+        "steps": [
+            {
+                "lp_mint": {
+                    "protocol": "uniswap",
+                    "token0": "USDC",
+                    "token1": "ETH",
+                    "fee": "3000",
+                    "tick_lower": 100,
+                    "tick_upper": -100,
+                    "amount0": "1000",
+                    "amount1": "0.3",
+                    "min_amount0": "990",
+                    "min_amount1": "0.29"
+                }
+            }
+        ]
+    }"#;
+
+    let err = compile_anvil(input)
+        .expect_err("inverted tick range must reject")
+        .to_string()
+        .to_lowercase();
+    assert!(
+        err.contains("tick") || err.contains("range") || err.contains("price"),
+        "inverted-tick rejection must mention tick/range/price, got: {err}",
+    );
+}
+
 #[test]
 fn unsafe_aave_health_factor_rejects_borrow() {
     let input = r#"{
