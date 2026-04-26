@@ -390,13 +390,12 @@ fn validate_slippage(step: &ResolvedStep, step_index: usize) -> Result<()> {
     if let ResolvedStep::UniswapV3Swap {
         amount_out_minimum, ..
     } = step
+        && *amount_out_minimum == U256::ZERO
     {
-        if *amount_out_minimum == U256::ZERO {
-            return Err(CompileError::SlippageTooLow {
-                step_index,
-                current: "0".to_string(),
-            });
-        }
+        return Err(CompileError::SlippageTooLow {
+            step_index,
+            current: "0".to_string(),
+        });
     }
     Ok(())
 }
@@ -406,20 +405,20 @@ fn validate_health_factor(
     balances: Option<&ResolvedBalances>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
-    if let Some(b) = balances {
-        if let Some(hf) = b.aave_health_factor {
-            if hf < MIN_HEALTH_FACTOR {
-                return Err(CompileError::HealthFactorRisk {
-                    current: hf,
-                    threshold: MIN_HEALTH_FACTOR,
-                });
-            }
-            if hf < WARN_HEALTH_FACTOR {
-                warnings.push(format!(
-                    "Aave health factor is {:.2}. Borrowing may increase liquidation risk.",
-                    hf
-                ));
-            }
+    if let Some(b) = balances
+        && let Some(hf) = b.aave_health_factor
+    {
+        if hf < MIN_HEALTH_FACTOR {
+            return Err(CompileError::HealthFactorRisk {
+                current: hf,
+                threshold: MIN_HEALTH_FACTOR,
+            });
+        }
+        if hf < WARN_HEALTH_FACTOR {
+            warnings.push(format!(
+                "Aave health factor is {:.2}. Borrowing may increase liquidation risk.",
+                hf
+            ));
         }
     }
     Ok(())
@@ -462,28 +461,28 @@ fn validate_amount_flow(
     };
 
     for (i, step) in steps.iter().enumerate() {
-        if let Some((token, required)) = step_consumes(step) {
-            if let Some(available) = produced.get(&token) {
-                if required > *available {
-                    return Err(CompileError::InvalidChain(format!(
-                        "Step {} requires {} of token {} but the running balance only \
+        if let Some((token, required)) = step_consumes(step)
+            && let Some(available) = produced.get(&token)
+        {
+            if required > *available {
+                return Err(CompileError::InvalidChain(format!(
+                    "Step {} requires {} of token {} but the running balance only \
                          guarantees {} (wallet seed {} prior-step produce).",
-                        i + 1,
-                        required,
-                        token,
-                        available,
-                        if seeded_from_wallet { "+" } else { "disabled;" }
-                    )));
-                }
-                produced.insert(token, *available - required);
+                    i + 1,
+                    required,
+                    token,
+                    available,
+                    if seeded_from_wallet { "+" } else { "disabled;" }
+                )));
             }
-            // When `balances` is Some and this token is listed in wallet but
-            // with zero amount, `produced.get(&token)` returned Some(0) and
-            // the > check above handled it. When the token isn't in wallet
-            // and no prior step produced it, we fall through without a check
-            // — matches the pre-B3 trust contract for token streams the
-            // caller didn't give us info about.
+            produced.insert(token, *available - required);
         }
+        // When `balances` is Some and this token is listed in wallet but
+        // with zero amount, `produced.get(&token)` returned Some(0) and
+        // the > check above handled it. When the token isn't in wallet
+        // and no prior step produced it, we fall through without a check
+        // — matches the pre-B3 trust contract for token streams the
+        // caller didn't give us info about.
         if let Some((token, guaranteed)) = step_produces(step, 0) {
             *produced.entry(token).or_insert(U256::ZERO) += guaranteed;
         }
@@ -559,10 +558,7 @@ fn validate_withdraw_feasibility(
     match balances {
         Some(b) => {
             // Check if user has a supplied position for this specific asset
-            let has_position = b
-                .aave_supplied
-                .get(&asset)
-                .map_or(false, |v| *v > U256::ZERO);
+            let has_position = b.aave_supplied.get(&asset).is_some_and(|v| *v > U256::ZERO);
 
             if !has_position {
                 return Err(CompileError::InvalidChain(format!(
@@ -699,12 +695,12 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         | ResolvedStep::SendErc721 { .. } => None,
     };
 
-    if let Some((action, value)) = amount {
-        if *value == U256::ZERO {
-            return Err(CompileError::InvalidChain(format!(
-                "{action} amount must be greater than zero"
-            )));
-        }
+    if let Some((action, value)) = amount
+        && *value == U256::ZERO
+    {
+        return Err(CompileError::InvalidChain(format!(
+            "{action} amount must be greater than zero"
+        )));
     }
 
     Ok(())
@@ -916,8 +912,10 @@ mod tests {
     // Task 3: Health factor tests
     #[test]
     fn test_health_factor_below_minimum_rejected() {
-        let mut balances = ResolvedBalances::default();
-        balances.aave_health_factor = Some(1.1);
+        let balances = ResolvedBalances {
+            aave_health_factor: Some(1.1),
+            ..ResolvedBalances::default()
+        };
         let mut warnings = Vec::new();
         let result = validate_health_factor(Some(&balances), &mut warnings);
         assert!(result.is_err());
@@ -926,8 +924,10 @@ mod tests {
 
     #[test]
     fn test_health_factor_warning_range() {
-        let mut balances = ResolvedBalances::default();
-        balances.aave_health_factor = Some(1.3);
+        let balances = ResolvedBalances {
+            aave_health_factor: Some(1.3),
+            ..ResolvedBalances::default()
+        };
         let mut warnings = Vec::new();
         let result = validate_health_factor(Some(&balances), &mut warnings);
         assert!(result.is_ok());
@@ -937,8 +937,10 @@ mod tests {
 
     #[test]
     fn test_health_factor_above_warning_clean() {
-        let mut balances = ResolvedBalances::default();
-        balances.aave_health_factor = Some(2.0);
+        let balances = ResolvedBalances {
+            aave_health_factor: Some(2.0),
+            ..ResolvedBalances::default()
+        };
         let mut warnings = Vec::new();
         let result = validate_health_factor(Some(&balances), &mut warnings);
         assert!(result.is_ok());

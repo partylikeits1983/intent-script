@@ -50,10 +50,9 @@ pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Pre
                     amount,
                     ..
                 } = inner
+                    && *from == intent.signer
                 {
-                    if *from == intent.signer {
-                        *inputs.entry(*token).or_insert(U256::ZERO) += *amount;
-                    }
+                    *inputs.entry(*token).or_insert(U256::ZERO) += *amount;
                 }
             }
         }
@@ -119,16 +118,15 @@ pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Pre
         }
     }
 
-    let mut preview = Preview::default();
-    preview.inputs = to_preview_tokens(&inputs, registry);
-    preview.outputs = to_preview_tokens(&outputs, registry);
-    preview.steps = intent
-        .steps
-        .iter()
-        .filter_map(|s| describe_step(s, registry))
-        .collect();
-
-    preview
+    Preview {
+        inputs: to_preview_tokens(&inputs, registry),
+        outputs: to_preview_tokens(&outputs, registry),
+        steps: intent
+            .steps
+            .iter()
+            .filter_map(|s| describe_step(s, registry))
+            .collect(),
+    }
 }
 
 fn to_preview_tokens(

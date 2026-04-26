@@ -543,10 +543,10 @@ fn swap_deadline_from_script(script: &IntentScript) -> u64 {
     // Mirror normalize's swap-deadline logic: prefer explicit script.deadline,
     // then current_timestamp + 20 min, finally u64::MAX.
     const DEFAULT_SWAP_DEADLINE_SECS: u64 = 1200;
-    if let Some(d) = script.deadline {
-        if d > 0 {
-            return d;
-        }
+    if let Some(d) = script.deadline
+        && d > 0
+    {
+        return d;
     }
     match script.current_timestamp {
         Some(ts) => ts + DEFAULT_SWAP_DEADLINE_SECS,

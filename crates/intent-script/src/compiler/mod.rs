@@ -70,14 +70,14 @@ pub fn compile_with_allowances(
     // "1.0". Reject any other value so a compiler built against schema 1.0
     // cannot silently reinterpret a schema-2.0 intent that happens to
     // deserialize cleanly.
-    if let Some(v) = script.schema_version.as_deref() {
-        if v != "1.0" {
-            return Err(crate::error::CompileError::Validation(alloc::format!(
-                "Unsupported schema_version '{}': this compiler accepts '1.0' (or omitted). \
+    if let Some(v) = script.schema_version.as_deref()
+        && v != "1.0"
+    {
+        return Err(crate::error::CompileError::Validation(alloc::format!(
+            "Unsupported schema_version '{}': this compiler accepts '1.0' (or omitted). \
                  Upgrade the compiler or emit an intent matching the supported schema.",
-                v
-            )));
-        }
+            v
+        )));
     }
 
     // Load registry for the target network
@@ -172,16 +172,16 @@ pub fn compile_with_allowances(
     // exceeds it, reject — the intent outruns what the user pre-authorized
     // for this session.
     for (token, required) in enriched.required_pulls.iter() {
-        if let Some(cap) = max_spend_map.get(token) {
-            if required > cap {
-                return Err(crate::error::CompileError::Validation(alloc::format!(
-                    "Token {} required-pull {} exceeds the caller's max_spend cap {}. \
+        if let Some(cap) = max_spend_map.get(token)
+            && required > cap
+        {
+            return Err(crate::error::CompileError::Validation(alloc::format!(
+                "Token {} required-pull {} exceeds the caller's max_spend cap {}. \
                      The intent tries to spend more than was pre-authorized for this session.",
-                    token,
-                    required,
-                    cap
-                )));
-            }
+                token,
+                required,
+                cap
+            )));
         }
     }
 
@@ -231,13 +231,14 @@ pub fn compile_with_allowances(
         if !has_deadline_source {
             return Err(crate::error::CompileError::DeadlineMissing);
         }
-        if let (Some(explicit), Some(current)) = (script.deadline, script.current_timestamp) {
-            if explicit > 0 && explicit <= current {
-                return Err(crate::error::CompileError::DeadlineInPast {
-                    deadline: explicit,
-                    current_timestamp: current,
-                });
-            }
+        if let (Some(explicit), Some(current)) = (script.deadline, script.current_timestamp)
+            && explicit > 0
+            && explicit <= current
+        {
+            return Err(crate::error::CompileError::DeadlineInPast {
+                deadline: explicit,
+                current_timestamp: current,
+            });
         }
     }
 
