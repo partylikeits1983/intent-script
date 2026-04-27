@@ -135,11 +135,10 @@ pub fn expand_leverage(
         )));
     }
     let max_leverage_denom: u64 = (10_000u64).saturating_sub(effective_ltv as u64);
-    let max_leverage_scaled: u64 = if max_leverage_denom == 0 {
-        u64::MAX // infinite — impossible, LTV < 100%
-    } else {
-        LEVERAGE_SCALE * 10_000 / max_leverage_denom
-    };
+    // Returns u64::MAX when denom == 0 (infinite leverage — impossible since LTV < 100%).
+    let max_leverage_scaled: u64 = (LEVERAGE_SCALE * 10_000)
+        .checked_div(max_leverage_denom)
+        .unwrap_or(u64::MAX);
     if leverage_scaled > max_leverage_scaled {
         return Err(CompileError::Validation(format!(
             "leverage {}x exceeds max {:.4}x for collateral '{}' (Aave LTV {} bps)",

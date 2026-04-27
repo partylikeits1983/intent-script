@@ -126,15 +126,15 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
                 // Task 3: Aave health factor check
                 validate_health_factor(intent.user_balances.as_ref(), &mut warnings)?;
             }
-            ResolvedStep::AaveV3Withdraw { pool, asset, .. } => {
-                // Rule 2: Withdraw requires prior deposit or existing position
-                if !deposited_protocols.contains(pool) {
-                    validate_withdraw_feasibility(
-                        *asset,
-                        intent.user_balances.as_ref(),
-                        &mut warnings,
-                    )?;
-                }
+            // Rule 2: Withdraw requires prior deposit or existing position
+            ResolvedStep::AaveV3Withdraw { pool, asset, .. }
+                if !deposited_protocols.contains(pool) =>
+            {
+                validate_withdraw_feasibility(
+                    *asset,
+                    intent.user_balances.as_ref(),
+                    &mut warnings,
+                )?;
             }
             _ => {}
         }
@@ -495,12 +495,12 @@ fn validate_send(step: &ResolvedStep) -> Result<()> {
     match step {
         ResolvedStep::SendErc20 { to, .. }
         | ResolvedStep::SendEth { to, .. }
-        | ResolvedStep::SendErc721 { to, .. } => {
-            if *to == Address::ZERO {
-                return Err(CompileError::InvalidChain(
-                    "Cannot send to the zero address".to_string(),
-                ));
-            }
+        | ResolvedStep::SendErc721 { to, .. }
+            if *to == Address::ZERO =>
+        {
+            return Err(CompileError::InvalidChain(
+                "Cannot send to the zero address".to_string(),
+            ));
         }
         _ => {}
     }
