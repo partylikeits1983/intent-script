@@ -10,12 +10,18 @@
 |----------|---------|---------|-------------------|-------------|
 | **Uniswap** | V3 | `swap` (exactInputSingle) | `0xE592427A0AEce92De3Edee1F18E0157C05861564` | `adapters/uniswap_v3.rs` |
 | **Uniswap** | V3 LP | `lp_mint`, `lp_increase`, `lp_decrease`, `lp_collect` | NPM `0xC36442b4a4522E871399CD717aBDD847Ab11FE88` | `adapters/uniswap_v3_lp.rs` |
-| **Aave** | V3 | `deposit`, `borrow`, `withdraw` | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` | `adapters/aave_v3.rs` |
+| **Aave** | V3 | `deposit`, `borrow`, `withdraw`, `repay` (via `close_position`) | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` | `adapters/aave_v3.rs` |
+| **Morpho Blue** | — | `deposit`/`borrow`/`withdraw` with required `market`; optional `as: "collateral"` discriminator | `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` | `adapters/morpho.rs` |
 | **Lido** | — | `stake` (ETH→stETH), `wrap` (stETH→wstETH), `unwrap` (wstETH→stETH), `request_withdrawal`, `claim_withdrawal` | stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84`, Queue `0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1` | `adapters/lido.rs` |
 | **WETH9** | — | `wrap` (ETH→WETH), `unwrap` (WETH→ETH) | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | `adapters/wrap.rs` |
-| **1inch** | Fusion v6 | `swap` (calldata passthrough) | `0x111111125421cA6dc452d289314280a0f8842A65` | `adapters/oneinch.rs` |
+| **Balancer V2** | — | `flashloan` (0% fee, recursive inner pipeline) + `long`/`short`/`close_position` leverage sugar | Vault `0xBA12222222228d8Ba445958a75a0704d566BF2C8` | `adapters/balancer.rs`, `compiler/leverage.rs` |
+| **Across** | V3 | `bridge` (source-chain `depositV3` only) | SpokePool `0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5` | `adapters/across.rs` |
 | **ERC-20** | — | `approve`, `transferFrom`, `permit`, `transfer` | Any ERC-20 | `adapters/erc20.rs` |
-| **Send** | — | ERC-20 transfer, ETH send, ERC-721 safeTransferFrom | Any | `adapters/send.rs` |
+| **Send** | — | ERC-20 transfer, ETH send, ERC-721 safeTransferFrom (first-class step types — do not re-implement) | Any | `adapters/send.rs` |
+
+### IntentRouter fee mechanism
+
+The IntentRouter collects a protocol skim at sweep time: `feeBps` (default **10 bps** = 0.10%) of each swept ERC-20 balance is transferred to `feeRecipient` before the remainder is returned to the signer. ETH refunds apply the same skim. Fees are hard-capped at **100 bps** (1%) and can only be changed by the owner via `queueFee(newBps, newRecipient)` → `applyFee()` after a **24-hour timelock**. The compiler reads the active `fee_bps` from `protocols.intent_router.fee_bps` and threads it into `step_produces` so that `"amount": "all"` downstream consumers see the post-skim floor.
 
 ### Supported Multi-Step Flows (via IntentRouter)
 
@@ -34,6 +40,10 @@
 | **Uniswap V3 LP Mint** | lp_mint | transferFrom×2 + approve(NPM)×2 + mint (NFT → signer) + sweep(pair) |
 | **Uniswap V3 LP Increase** | lp_increase | transferFrom×2 + approve(NPM)×2 + increaseLiquidity + sweep(pair) |
 | **Uniswap V3 LP Decrease + Collect** | lp_decrease → lp_collect | decreaseLiquidity + collect + sweep(pair) |
+| **Morpho supply + borrow** | deposit(as=collateral) → borrow | transferFrom + approve(pool) + supplyCollateral + borrow(receiver=router) + sweep(loan) |
+| **Balancer flashloan** | flashloan { then: [...] } | vault.flashLoan(recipient=router, …) — router.receiveFlashLoan decodes inner Call[], executes each, transfers owed amount back |
+| **Leveraged long/short** | long | close_position | Desugars to Balancer flashloan wrapping supply→borrow→swap (open) or repay→withdraw→swap (close) |
+| **Across bridge** | bridge | transferFrom + approve(spoke_pool) + depositV3 (no sweep — tokens in flight) |
 
 ### Execution Modes
 

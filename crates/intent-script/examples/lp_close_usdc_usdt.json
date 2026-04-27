@@ -1,0 +1,16 @@
+{
+  "network": "anvil",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    {
+      "lp_decrease": {
+        "position_id": "{{POSITION_ID}}",
+        "token0": "USDC",
+        "token1": "USDT",
+        "liquidity": "1000",
+        "min_amount0": "0",
+        "min_amount1": "0.000001"
+      }
+    }
+  ]
+}

@@ -18,7 +18,11 @@ fn call_typehash() -> [u8; 32] {
 }
 
 fn intent_batch_typehash() -> [u8; 32] {
-    keccak256(b"IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)").0
+    // B9: `totalValue` is the sum of every inner call's `value`. Binding
+    // it into the signed struct forces the relayer to attach exactly that
+    // much ETH — otherwise a hallucinated / adversarial relayer could top
+    // the batch up beyond what any call actually needs.
+    keccak256(b"IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)").0
 }
 
 /// Compute the EIP-712 domain separator.
@@ -89,6 +93,7 @@ pub fn hash_intent_batch(
     tokens_to_sweep: &[Address],
     nonce: u64,
     deadline: u64,
+    total_value: U256,
 ) -> [u8; 32] {
     let calls_hash = hash_calls(calls);
 
@@ -101,8 +106,8 @@ pub fn hash_intent_batch(
     }
     let tokens_hash = keccak256(&tokens_packed);
 
-    // abi.encode(INTENT_BATCH_TYPEHASH, signer, callsHash, tokensHash, nonce, deadline)
-    let mut encoded = Vec::with_capacity(6 * 32);
+    // abi.encode(INTENT_BATCH_TYPEHASH, signer, callsHash, tokensHash, nonce, deadline, totalValue)
+    let mut encoded = Vec::with_capacity(7 * 32);
     encoded.extend_from_slice(&intent_batch_typehash());
 
     // signer as bytes32
@@ -121,6 +126,9 @@ pub fn hash_intent_batch(
     let mut deadline_bytes = [0u8; 32];
     deadline_bytes[24..32].copy_from_slice(&deadline.to_be_bytes());
     encoded.extend_from_slice(&deadline_bytes);
+
+    // totalValue as uint256
+    encoded.extend_from_slice(&total_value.to_be_bytes::<32>());
 
     keccak256(&encoded).0
 }
@@ -156,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_intent_batch_typehash() {
-        let computed = keccak256(b"IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)");
+        let computed = keccak256(b"IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)");
         assert_eq!(computed.0, intent_batch_typehash());
     }
 
@@ -178,7 +186,7 @@ mod tests {
         let hash = hash_calls(&calls);
 
         // keccak256("") for empty encodePacked
-        let expected = keccak256(&[]);
+        let expected = keccak256([]);
         assert_eq!(hash, expected.0);
     }
 

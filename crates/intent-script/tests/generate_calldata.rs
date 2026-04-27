@@ -29,9 +29,33 @@ fn load_config() -> (String, String, String) {
     (chains, assets, protocols)
 }
 
+const TEST_DEFAULT_CURRENT_TIMESTAMP: u64 = 1_712_344_000;
+fn inject_default_timestamp_if_missing(input: &str) -> String {
+    let mut v: serde_json::Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(_) => return input.to_string(),
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return input.to_string();
+    };
+    let has_deadline = obj
+        .get("deadline")
+        .and_then(|d| d.as_u64())
+        .is_some_and(|d| d > 0);
+    let has_ts = obj.contains_key("current_timestamp");
+    if !has_deadline && !has_ts {
+        obj.insert(
+            "current_timestamp".into(),
+            serde_json::Value::Number(TEST_DEFAULT_CURRENT_TIMESTAMP.into()),
+        );
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| input.to_string())
+}
+
 fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
     let (c, a, p) = load_config();
-    compile(input, &c, &a, &p)
+    let input = inject_default_timestamp_if_missing(input);
+    compile(&input, &c, &a, &p)
 }
 
 /// Get the path to the Foundry fixtures directory.
@@ -250,4 +274,86 @@ fn generate_lp_mint_usdc_weth_calldata() {
 
     let output = do_compile(&input).expect("compile should succeed");
     write_calldata("lp_mint_usdc_weth", &output);
+}
+
+#[test]
+fn generate_morpho_supply_collateral_and_borrow_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/morpho_collateral_borrow.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read morpho_collateral_borrow.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("morpho_borrow_usdc_against_weth", &output);
+}
+
+#[test]
+fn generate_bridge_usdc_arbitrum_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/bridge_usdc_arbitrum.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read bridge_usdc_arbitrum.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("bridge_usdc_to_arbitrum", &output);
+}
+
+#[test]
+fn generate_lp_mint_usdc_weth_wide_calldata() {
+    // Wide tick range LP mint for the fork lifecycle test. The range covers
+    // ETH ~ $1200..$5900 so the mint succeeds at any realistic fork block.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/lp_mint_usdc_weth_wide.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read lp_mint_usdc_weth_wide.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("lp_mint_usdc_weth_wide", &output);
+}
+
+#[test]
+fn generate_long_wsteth_leverage_calldata() {
+    // 1.5x long wstETH via Balancer flashloan + Aave V3 supply/borrow +
+    // Uniswap V3 swap. wstETH is used instead of WETH because Aave V3 set
+    // WETH LTV to 0 on mainnet, so borrowing against WETH reverts. 1.5x
+    // (vs 2x) gives a comfortable LTV margin plus swap slippage buffer
+    // against current pool-vs-oracle divergence on the USDC/wstETH pair.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/long_wsteth_1_5x.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read long_wsteth_1_5x.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("long_wsteth_1_5x", &output);
+}
+
+#[test]
+fn generate_flashloan_aave_loop_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/flashloan_aave_loop.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read flashloan_aave_loop.json example file");
+
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("loop_aave_3x_weth", &output);
+}
+
+#[test]
+fn generate_morpho_supply_usdc_calldata() {
+    // Single-step loan-side supply: exercises the MorphoSupply variant
+    // with no `as: "collateral"` discriminator.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "morpho",
+                           "market": "USDC-WETH-86" } }
+        ]
+    }"#;
+    let output = do_compile(input).expect("compile should succeed");
+    write_calldata("morpho_supply_usdc", &output);
 }

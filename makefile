@@ -7,9 +7,10 @@ export
 # value still takes precedence.
 ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
 
-.PHONY: format build test test-compiler generate-calldata generate-fixtures \
-	test-foundry test-router e2e-test test-anvil test-fork-e2e \
-	test-fork-local test-all compile-intent start-anvil
+.PHONY: ci fmt-check clippy format build test test-compiler generate-calldata \
+	generate-fixtures generate-integration-fixtures test-foundry test-router \
+	e2e-test test-anvil test-fork-e2e test-fork-integration test-fork-local \
+	test-all compile-intent start-anvil wasm-build server-compat
 
 format:
 	cargo fmt --all
@@ -31,13 +32,19 @@ generate-calldata:
 	cargo test -p intent-script --test generate_calldata -- --nocapture
 
 # Generate EIP-712 batch fixture files for fork tests
-generate-fixtures: generate-calldata
+generate-fixtures: generate-calldata generate-integration-fixtures
 	cargo test -p intent-script --test generate_eip712_fixtures -- --nocapture
 
-# Run Foundry tests excluding fork E2E (requires: make generate-calldata first)
-# Fork E2E tests need --fork-url and are run separately via make test-fork-e2e
+# Generate the *_batch.bin / *_single.bin fixtures consumed by
+# IntentForkIntegration.t.sol's eight DSL-driven scenarios.
+generate-integration-fixtures:
+	cargo test -p intent-script --test generate_integration_fixtures -- --nocapture
+
+# Run Foundry tests excluding fork suites (requires: make generate-calldata first).
+# Both IntentForkE2E and IntentForkIntegration need --fork-url and are run
+# separately via make test-fork-e2e / make test-fork-integration.
 test-foundry:
-	cd contracts && forge test --no-match-contract IntentForkE2E -vvv
+	cd contracts && forge test --no-match-contract 'IntentFork(E2E|Integration)' -vvv
 
 # Full test flow: generate calldata, then run Foundry tests
 test-router: generate-calldata test-foundry
@@ -55,6 +62,10 @@ test-anvil:
 test-fork-e2e: generate-fixtures
 	cd contracts && forge test --mc IntentForkE2E --fork-url $(ETH_RPC_URL) -vvv
 
+# Run the DSL → compile → sign → executeSigned integration suite on fork.
+test-fork-integration: generate-integration-fixtures
+	cd contracts && forge test --mc IntentForkIntegration --fork-url $(ETH_RPC_URL) -vvv
+
 # Run legacy fork tests (local mock-based, misleadingly named)
 test-fork-local:
 	cd contracts && forge test --mc IntentLocalTests -vvv
@@ -69,3 +80,29 @@ compile-intent:
 # Start a local anvil node forking Ethereum L1 with chain id 31337
 start-anvil:
 	./scripts/start-anvil.sh
+
+# Run the same gate the GitHub Actions `ci` workflow runs locally.
+# Skips test-evm (needs ETH_RPC_URL) — run `make test-anvil` separately
+# when you want fork coverage. Skips wasm-build if wasm-pack is missing.
+fmt-check:
+	cargo fmt --all -- --check
+
+clippy:
+	cargo clippy --all-targets -- -D warnings
+
+# Verify intent-script compiles as a non-WASM library dep (the shape consumed
+# by intentOS-server's WS-1C compile handler).
+server-compat:
+	cargo check -p intent-script --all-targets
+
+# Build the browser WASM bundle the UI consumes via `pnpm build:wasm`.
+# Soft-skip when wasm-pack isn't installed locally.
+wasm-build:
+	@if command -v wasm-pack >/dev/null 2>&1; then \
+		wasm-pack build --target web --release crates/intent-script-wasm; \
+	else \
+		echo "wasm-pack not installed — skipping wasm-build (CI runs this job in GHA)"; \
+	fi
+
+ci: fmt-check clippy test-compiler generate-calldata generate-integration-fixtures test-foundry server-compat wasm-build
+	@echo "ci ✓"

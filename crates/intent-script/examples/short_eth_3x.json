@@ -1,0 +1,17 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "current_timestamp": 1714000000,
+  "steps": [
+    {
+      "short": {
+        "collateral": "USDC",
+        "borrow": "WETH",
+        "amount": "10000",
+        "leverage": "3",
+        "slippage": "200",
+        "price": "3500"
+      }
+    }
+  ]
+}

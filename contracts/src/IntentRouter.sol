@@ -19,7 +19,7 @@ contract IntentRouter is ReentrancyGuard {
         "Call(address target,bytes callData,uint256 value)"
     );
     bytes32 public constant INTENT_BATCH_TYPEHASH = keccak256(
-        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)"
+        "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)"
     );
 
     bytes32 public immutable DOMAIN_SEPARATOR;
@@ -29,6 +29,29 @@ contract IntentRouter is ReentrancyGuard {
     // ─── Allowlist (Task 8) ─────────────────────────────────
     address public owner;
     mapping(address => bool) public allowedTargets;
+
+    // ─── Selector allowlist (B7) ────────────────────────────
+    /// Per-target function-selector allowlist. Once `selectorAllowlistEnforced`
+    /// is true, every call in the batch must have its calldata's first 4
+    /// bytes in `allowedSelectors[target]`. Without this, allowlisting
+    /// `pool` for `supply(...)` also implicitly allowed every other public
+    /// function that happens to be callable by anyone on that target
+    /// (including, e.g., emergency helpers with loose access control).
+    mapping(address => mapping(bytes4 => bool)) public allowedSelectors;
+    bool public selectorAllowlistEnforced;
+
+    event SelectorAllowed(address indexed target, bytes4 indexed selector, bool allowed);
+    event SelectorAllowlistEnforced(bool enforced);
+
+    // ─── Balancer V2 flashloan ──────────────────────────────
+    /// Balancer V2 Vault mainnet address — used for 0% flashloans.
+    address public constant BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
+    /// `flashLoan(address,address[],uint256[],bytes)` selector.
+    bytes4 public constant FLASHLOAN_SELECTOR = 0x5c38449e;
+    /// Transient-storage slot (EIP-1153) used as a boolean sentinel while a
+    /// flashloan call is in flight. Set just before `vault.flashLoan` and
+    /// cleared in `receiveFlashLoan` before the inner pipeline runs.
+    bytes32 private constant FLASHLOAN_GUARD_SLOT = keccak256("intent.flashloan.guard");
 
     // ─── Fees ───────────────────────────────────────────────
     uint16 public constant MAX_FEE_BPS = 100;   // 1.00% hard cap
@@ -40,12 +63,28 @@ contract IntentRouter is ReentrancyGuard {
     address public pendingFeeRecipient; // queued recipient
     uint64  public pendingFeeApplyAt;   // earliest timestamp at which queued fee may be applied; 0 = none queued
 
+    // ─── Pause (B11) ────────────────────────────────────────
+    /// Emergency kill-switch. Owner can pause immediately to halt the
+    /// blast radius when a compromised target / exploit is detected.
+    /// Unpausing is time-locked by FEE_TIMELOCK so a compromised owner
+    /// key can't toggle the router back on at will.
+    bool public paused;
+    uint64 public pendingUnpauseAt; // 0 = none pending
+
     event FeeQueued(uint16 bps, address recipient, uint64 applyAt);
     event FeeApplied(uint16 bps, address recipient);
     event FeeCollected(address indexed token, address indexed recipient, uint256 amount);
+    event Paused();
+    event UnpauseQueued(uint64 applyAt);
+    event Unpaused();
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused, "Router paused");
         _;
     }
 
@@ -57,12 +96,20 @@ contract IntentRouter is ReentrancyGuard {
     }
 
     /// @notice A signed batch of calls with replay protection.
+    ///
+    /// `totalValue` (B9) is the sum of every inner call's `value`. The
+    /// relayer must attach exactly that amount of ETH when calling
+    /// `executeSigned` — otherwise a hallucinated / adversarial relayer
+    /// could top up the batch with extra ETH and trigger native-value
+    /// semantics on a permissive allowlisted target. The signature binds
+    /// this sum into the EIP-712 digest.
     struct IntentBatch {
         address signer;
         Call[] calls;
         address[] tokensToSweep;
         uint256 nonce;
         uint256 deadline;
+        uint256 totalValue;
     }
 
     constructor() {
@@ -90,6 +137,38 @@ contract IntentRouter is ReentrancyGuard {
         }
     }
 
+    /// @notice Set whether a `(target, selector)` pair is allowed. Takes
+    ///         effect once `setSelectorAllowlistEnforced(true)` has been
+    ///         called. Idempotent.
+    function setAllowedSelector(address target, bytes4 selector, bool allowed)
+        external onlyOwner
+    {
+        allowedSelectors[target][selector] = allowed;
+        emit SelectorAllowed(target, selector, allowed);
+    }
+
+    /// @notice Batch-set allowed selectors for a single target.
+    function setAllowedSelectors(
+        address target,
+        bytes4[] calldata selectors,
+        bool allowed
+    ) external onlyOwner {
+        for (uint256 i = 0; i < selectors.length; i++) {
+            allowedSelectors[target][selectors[i]] = allowed;
+            emit SelectorAllowed(target, selectors[i], allowed);
+        }
+    }
+
+    /// @notice Toggle selector-allowlist enforcement. Deploy with
+    ///         `false`, populate the allowlist, then flip to `true`.
+    ///         Grandfathering existing deployments avoids a
+    ///         big-bang migration; an empty allowlist with enforcement
+    ///         on would brick every call.
+    function setSelectorAllowlistEnforced(bool enforced) external onlyOwner {
+        selectorAllowlistEnforced = enforced;
+        emit SelectorAllowlistEnforced(enforced);
+    }
+
     // ─── Fee governance ─────────────────────────────────────
 
     /// @notice Queue a new fee rate + recipient. The new fee can be activated by
@@ -114,6 +193,38 @@ contract IntentRouter is ReentrancyGuard {
         emit FeeApplied(feeBps, feeRecipient);
     }
 
+    // ─── Pause ───────────────────────────────────────────────
+
+    /// @notice Immediate pause (owner only). No timelock — speed matters
+    ///         when halting a live exploit.
+    function pause() external onlyOwner {
+        paused = true;
+        pendingUnpauseAt = 0; // cancel any in-flight unpause
+        emit Paused();
+    }
+
+    /// @notice Queue an unpause. Must wait FEE_TIMELOCK seconds before
+    ///         applyUnpause() can take effect. Timelocking the *unpause*
+    ///         side prevents a compromised owner key from flipping the
+    ///         switch back on at will.
+    function queueUnpause() external onlyOwner {
+        require(paused, "not paused");
+        pendingUnpauseAt = uint64(block.timestamp + FEE_TIMELOCK);
+        emit UnpauseQueued(pendingUnpauseAt);
+    }
+
+    /// @notice Apply a queued unpause once the timelock has elapsed.
+    ///         Permissionless so the owner can't delay the unpause beyond
+    ///         the timelock by withholding their key.
+    function applyUnpause() external {
+        require(paused, "not paused");
+        require(pendingUnpauseAt != 0, "no pending unpause");
+        require(block.timestamp >= pendingUnpauseAt, "timelock");
+        paused = false;
+        pendingUnpauseAt = 0;
+        emit Unpaused();
+    }
+
     // ─── ERC721 receiver ────────────────────────────────────
 
     /// @notice Accept ERC-721 safe transfers into the router. No custody logic — NFTs that
@@ -131,7 +242,7 @@ contract IntentRouter is ReentrancyGuard {
     function executeDirect(
         Call[] calldata calls,
         address[] calldata tokensToSweep
-    ) external payable nonReentrant {
+    ) external payable nonReentrant whenNotPaused {
         _executeCalls(calls);
         _sweep(tokensToSweep, msg.sender);
         _refundETH(msg.sender);
@@ -145,9 +256,16 @@ contract IntentRouter is ReentrancyGuard {
     function executeSigned(
         IntentBatch calldata batch,
         bytes calldata signature
-    ) external payable nonReentrant {
+    ) external payable nonReentrant whenNotPaused {
         // Verify deadline (Task 2: require non-zero deadline)
         require(batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline");
+
+        // B9: Bound attached ETH to the signed total. Without this a
+        // relayer could top msg.value up beyond what any inner call
+        // requested and trigger native-value semantics on a permissive
+        // allowlisted target. Equality (not <=) so excess ETH cannot
+        // accumulate in the router either.
+        require(msg.value == batch.totalValue, "msg.value mismatch");
 
         // Verify nonce
         require(batch.nonce == nonces[batch.signer], "Invalid nonce");
@@ -167,8 +285,33 @@ contract IntentRouter is ReentrancyGuard {
     // ─── Internal helpers ───────────────────────────────────
 
     function _executeCalls(Call[] calldata calls) internal {
+        bool enforceSelectors = selectorAllowlistEnforced;
         for (uint256 i = 0; i < calls.length; i++) {
             require(allowedTargets[calls[i].target], "Target not allowed");
+            if (enforceSelectors) {
+                require(
+                    calls[i].callData.length >= 4,
+                    "Selector required"
+                );
+                require(
+                    allowedSelectors[calls[i].target][bytes4(calls[i].callData[:4])],
+                    "Selector not allowed"
+                );
+            }
+
+            // Just before dispatching a Balancer flashLoan, arm the transient
+            // sentinel. `receiveFlashLoan` requires it to be set and clears it
+            // before running inner calls. This defends against a compromised
+            // allowlisted target re-entering `receiveFlashLoan` via delegatecall.
+            if (
+                calls[i].target == BALANCER_VAULT
+                && calls[i].callData.length >= 4
+                && bytes4(calls[i].callData[:4]) == FLASHLOAN_SELECTOR
+            ) {
+                bytes32 slot = FLASHLOAN_GUARD_SLOT;
+                assembly { tstore(slot, 1) }
+            }
+
             (bool success, bytes memory result) = calls[i].target.call{ value: calls[i].value }(
                 calls[i].callData
             );
@@ -178,6 +321,67 @@ contract IntentRouter is ReentrancyGuard {
                     revert(add(result, 32), mload(result))
                 }
             }
+        }
+    }
+
+    /// Execute a single call held in memory (used by `receiveFlashLoan`).
+    /// Applies the same target + selector allowlist check as `_executeCalls`.
+    function _execOne(Call memory call) internal {
+        require(allowedTargets[call.target], "Target not allowed");
+        if (selectorAllowlistEnforced) {
+            require(call.callData.length >= 4, "Selector required");
+            bytes4 sel;
+            bytes memory cd = call.callData;
+            assembly { sel := mload(add(cd, 32)) }
+            require(
+                allowedSelectors[call.target][sel],
+                "Selector not allowed"
+            );
+        }
+        (bool success, bytes memory result) = call.target.call{ value: call.value }(call.callData);
+        if (!success) {
+            assembly { revert(add(result, 32), mload(result)) }
+        }
+    }
+
+    /// @notice Balancer V2 flashloan callback. Balancer transfers `amounts[i]`
+    ///         of each `tokens[i]` to this contract before calling this
+    ///         function, then asserts `balanceOf(self) >= pre + feeAmounts[i]`
+    ///         after return. We decode `userData` into an inner `Call[]`,
+    ///         execute it (subject to the allowlist), and transfer the owed
+    ///         amount back to the Vault. The sentinel must have been armed by
+    ///         `_executeCalls` immediately before the flashLoan call.
+    function receiveFlashLoan(
+        address[] calldata tokens,
+        uint256[] calldata amounts,
+        uint256[] calldata feeAmounts,
+        bytes calldata userData
+    ) external {
+        require(msg.sender == BALANCER_VAULT, "not vault");
+
+        bytes32 slot = FLASHLOAN_GUARD_SLOT;
+        bytes32 guard;
+        assembly { guard := tload(slot) }
+        require(guard != bytes32(0), "no flashloan in progress");
+        // Clear before running inner calls so a nested flashLoan via a
+        // compromised allowlisted target can't satisfy the sentinel check.
+        assembly { tstore(slot, 0) }
+
+        Call[] memory innerCalls = abi.decode(userData, (Call[]));
+        for (uint256 i = 0; i < innerCalls.length; i++) {
+            _execOne(innerCalls[i]);
+        }
+
+        // Repay: Vault checks `balanceOf(address(this)) >= pre + feeAmounts[i]`.
+        // Transfer the owed amount back explicitly rather than leaving it to
+        // the Vault's balance comparison — cheaper on non-rebasing tokens and
+        // keeps semantics obvious.
+        for (uint256 i = 0; i < tokens.length; i++) {
+            uint256 owed = amounts[i] + feeAmounts[i];
+            require(
+                IERC20(tokens[i]).transfer(BALANCER_VAULT, owed),
+                "flashloan repay fail"
+            );
         }
     }
 
@@ -227,7 +431,8 @@ contract IntentRouter is ReentrancyGuard {
             _hashCalls(batch.calls),
             keccak256(abi.encodePacked(batch.tokensToSweep)),
             batch.nonce,
-            batch.deadline
+            batch.deadline,
+            batch.totalValue
         ));
     }
 
@@ -254,7 +459,20 @@ contract IntentRouter is ReentrancyGuard {
             s := calldataload(add(sig.offset, 32))
             v := byte(0, calldataload(add(sig.offset, 64)))
         }
-        return ecrecover(digest, v, r, s);
+        // EIP-2 canonical signature: reject the high-s half (malleable form).
+        // The nonce check already prevents same-signer replay, so this is
+        // defense-in-depth — but future changes that key on signature bytes
+        // (dedup, receipt indexing, off-chain verifiers) break silently
+        // without the canonical check. The bound is n/2 where n is the
+        // secp256k1 curve order.
+        require(
+            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+            "Signature s value not canonical"
+        );
+        require(v == 27 || v == 28, "Invalid signature v value");
+        address recovered = ecrecover(digest, v, r, s);
+        require(recovered != address(0), "ecrecover returned zero");
+        return recovered;
     }
 
     /// @notice Accept ETH transfers (e.g., from WETH.withdraw()).

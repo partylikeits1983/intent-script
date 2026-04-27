@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: cargo test (compiler)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+      - run: cargo test -p intent-script
+
+  forge-test:
+    name: forge test (no-fork)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge
+      - name: Generate calldata fixtures
+        run: cargo test -p intent-script --test generate_calldata -- --nocapture
+      - name: Generate integration fixtures
+        run: cargo test -p intent-script --test generate_integration_fixtures -- --nocapture
+      - name: forge test (excluding fork suites)
+        working-directory: contracts
+        run: forge test --no-match-contract 'IntentFork(E2E|Integration)' -vvv
+
+  test-evm:
+    name: evm-testing (anvil fork)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect ETH_RPC_URL secret
+        id: rpc
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: |
+          if [ -n "$ETH_RPC_URL" ]; then
+            echo "set=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "set=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=ETH_RPC_URL not set::skipping evm-testing fork suite. Configure ETH_RPC_URL repo secret to run."
+          fi
+      - if: steps.rpc.outputs.set == '1'
+        uses: foundry-rs/foundry-toolchain@v1
+      - if: steps.rpc.outputs.set == '1'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.rpc.outputs.set == '1'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: evm-testing
+      - if: steps.rpc.outputs.set == '1'
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: cargo test -p evm-testing -- --nocapture
+
+  wasm-build:
+    name: wasm-pack build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - run: wasm-pack build --target web --release crates/intent-script-wasm
+
+  server-compile-compat:
+    name: cargo check (server compat)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: server-compat
+      - name: Verify intent-script crate builds without WASM target
+        run: cargo check -p intent-script --all-targets

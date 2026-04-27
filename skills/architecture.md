@@ -98,7 +98,6 @@ crates/intent-script/
 │       ├── uniswap_v3.rs          # exactInputSingle
 │       ├── uniswap_v3_lp.rs       # NPM mint / increaseLiquidity / decreaseLiquidity / collect
 │       ├── lido.rs                # submit, wstETH.wrap/unwrap, WithdrawalQueue request/claim
-│       ├── oneinch.rs             # Calldata passthrough
 │       └── send.rs                # ERC-20 transfer, ETH send, ERC-721 safeTransferFrom
 ├── tests/
 │   ├── integration.rs             # Compiler integration tests
@@ -116,7 +115,6 @@ crates/intent-script/
     ├── lp_mint_usdc_weth.json          # Uniswap V3 LP full-range USDC/WETH mint
     ├── stake_lido.json                 # stake ETH in Lido
     ├── stake_lido_wsteth.json          # stake ETH + wrap stETH→wstETH
-    ├── swap_1inch.json                 # swap via 1inch (needs calldata)
     ├── swap_uniswap.json               # swap USDC→WETH via Uniswap
     ├── swap_uniswap_slippage.json      # swap with price+slippage params
     └── wrap_eth.json                   # wrap ETH→WETH

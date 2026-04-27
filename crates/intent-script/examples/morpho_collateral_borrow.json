@@ -1,0 +1,23 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "steps": [
+    {
+      "deposit": {
+        "asset": "WETH",
+        "amount": "1.0",
+        "into": "morpho",
+        "market": "USDC-WETH-86",
+        "as": "collateral"
+      }
+    },
+    {
+      "borrow": {
+        "asset": "USDC",
+        "amount": "1500",
+        "from": "morpho",
+        "market": "USDC-WETH-86"
+      }
+    }
+  ]
+}

@@ -1,7 +1,0 @@
-{
-  "network": "anvil",
-  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-  "steps": [
-    { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0xdeadbeefcafebabe" } }
-  ]
-}

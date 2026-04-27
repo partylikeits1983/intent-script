@@ -176,7 +176,7 @@ contract IntentRouterTest is Test {
     function _buildDigest(IntentRouter.IntentBatch memory batch) internal view returns (bytes32) {
         bytes32 CALL_TYPEHASH_ = keccak256("Call(address target,bytes callData,uint256 value)");
         bytes32 INTENT_BATCH_TYPEHASH_ = keccak256(
-            "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline)Call(address target,bytes callData,uint256 value)"
+            "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)"
         );
 
         // Hash calls
@@ -191,14 +191,15 @@ contract IntentRouterTest is Test {
         }
         bytes32 callsHash = keccak256(abi.encodePacked(callHashes));
 
-        // Hash struct
+        // Hash struct (B9: totalValue is part of the signed digest)
         bytes32 structHash = keccak256(abi.encode(
             INTENT_BATCH_TYPEHASH_,
             batch.signer,
             callsHash,
             keccak256(abi.encodePacked(batch.tokensToSweep)),
             batch.nonce,
-            batch.deadline
+            batch.deadline,
+            batch.totalValue
         ));
 
         return keccak256(abi.encodePacked("\x19\x01", router.DOMAIN_SEPARATOR(), structHash));
@@ -227,7 +228,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 1 ether
         });
 
         // Sign the digest
@@ -268,7 +270,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 1 ether
         });
 
         // Sign with wrong key
@@ -303,7 +306,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 1000 // expired (block.timestamp is 2000)
+            deadline: 1000, // expired (block.timestamp is 2000)
+            totalValue: 1 ether
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -336,7 +340,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 1 ether
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -379,7 +384,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 5,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 1 ether
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -411,7 +417,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 1 ether
         });
 
         bytes32 digest = _buildDigest(batch);
@@ -467,7 +474,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: sweep,
             nonce: 0,
-            deadline: type(uint256).max
+            deadline: type(uint256).max,
+            totalValue: 1 ether
         });
 
         // Random signature should fail ECDSA recovery
@@ -555,7 +563,8 @@ contract IntentRouterTest is Test {
             calls: calls,
             tokensToSweep: tokensToSweep,
             nonce: 0,
-            deadline: 0 // zero deadline should be rejected
+            deadline: 0, // zero deadline should be rejected
+            totalValue: 1 ether
         });
 
         bytes32 digest = _buildDigest(batch);

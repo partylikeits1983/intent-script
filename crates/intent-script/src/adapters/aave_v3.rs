@@ -19,6 +19,7 @@ alloy_sol_types::sol! {
     function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
     function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf) external;
     function withdraw(address asset, uint256 amount, address to) external returns (uint256);
+    function repay(address asset, uint256 amount, uint256 rateMode, address onBehalfOf) external returns (uint256);
 }
 
 /// Lower an AaveV3Supply step to a concrete pool.supply() call.
@@ -81,6 +82,40 @@ pub fn lower_borrow(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         value: U256::ZERO,
         description: format!(
             "Borrow {} wei of asset {} from Aave V3 (rate mode {})",
+            amount, asset, rate_mode
+        ),
+    }])
+}
+
+/// Lower an AaveV3Repay step to a concrete pool.repay() call.
+pub fn lower_repay(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
+    let ResolvedStep::AaveV3Repay {
+        pool,
+        asset,
+        amount,
+        rate_mode,
+        on_behalf_of,
+    } = step
+    else {
+        return Err(CompileError::Adapter(
+            "Expected AaveV3Repay step".to_string(),
+        ));
+    };
+
+    let calldata = repayCall {
+        asset: *asset,
+        amount: *amount,
+        rateMode: U256::from(*rate_mode),
+        onBehalfOf: *on_behalf_of,
+    }
+    .abi_encode();
+
+    Ok(vec![ConcreteCall {
+        to: *pool,
+        calldata: Bytes::from(calldata),
+        value: U256::ZERO,
+        description: format!(
+            "Repay {} wei of asset {} to Aave V3 (rate mode {})",
             amount, asset, rate_mode
         ),
     }])

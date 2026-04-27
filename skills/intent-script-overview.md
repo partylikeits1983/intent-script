@@ -48,7 +48,6 @@ DeFi transactions are complex: they require knowing contract addresses, function
 | Borrow from Aave | `borrow` | Aave V3 | `{ "borrow": { "asset": "DAI", "amount": "1000", "from": "aave" } }` |
 | Withdraw from Aave | `withdraw` | Aave V3 | `{ "withdraw": { "asset": "USDC", "amount": "5000", "from": "aave" } }` |
 | Swap via Uniswap | `swap` | Uniswap V3 | `{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.48" } }` |
-| Swap via 1inch | `swap` (via=1inch) | 1inch v6 | `{ "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "via": "1inch", "calldata": "0x..." } }` |
 | Send ERC-20 | `send` | — | `{ "send": { "asset": "USDC", "amount": "100", "to": "0x..." } }` |
 | Send ETH | `send` | — | `{ "send": { "asset": "ETH", "amount": "1.0", "to": "0x..." } }` |
 | Send NFT | `send` | — | `{ "send": { "asset_type": "erc721", "contract": "0x...", "token_id": "42", "to": "0x..." } }` |

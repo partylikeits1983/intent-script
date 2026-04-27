@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { Test, console } from "forge-std/Test.sol";
-import { IntentRouter } from "../src/IntentRouter.sol";
-import { WETH9 } from "../src/mocks/WETH9.sol";
+import {Test, console} from "forge-std/Test.sol";
+import {IntentRouter} from "../src/IntentRouter.sol";
+import {WETH9} from "../src/mocks/WETH9.sol";
 
 /// @title IntentRouterCalldataTest
 /// @notice Tests that execute compiler-generated calldata against the router.
@@ -18,6 +18,11 @@ contract IntentRouterCalldataTest is Test {
     WETH9 public weth;
 
     address public user = makeAddr("user");
+    bytes4 internal constant APPROVE_SELECTOR = 0x095ea7b3;
+    bytes4 internal constant TRANSFER_FROM_SELECTOR = 0x23b872dd;
+    bytes4 internal constant EXACT_INPUT_SINGLE_SELECTOR = 0x414bf389;
+    bytes4 internal constant AAVE_SUPPLY_SELECTOR = 0x617ba037;
+    bytes4 internal constant AAVE_BORROW_SELECTOR = 0xa415bcad;
 
     function setUp() public {
         router = new IntentRouter();
@@ -30,6 +35,29 @@ contract IntentRouterCalldataTest is Test {
         vm.deal(user, 100 ether);
     }
 
+    function _selector(bytes memory data) internal pure returns (bytes4 sel) {
+        assembly {
+            sel := mload(add(data, 32))
+        }
+    }
+
+    function _stripSelector(bytes memory data) internal pure returns (bytes memory out) {
+        require(data.length >= 4, "calldata shorter than selector");
+        out = new bytes(data.length - 4);
+        for (uint256 i = 0; i < data.length - 4; i++) {
+            out[i] = data[i + 4];
+        }
+    }
+
+    function _decodeExecuteDirect(bytes memory data)
+        internal
+        pure
+        returns (IntentRouter.Call[] memory calls, address[] memory tokensToSweep)
+    {
+        assertEq(_selector(data), IntentRouter.executeDirect.selector, "outer selector");
+        return abi.decode(_stripSelector(data), (IntentRouter.Call[], address[]));
+    }
+
     /// @notice Test: Execute compiler-generated wrap ETH calldata.
     ///         The wrap intent produces a direct WETH.deposit() call (not batched).
     function test_executeCompilerCalldata_wrapETH() public {
@@ -40,7 +68,7 @@ contract IntentRouterCalldataTest is Test {
         // The compiler targets the mainnet WETH address, but we have a local mock.
         // For this test, we call WETH directly (single tx, no router).
         vm.prank(user);
-        (bool success,) = address(weth).call{ value: 1 ether }(callData);
+        (bool success,) = address(weth).call{value: 1 ether}(callData);
         assertTrue(success, "Wrap ETH call should succeed");
 
         assertEq(weth.balanceOf(user), 1 ether, "User should have 1 WETH");
@@ -61,19 +89,17 @@ contract IntentRouterCalldataTest is Test {
         string memory calldataHex = vm.readFile("test/fixtures/aave_deposit_usdc.txt");
         bytes memory callData = vm.parseBytes(calldataHex);
 
-        // Verify the calldata is non-empty and starts with execute() selector
         assertTrue(callData.length > 4, "Calldata should be non-empty");
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
 
-        // The execute() function selector
-        bytes4 executeSelector = IntentRouter.executeDirect.selector;
-        bytes4 calldataSelector;
-        assembly {
-            calldataSelector := mload(add(callData, 32))
-        }
-        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+        assertEq(calls.length, 3, "deposit batch should be transferFrom + approve + supply");
+        assertEq(tokensToSweep.length, 0, "pure deposit should not sweep outputs");
+        assertEq(_selector(calls[0].callData), TRANSFER_FROM_SELECTOR, "call 0 selector");
+        assertEq(_selector(calls[1].callData), APPROVE_SELECTOR, "call 1 selector");
+        assertEq(_selector(calls[2].callData), AAVE_SUPPLY_SELECTOR, "call 2 selector");
 
         console.log("Aave deposit calldata length:", callData.length);
-        console.log("Calldata selector matches router.executeDirect()");
+        console.log("Aave deposit decoded calls:", calls.length);
     }
 
     /// @notice Test: Full wrap ETH flow through the router using compiler-like calldata.
@@ -82,23 +108,18 @@ contract IntentRouterCalldataTest is Test {
     function test_wrapETH_compilerStyle_throughRouter() public {
         // Build the same calldata structure the compiler produces
         IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
-        calls[0] = IntentRouter.Call({
-            target: address(weth),
-            callData: abi.encodeWithSignature("deposit()"),
-            value: 1 ether
-        });
+        calls[0] =
+            IntentRouter.Call({target: address(weth), callData: abi.encodeWithSignature("deposit()"), value: 1 ether});
 
         address[] memory tokensToSweep = new address[](1);
         tokensToSweep[0] = address(weth);
 
         // Encode as router.executeDirect() calldata — same as what the Rust compiler produces
-        bytes memory routerCalldata = abi.encodeCall(
-            IntentRouter.executeDirect, (calls, tokensToSweep)
-        );
+        bytes memory routerCalldata = abi.encodeCall(IntentRouter.executeDirect, (calls, tokensToSweep));
 
         // Execute the raw calldata against the router
         vm.prank(user);
-        (bool success,) = address(router).call{ value: 1 ether }(routerCalldata);
+        (bool success,) = address(router).call{value: 1 ether}(routerCalldata);
         assertTrue(success, "Router execute should succeed");
 
         // Verify the result
@@ -116,18 +137,17 @@ contract IntentRouterCalldataTest is Test {
         string memory calldataHex = vm.readFile("test/fixtures/swap_usdc_weth.txt");
         bytes memory callData = vm.parseBytes(calldataHex);
 
-        // Verify non-empty and starts with execute() selector
         assertTrue(callData.length > 4, "Calldata should be non-empty");
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
 
-        bytes4 executeSelector = IntentRouter.executeDirect.selector;
-        bytes4 calldataSelector;
-        assembly {
-            calldataSelector := mload(add(callData, 32))
-        }
-        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+        assertEq(calls.length, 3, "swap batch should be transferFrom + approve + swap");
+        assertEq(tokensToSweep.length, 1, "swap should sweep output token");
+        assertEq(_selector(calls[0].callData), TRANSFER_FROM_SELECTOR, "call 0 selector");
+        assertEq(_selector(calls[1].callData), APPROVE_SELECTOR, "call 1 selector");
+        assertEq(_selector(calls[2].callData), EXACT_INPUT_SINGLE_SELECTOR, "call 2 selector");
 
         console.log("Swap USDC->WETH calldata length:", callData.length);
-        console.log("Calldata selector matches router.executeDirect()");
+        console.log("Swap USDC->WETH decoded calls:", calls.length);
     }
 
     /// @notice Test: Verify compiler-generated deposit+borrow calldata decodes correctly.
@@ -136,13 +156,14 @@ contract IntentRouterCalldataTest is Test {
         bytes memory callData = vm.parseBytes(calldataHex);
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
 
-        bytes4 executeSelector = IntentRouter.executeDirect.selector;
-        bytes4 calldataSelector;
-        assembly {
-            calldataSelector := mload(add(callData, 32))
-        }
-        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+        assertEq(calls.length, 4, "deposit+borrow batch should be 4 calls");
+        assertEq(tokensToSweep.length, 1, "deposit+borrow should sweep borrowed asset");
+        assertEq(_selector(calls[0].callData), TRANSFER_FROM_SELECTOR, "call 0 selector");
+        assertEq(_selector(calls[1].callData), APPROVE_SELECTOR, "call 1 selector");
+        assertEq(_selector(calls[2].callData), AAVE_SUPPLY_SELECTOR, "call 2 selector");
+        assertEq(_selector(calls[3].callData), AAVE_BORROW_SELECTOR, "call 3 selector");
 
         console.log("Deposit+Borrow calldata length:", callData.length);
     }
@@ -153,13 +174,16 @@ contract IntentRouterCalldataTest is Test {
         bytes memory callData = vm.parseBytes(calldataHex);
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
 
-        bytes4 executeSelector = IntentRouter.executeDirect.selector;
-        bytes4 calldataSelector;
-        assembly {
-            calldataSelector := mload(add(callData, 32))
-        }
-        assertEq(calldataSelector, executeSelector, "Calldata should target execute()");
+        assertEq(calls.length, 6, "swap+deposit+borrow batch should be 6 calls");
+        assertEq(tokensToSweep.length, 2, "swap+deposit+borrow should sweep intermediate dust + borrowed asset");
+        assertEq(_selector(calls[0].callData), TRANSFER_FROM_SELECTOR, "call 0 selector");
+        assertEq(_selector(calls[1].callData), APPROVE_SELECTOR, "call 1 selector");
+        assertEq(_selector(calls[2].callData), EXACT_INPUT_SINGLE_SELECTOR, "call 2 selector");
+        assertEq(_selector(calls[3].callData), APPROVE_SELECTOR, "call 3 selector");
+        assertEq(_selector(calls[4].callData), AAVE_SUPPLY_SELECTOR, "call 4 selector");
+        assertEq(_selector(calls[5].callData), AAVE_BORROW_SELECTOR, "call 5 selector");
 
         console.log("Swap+Deposit+Borrow calldata length:", callData.length);
     }

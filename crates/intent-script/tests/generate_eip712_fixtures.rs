@@ -39,9 +39,33 @@ fn load_config() -> (String, String, String) {
     (chains, assets, protocols)
 }
 
+const TEST_DEFAULT_CURRENT_TIMESTAMP: u64 = 1_712_344_000;
+fn inject_default_timestamp_if_missing(input: &str) -> String {
+    let mut v: serde_json::Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(_) => return input.to_string(),
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return input.to_string();
+    };
+    let has_deadline = obj
+        .get("deadline")
+        .and_then(|d| d.as_u64())
+        .is_some_and(|d| d > 0);
+    let has_ts = obj.contains_key("current_timestamp");
+    if !has_deadline && !has_ts {
+        obj.insert(
+            "current_timestamp".into(),
+            serde_json::Value::Number(TEST_DEFAULT_CURRENT_TIMESTAMP.into()),
+        );
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| input.to_string())
+}
+
 fn do_compile(input: &str) -> Result<CompileResult, intent_script::error::CompileError> {
     let (c, a, p) = load_config();
-    compile(input, &c, &a, &p)
+    let input = inject_default_timestamp_if_missing(input);
+    compile(&input, &c, &a, &p)
 }
 
 /// Get the path to the Foundry fixtures directory.

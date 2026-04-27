@@ -24,6 +24,28 @@ pub struct AssetConfig {
     pub decimals: u8,
 }
 
+/// Per-market configuration for Morpho Blue markets (keyed by a human alias).
+///
+/// The `id` is `keccak256(abi.encode(MarketParams))` — pre-computed at
+/// config-authoring time so the compiler stays deterministic and offline.
+/// Adapters reconstruct the `MarketParams` struct from the other fields when
+/// building calldata.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MorphoMarketConfig {
+    /// Loan-asset alias, e.g. "USDC".
+    pub loan: String,
+    /// Collateral-asset alias, e.g. "WETH".
+    pub collateral: String,
+    /// Oracle contract address (hex).
+    pub oracle: String,
+    /// Interest rate model address (hex).
+    pub irm: String,
+    /// Liquidation LTV as a decimal uint256 string (18-decimal fixed point).
+    pub lltv: String,
+    /// keccak256(abi.encode(MarketParams)) as a 32-byte hex string with 0x prefix.
+    pub id: String,
+}
+
 /// Protocol configuration from protocols/{network}.json
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProtocolConfig {
@@ -35,6 +57,21 @@ pub struct ProtocolConfig {
     /// Absent or `None` for non-router protocols.
     #[serde(default)]
     pub fee_bps: Option<u16>,
+    /// Lending-protocol-only: keyed market parameter table (Morpho Blue).
+    /// Absent or `None` for protocols without market-id addressing.
+    #[serde(default)]
+    pub markets: Option<HashMap<String, MorphoMarketConfig>>,
+    /// Aave-only: per-asset loan-to-value ratio in basis points (8000 = 80%).
+    /// Used by the leverage-sugar expander to cap `long`/`short` multipliers.
+    /// Values are frozen in config because the compiler has no RPC — stale
+    /// values only make the compiler more conservative, never less.
+    #[serde(default)]
+    pub ltv_bps: Option<HashMap<String, u16>>,
+    /// Aave-only: safety margin subtracted from the theoretical max leverage,
+    /// in bps (300 = 3%). `0` means honor the raw LTV floor; callers opt into
+    /// slack via an explicit `safety_margin_bps` on the leverage step.
+    #[serde(default)]
+    pub max_leverage_safety_margin_bps: Option<u16>,
 }
 
 /// Combined registry context for a specific network.
@@ -44,6 +81,9 @@ pub struct RegistryContext {
     pub chain: ChainConfig,
     pub assets: HashMap<String, AssetConfig>,
     pub protocols: HashMap<String, ProtocolConfig>,
+    /// Full chains map (all chains loaded from `chains.json`), used by bridge
+    /// steps to resolve `to_chain` aliases into their numeric `chain_id`.
+    pub all_chains: HashMap<String, ChainConfig>,
 }
 
 impl RegistryContext {
@@ -79,6 +119,7 @@ impl RegistryContext {
             chain,
             assets,
             protocols,
+            all_chains: chains,
         })
     }
 

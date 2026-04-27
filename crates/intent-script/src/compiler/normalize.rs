@@ -11,8 +11,10 @@ use alloy_primitives::{Address, Bytes, U256};
 use hashbrown::HashMap;
 
 use crate::error::{CompileError, Result, closest_match};
-use crate::ir::{ResolvedBalances, ResolvedIntent, ResolvedStep, step_produces};
-use crate::registry::RegistryContext;
+use crate::ir::{
+    MorphoMarketParams, ResolvedBalances, ResolvedIntent, ResolvedStep, step_produces,
+};
+use crate::registry::{MorphoMarketConfig, RegistryContext};
 use crate::schema::{IntentScript, Step, SwapStep};
 
 /// Collect the list of known protocol aliases for inclusion in `UnknownProtocol` errors.
@@ -53,7 +55,20 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
 
     let mut steps = Vec::new();
     for step in &script.steps {
-        let resolved = normalize_step(step, signer, registry, &mut warnings, script, &steps)?;
+        // Scratch buffer for steps a branch may want to emit *before* its
+        // primary resolved step (e.g. lp_mint auto-injects a Wrap when one
+        // side is native ETH). Almost every branch leaves this untouched.
+        let mut prepend = Vec::new();
+        let resolved = normalize_step(
+            step,
+            signer,
+            registry,
+            &mut warnings,
+            script,
+            &steps,
+            &mut prepend,
+        )?;
+        steps.extend(prepend);
         steps.push(resolved);
     }
 
@@ -72,6 +87,13 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
         None
     };
 
+    // Any step that must run inside the router's call loop (flashloans, whose
+    // callback needs the transient sentinel armed by `_executeCalls`) forces
+    // router batching even for single-call pipelines.
+    let requires_router = steps
+        .iter()
+        .any(|s| matches!(s, ResolvedStep::BalancerFlashloan { .. }));
+
     Ok(NormalizeResult {
         intent: ResolvedIntent {
             chain_id: registry.chain.chain_id,
@@ -83,6 +105,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             user_balances,
             required_pulls: Vec::new(),
             fee_bps: registry.fee_bps(),
+            requires_router,
         },
         warnings,
     })
@@ -95,6 +118,10 @@ fn normalize_step(
     warnings: &mut Vec<String>,
     script: &IntentScript,
     previous_steps: &[ResolvedStep],
+    // Scratch buffer for branches that need to emit resolved steps *before*
+    // their primary returned step — currently only `Step::LpMint` uses it,
+    // to inject a `Wrap` when one side of the pair is native ETH.
+    prepend_steps: &mut Vec<ResolvedStep>,
 ) -> Result<ResolvedStep> {
     match step {
         Step::Wrap(w) => {
@@ -217,6 +244,16 @@ fn normalize_step(
             }
         }
         Step::Deposit(d) => {
+            if d.into == "morpho" {
+                return normalize_morpho_deposit(d, signer, registry, previous_steps);
+            }
+            // Aave (and any other simple pool-keyed lending) path.
+            if d.market.is_some() || d.r#as.is_some() {
+                return Err(CompileError::Validation(format!(
+                    "'market' and 'as' are only valid when depositing into 'morpho' (got '{}')",
+                    d.into
+                )));
+            }
             let asset = resolve_asset_address(&d.asset, registry)?;
             let decimals = resolve_asset_decimals(&d.asset, registry)?;
             let amount = resolve_amount_or_all(
@@ -254,6 +291,15 @@ fn normalize_step(
             })
         }
         Step::Borrow(b) => {
+            if b.from == "morpho" {
+                return normalize_morpho_borrow(b, signer, registry, previous_steps);
+            }
+            if b.market.is_some() {
+                return Err(CompileError::Validation(format!(
+                    "'market' is only valid when borrowing from 'morpho' (got '{}')",
+                    b.from
+                )));
+            }
             let asset = resolve_asset_address(&b.asset, registry)?;
             let decimals = resolve_asset_decimals(&b.asset, registry)?;
             let amount = resolve_amount_or_all(
@@ -292,6 +338,15 @@ fn normalize_step(
             })
         }
         Step::Withdraw(w) => {
+            if w.from == "morpho" {
+                return normalize_morpho_withdraw(w, signer, registry, previous_steps);
+            }
+            if w.market.is_some() || w.r#as.is_some() {
+                return Err(CompileError::Validation(format!(
+                    "'market' and 'as' are only valid when withdrawing from 'morpho' (got '{}')",
+                    w.from
+                )));
+            }
             let asset = resolve_asset_address(&w.asset, registry)?;
             let decimals = resolve_asset_decimals(&w.asset, registry)?;
             let amount = resolve_amount_or_all(
@@ -431,63 +486,8 @@ fn normalize_step(
                         native_input,
                     })
                 }
-                "1inch" => {
-                    // Require pre-fetched calldata
-                    let calldata_hex = s.calldata.as_deref().ok_or_else(|| {
-                        CompileError::Adapter(
-                            "1inch swap requires 'calldata' field with pre-fetched calldata"
-                                .to_string(),
-                        )
-                    })?;
-
-                    // Parse hex calldata (strip 0x prefix if present)
-                    let hex_str = calldata_hex.strip_prefix("0x").unwrap_or(calldata_hex);
-                    let calldata_bytes = hex_decode(hex_str).map_err(|_| {
-                        CompileError::Adapter(format!(
-                            "Invalid hex calldata for 1inch swap: {}",
-                            calldata_hex
-                        ))
-                    })?;
-
-                    // Look up 1inch router from protocol config
-                    let protocol = registry.protocols.get("1inch").ok_or_else(|| {
-                        CompileError::UnknownProtocol {
-                            protocol: "1inch".to_string(),
-                            network: registry.network.clone(),
-                            available: known_protocols(registry),
-                        }
-                    })?;
-
-                    let router_addr = protocol.contracts.get("router").ok_or_else(|| {
-                        CompileError::Adapter(
-                            "Protocol '1inch' has no 'router' contract configured".to_string(),
-                        )
-                    })?;
-                    let router = parse_address(router_addr)?;
-
-                    // If swapping from native ETH, use WETH address as token_in
-                    let effective_token_in = if token_in == Address::ZERO {
-                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
-                    } else {
-                        token_in
-                    };
-
-                    let effective_token_out = if token_out == Address::ZERO {
-                        resolve_asset_address(&registry.chain.wrapped_native, registry)?
-                    } else {
-                        token_out
-                    };
-
-                    Ok(ResolvedStep::OneInchSwap {
-                        router,
-                        token_in: effective_token_in,
-                        token_out: effective_token_out,
-                        amount_in,
-                        calldata: Bytes::from(calldata_bytes),
-                    })
-                }
                 other => Err(CompileError::UnsupportedStep(format!(
-                    "swap via '{}' is not supported; use 'uniswap' or '1inch'",
+                    "swap via '{}' is not supported; only 'uniswap' is supported",
                     other
                 ))),
             }
@@ -655,33 +655,80 @@ fn normalize_step(
 
             let fee = parse_uniswap_fee_tier(&m.fee)?;
             let tick_spacing = uniswap_tick_spacing(fee);
-            validate_uniswap_tick_range(m.tick_lower, m.tick_upper, tick_spacing)?;
 
             let npm = resolve_uniswap_position_manager(registry)?;
+
+            // Substitute native ETH with the chain's wrapped-native (WETH):
+            // Uniswap's NPM mint takes two ERC-20 addresses as token0/token1,
+            // so a native sentinel (Address::ZERO) can't appear there. When
+            // the user names ETH, we rewrite the alias to WETH and later
+            // inject a `Wrap` step before the mint so the router holds WETH
+            // by the time NPM pulls it. Both-native is nonsensical and is
+            // rejected by `validate_asset_compatibility`.
+            let addr0_raw = resolve_asset_address(&m.token0, registry)?;
+            let addr1_raw = resolve_asset_address(&m.token1, registry)?;
+            let native0 = addr0_raw == Address::ZERO;
+            let native1 = addr1_raw == Address::ZERO;
+            if native0 && native1 {
+                return Err(CompileError::InvalidChain(
+                    "lp_mint requires at least one non-native token: \
+                     both token0 and token1 are the chain's native asset."
+                        .to_string(),
+                ));
+            }
+            let weth_alias = registry.chain.wrapped_native.clone();
+            let token0_alias_owned: String = if native0 {
+                weth_alias.clone()
+            } else {
+                m.token0.clone()
+            };
+            let token1_alias_owned: String = if native1 {
+                weth_alias.clone()
+            } else {
+                m.token1.clone()
+            };
 
             // Lexicographically sort (token0, token1) by address, swapping
             // paired amount / min fields in lockstep so the NPM sees the
             // pair in canonical order regardless of DSL-side ordering.
-            let (token0_alias, token1_alias, amount0_raw, amount1_raw, min0_raw, min1_raw) = {
-                let token0_addr = resolve_asset_address(&m.token0, registry)?;
-                let token1_addr = resolve_asset_address(&m.token1, registry)?;
+            // Sort *after* the ETH→WETH substitution so the canonical order
+            // uses WETH's real address (not the Address::ZERO sentinel).
+            // `min_amount0` / `min_amount1` are optional in the public schema:
+            // omitting them (or `null`) is equivalent to `"0"`. The range itself
+            // is the slippage guard for `lp_mint`; see the discussion in the
+            // LLM system prompt.
+            let m_min0 = m.min_amount0.as_deref().unwrap_or("0");
+            let m_min1 = m.min_amount1.as_deref().unwrap_or("0");
+            let (
+                token0_alias,
+                token1_alias,
+                amount0_raw,
+                amount1_raw,
+                min0_raw,
+                min1_raw,
+                tokens_swapped,
+            ) = {
+                let token0_addr = resolve_asset_address(&token0_alias_owned, registry)?;
+                let token1_addr = resolve_asset_address(&token1_alias_owned, registry)?;
                 if token0_addr <= token1_addr {
                     (
-                        m.token0.as_str(),
-                        m.token1.as_str(),
+                        token0_alias_owned.as_str(),
+                        token1_alias_owned.as_str(),
                         m.amount0.as_str(),
                         m.amount1.as_str(),
-                        m.min_amount0.as_str(),
-                        m.min_amount1.as_str(),
+                        m_min0,
+                        m_min1,
+                        false,
                     )
                 } else {
                     (
-                        m.token1.as_str(),
-                        m.token0.as_str(),
+                        token1_alias_owned.as_str(),
+                        token0_alias_owned.as_str(),
                         m.amount1.as_str(),
                         m.amount0.as_str(),
-                        m.min_amount1.as_str(),
-                        m.min_amount0.as_str(),
+                        m_min1,
+                        m_min0,
+                        true,
                     )
                 }
             };
@@ -690,6 +737,34 @@ fn normalize_step(
             let token1 = resolve_asset_address(token1_alias, registry)?;
             let dec0 = resolve_asset_decimals(token0_alias, registry)?;
             let dec1 = resolve_asset_decimals(token1_alias, registry)?;
+
+            // If the user wrote the native alias (e.g. "ETH") as `quote_token`,
+            // substitute it with the wrapped-native alias so the string-equality
+            // check in `classify_quote_direction` lines up against the token
+            // aliases we've already rewritten above.
+            let quote_token_override: Option<String> =
+                m.quote_token
+                    .as_deref()
+                    .and_then(|qt| match resolve_asset_address(qt, registry) {
+                        Ok(addr) if addr == Address::ZERO => Some(weth_alias.clone()),
+                        _ => None,
+                    });
+
+            // Resolve tick range from either the price form (preferred) or
+            // the raw tick form (advanced escape hatch). Exactly one of the
+            // two shapes must be supplied, per bound.
+            let (tick_lower, tick_upper) = resolve_lp_mint_ticks(
+                m,
+                token0_alias,
+                token1_alias,
+                tokens_swapped,
+                dec0,
+                dec1,
+                tick_spacing,
+                warnings,
+                quote_token_override.as_deref(),
+            )?;
+            validate_uniswap_tick_range(tick_lower, tick_upper, tick_spacing)?;
 
             reject_all_amount("lp_mint", "amount0", amount0_raw)?;
             reject_all_amount("lp_mint", "amount1", amount1_raw)?;
@@ -703,13 +778,37 @@ fn normalize_step(
 
             let deadline = resolve_step_deadline(m.deadline, script);
 
+            // If one side was native ETH, inject a preceding `Wrap` step for
+            // the exact amount the mint needs on that side. The wrap pulls
+            // msg.value → WETH into the router, which the enricher sees via
+            // `tokens_in_router`; it then skips the user-side transferFrom /
+            // prerequisite-approval for WETH and only pulls the ERC-20 side.
+            // Amount-zero single-sided mints on the native side — legitimate
+            // for out-of-range positions — must not emit a zero-value wrap
+            // (the builder rejects zero-amount steps).
+            let wrap_amount = match (native0, native1, tokens_swapped) {
+                (true, false, false) | (false, true, true) => Some(amount0),
+                (false, true, false) | (true, false, true) => Some(amount1),
+                (false, false, _) => None,
+                (true, true, _) => unreachable!("both-native lp_mint rejected above"),
+            };
+            if let Some(amt) = wrap_amount
+                && amt > U256::ZERO
+            {
+                let weth_addr = resolve_asset_address(&weth_alias, registry)?;
+                prepend_steps.push(ResolvedStep::Wrap {
+                    wrapped_token: weth_addr,
+                    amount: amt,
+                });
+            }
+
             Ok(ResolvedStep::UniswapV3LpMint {
                 npm,
                 token0,
                 token1,
                 fee,
-                tick_lower: m.tick_lower,
-                tick_upper: m.tick_upper,
+                tick_lower,
+                tick_upper,
                 amount0,
                 amount1,
                 amount0_min,
@@ -722,6 +821,10 @@ fn normalize_step(
             let npm = resolve_uniswap_position_manager(registry)?;
             let token_id = parse_u256_decimal("position_id", &inc.position_id)?;
 
+            // `min_amount0` / `min_amount1` are optional — default to `"0"`.
+            // See the `LpMintStep` branch for the rationale.
+            let inc_min0 = inc.min_amount0.as_deref().unwrap_or("0");
+            let inc_min1 = inc.min_amount1.as_deref().unwrap_or("0");
             // Sort (token0, token1) + amounts in lockstep so the compiler's
             // canonical ordering always matches the NFT's on-chain ordering.
             let (token0_alias, token1_alias, amount0_raw, amount1_raw, min0_raw, min1_raw) = {
@@ -733,8 +836,8 @@ fn normalize_step(
                         inc.token1.as_str(),
                         inc.amount0.as_str(),
                         inc.amount1.as_str(),
-                        inc.min_amount0.as_str(),
-                        inc.min_amount1.as_str(),
+                        inc_min0,
+                        inc_min1,
                     )
                 } else {
                     (
@@ -742,8 +845,8 @@ fn normalize_step(
                         inc.token0.as_str(),
                         inc.amount1.as_str(),
                         inc.amount0.as_str(),
-                        inc.min_amount1.as_str(),
-                        inc.min_amount0.as_str(),
+                        inc_min1,
+                        inc_min0,
                     )
                 }
             };
@@ -795,25 +898,21 @@ fn normalize_step(
                 })?
             };
 
+            // `min_amount0` / `min_amount1` are optional — default to `"0"`.
+            // Unlike `lp_mint`, a positive min is a legitimate sandwich guard
+            // for `lp_decrease` (prices can be pushed at removal time). We
+            // still accept omission so symmetric intents are valid.
+            let dec_min0 = dec.min_amount0.as_deref().unwrap_or("0");
+            let dec_min1 = dec.min_amount1.as_deref().unwrap_or("0");
             // Sort token aliases so min_amount{0,1} line up with the position's
             // canonical (token0, token1) ordering.
             let (token0_alias, token1_alias, min0_raw, min1_raw) = {
                 let a = resolve_asset_address(&dec.token0, registry)?;
                 let b = resolve_asset_address(&dec.token1, registry)?;
                 if a <= b {
-                    (
-                        dec.token0.as_str(),
-                        dec.token1.as_str(),
-                        dec.min_amount0.as_str(),
-                        dec.min_amount1.as_str(),
-                    )
+                    (dec.token0.as_str(), dec.token1.as_str(), dec_min0, dec_min1)
                 } else {
-                    (
-                        dec.token1.as_str(),
-                        dec.token0.as_str(),
-                        dec.min_amount1.as_str(),
-                        dec.min_amount0.as_str(),
-                    )
+                    (dec.token1.as_str(), dec.token0.as_str(), dec_min1, dec_min0)
                 }
             };
             let dec0 = resolve_asset_decimals(token0_alias, registry)?;
@@ -934,10 +1033,213 @@ fn normalize_step(
                 }
             }
         }
+        Step::Flashloan(f) => normalize_flashloan(f, signer, registry, warnings, script),
+        Step::Bridge(b) => normalize_bridge(b, signer, registry, script),
+        Step::Long(l) => crate::compiler::leverage::expand_leverage(
+            l,
+            crate::compiler::leverage::Side::Long,
+            signer,
+            registry,
+            script,
+        ),
+        Step::Short(s) => crate::compiler::leverage::expand_leverage(
+            s,
+            crate::compiler::leverage::Side::Short,
+            signer,
+            registry,
+            script,
+        ),
+        Step::ClosePosition(c) => {
+            crate::compiler::leverage::expand_close(c, signer, registry, script)
+        }
         Step::Custom(_) => Err(CompileError::UnsupportedStep(
             "custom steps are not yet implemented in v1".to_string(),
         )),
     }
+}
+
+fn normalize_bridge(
+    b: &crate::schema::BridgeStep,
+    signer: Address,
+    registry: &RegistryContext,
+    script: &IntentScript,
+) -> Result<ResolvedStep> {
+    if b.via != "across" {
+        return Err(CompileError::UnsupportedStep(format!(
+            "bridge via '{}' is not supported (only 'across' in v1)",
+            b.via
+        )));
+    }
+
+    // Native ETH rejected — Across expects pre-wrapped WETH.
+    if registry.is_native(&b.asset) {
+        return Err(CompileError::Validation(
+            "Across bridge does not accept native ETH — wrap to WETH first with a `wrap` step"
+                .to_string(),
+        ));
+    }
+
+    let protocol =
+        registry
+            .protocols
+            .get("across")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "across".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+    let spoke_addr = protocol.contracts.get("spoke_pool").ok_or_else(|| {
+        CompileError::Adapter(
+            "Protocol 'across' has no 'spoke_pool' contract configured".to_string(),
+        )
+    })?;
+    let spoke_pool = parse_address(spoke_addr)?;
+
+    let dest_chain = registry
+        .all_chains
+        .get(&b.to_chain)
+        .ok_or_else(|| CompileError::UnknownNetwork(b.to_chain.clone()))?;
+    let destination_chain_id = U256::from(dest_chain.chain_id);
+
+    let recipient = parse_address(&b.recipient)?;
+    if recipient == Address::ZERO {
+        return Err(CompileError::Validation(
+            "Across recipient cannot be the zero address".to_string(),
+        ));
+    }
+
+    let relayer_fee_bps: u64 = b.relayer_fee_bps.parse().map_err(|_| {
+        CompileError::InvalidAmount(format!(
+            "Invalid relayer_fee_bps '{}' — must be an integer 0..=50",
+            b.relayer_fee_bps
+        ))
+    })?;
+    if relayer_fee_bps > 50 {
+        return Err(CompileError::Validation(format!(
+            "Across relayer_fee_bps {} exceeds cap 50 (0.5%)",
+            relayer_fee_bps
+        )));
+    }
+
+    let input_token = resolve_asset_address(&b.asset, registry)?;
+    let decimals = resolve_asset_decimals(&b.asset, registry)?;
+    let input_amount = parse_amount(&b.amount, decimals)?;
+    let output_amount =
+        input_amount * U256::from(10_000u64 - relayer_fee_bps) / U256::from(10_000u64);
+
+    let quote_timestamp = script.current_timestamp.ok_or_else(|| {
+        CompileError::Validation(
+            "Across bridge requires 'current_timestamp' in the script (used as quote_timestamp)"
+                .to_string(),
+        )
+    })?;
+    let quote_timestamp_u32: u32 = quote_timestamp.try_into().map_err(|_| {
+        CompileError::InvalidAmount(format!(
+            "Across quote_timestamp {} does not fit in uint32",
+            quote_timestamp
+        ))
+    })?;
+    let fill_deadline: u32 = quote_timestamp_u32.saturating_add(4 * 3600);
+
+    Ok(ResolvedStep::AcrossDepositV3 {
+        spoke_pool,
+        depositor: signer,
+        recipient,
+        input_token,
+        output_token: input_token, // v1: same token on destination
+        input_amount,
+        output_amount,
+        destination_chain_id,
+        exclusive_relayer: Address::ZERO,
+        quote_timestamp: quote_timestamp_u32,
+        fill_deadline,
+        exclusivity_deadline: 0,
+        message: Bytes::new(),
+    })
+}
+
+fn normalize_flashloan(
+    f: &crate::schema::FlashloanStep,
+    signer: Address,
+    registry: &RegistryContext,
+    warnings: &mut Vec<String>,
+    script: &IntentScript,
+) -> Result<ResolvedStep> {
+    if f.via != "balancer" {
+        return Err(CompileError::UnsupportedStep(format!(
+            "flashloan via '{}' is not supported (only 'balancer' in v1)",
+            f.via
+        )));
+    }
+    if f.assets.is_empty() {
+        return Err(CompileError::Validation(
+            "flashloan requires at least one asset".to_string(),
+        ));
+    }
+
+    let balancer =
+        registry
+            .protocols
+            .get("balancer")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "balancer".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+    let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
+        CompileError::Adapter("Protocol 'balancer' has no 'vault' contract configured".to_string())
+    })?;
+    let vault = parse_address(vault_addr)?;
+
+    let mut tokens = Vec::with_capacity(f.assets.len());
+    let mut amounts = Vec::with_capacity(f.assets.len());
+    for asset in &f.assets {
+        let addr = resolve_asset_address(&asset.asset, registry)?;
+        if addr == Address::ZERO {
+            return Err(CompileError::Validation(
+                "flashloan asset cannot be native — use WETH or another ERC-20".to_string(),
+            ));
+        }
+        let dec = resolve_asset_decimals(&asset.asset, registry)?;
+        let amt = parse_amount(&asset.amount, dec)?;
+        tokens.push(addr);
+        amounts.push(amt);
+    }
+
+    // Recursively normalize the inner pipeline. Inner "all" keywords and
+    // cross-step amount flow reference only the inner pipeline, not outer
+    // steps — each inner step sees the inner-built-so-far slice.
+    let mut inner_steps: Vec<ResolvedStep> = Vec::new();
+    for step in &f.then {
+        // Reject nested flashloans here for a crisper error than validate's
+        // recursive check would give.
+        if matches!(step, Step::Flashloan(_)) {
+            return Err(CompileError::Validation(
+                "nested flashloans are not allowed (max depth 1)".to_string(),
+            ));
+        }
+        // Inner pipelines can prepend auto-injected steps (e.g. Wrap for a
+        // native-ETH lp_mint inside a flashloan) just like the top-level loop.
+        let mut prepend: Vec<ResolvedStep> = Vec::new();
+        let resolved = normalize_step(
+            step,
+            signer,
+            registry,
+            warnings,
+            script,
+            &inner_steps,
+            &mut prepend,
+        )?;
+        inner_steps.extend(prepend);
+        inner_steps.push(resolved);
+    }
+
+    Ok(ResolvedStep::BalancerFlashloan {
+        vault,
+        tokens,
+        amounts,
+        inner_steps,
+    })
 }
 
 /// Post-normalization pass: elide `Wrap ETH→WETH` steps that immediately
@@ -1025,15 +1327,15 @@ fn resolve_amount_or_all(
     if amount_str == "all" {
         let fee_bps = registry.fee_bps();
         for step in previous_steps.iter().rev() {
-            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps) {
-                if produced_token == token {
-                    if guaranteed == U256::ZERO {
-                        return Err(CompileError::InvalidChain(
-                            "Cannot use 'all': previous step has zero guaranteed output".into(),
-                        ));
-                    }
-                    return Ok(guaranteed);
+            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps)
+                && produced_token == token
+            {
+                if guaranteed == U256::ZERO {
+                    return Err(CompileError::InvalidChain(
+                        "Cannot use 'all': previous step has zero guaranteed output".into(),
+                    ));
                 }
+                return Ok(guaranteed);
             }
         }
         return Err(CompileError::InvalidChain(
@@ -1108,6 +1410,20 @@ fn compute_amount_out_minimum(
             return Err(CompileError::InvalidAmount(format!(
                 "Slippage must be between 0 and 100, got {}",
                 swap.slippage.as_deref().unwrap_or("?")
+            )));
+        }
+        // B2: Absolute slippage floor. 5% is the ceiling; anything above
+        // indicates either a hallucinated value or a pool so thin that the
+        // user should reconsider. Matches the leverage-sugar cap already
+        // enforced in leverage.rs.
+        if slippage_bps > crate::compiler::validate::MAX_SLIPPAGE_BPS {
+            return Err(CompileError::InvalidAmount(format!(
+                "Slippage {} bps exceeds the absolute cap of {} bps ({}%). \
+                 If you genuinely need wider slippage, re-quote or split the \
+                 swap; otherwise tighten the value.",
+                slippage_bps,
+                crate::compiler::validate::MAX_SLIPPAGE_BPS,
+                crate::compiler::validate::MAX_SLIPPAGE_BPS / 100
             )));
         }
 
@@ -1242,6 +1558,115 @@ fn uniswap_tick_spacing(fee: u32) -> i32 {
     }
 }
 
+/// Decide whether the user's `quote_token` refers to token1 (canonical
+/// direction) or token0 (inverted). `token0_alias` / `token1_alias` are the
+/// *sorted* aliases — i.e. the ones that match the pool's on-chain ordering
+/// — so the returned direction is correct regardless of how the user wrote
+/// the pair in the DSL.
+fn classify_quote_direction(
+    quote_token: &str,
+    token0_alias: &str,
+    token1_alias: &str,
+) -> Result<bool> {
+    if quote_token == token1_alias {
+        Ok(true)
+    } else if quote_token == token0_alias {
+        Ok(false)
+    } else {
+        Err(CompileError::InvalidChain(format!(
+            "LP quote_token '{}' must equal token0 ('{}') or token1 ('{}')",
+            quote_token, token0_alias, token1_alias
+        )))
+    }
+}
+
+/// Resolve an `lp_mint` step's tick range, accepting either the price form
+/// (preferred, human-friendly) or the raw tick form (advanced). Exactly one
+/// of the two shapes must be supplied per bound. Price-derived ticks are
+/// snapped to the fee tier's spacing with a warning describing the snap.
+#[allow(clippy::too_many_arguments)]
+fn resolve_lp_mint_ticks(
+    m: &crate::schema::public_ast::LpMintStep,
+    token0_alias: &str,
+    token1_alias: &str,
+    tokens_swapped: bool,
+    dec0: u8,
+    dec1: u8,
+    spacing: i32,
+    _warnings: &mut Vec<String>,
+    // When the caller rewrote the DSL's `quote_token` alias to match a
+    // substituted pair token (e.g. native "ETH" → "WETH"), pass it here so
+    // the string-equality match below sees the same normalized name.
+    quote_token_override: Option<&str>,
+) -> Result<(i32, i32)> {
+    use crate::compiler::uniswap_ticks::{
+        maybe_swap_inverted, resolve_lower_bound, resolve_upper_bound, snap_range,
+    };
+
+    let has_price = m.price_lower.is_some() || m.price_upper.is_some();
+    let has_tick = m.tick_lower.is_some() || m.tick_upper.is_some();
+
+    // Reject mixed / missing shapes up front.
+    if has_price && has_tick {
+        return Err(CompileError::InvalidChain(
+            "lp_mint accepts EITHER price_lower/price_upper OR tick_lower/tick_upper, not both"
+                .to_string(),
+        ));
+    }
+    if !has_price && !has_tick {
+        return Err(CompileError::InvalidChain(
+            "lp_mint is missing a range: supply price_lower + price_upper (preferred) or tick_lower + tick_upper"
+                .to_string(),
+        ));
+    }
+
+    if has_tick {
+        let lower = m.tick_lower.ok_or_else(|| {
+            CompileError::InvalidChain(
+                "lp_mint tick_lower is required when using the tick form".to_string(),
+            )
+        })?;
+        let upper = m.tick_upper.ok_or_else(|| {
+            CompileError::InvalidChain(
+                "lp_mint tick_upper is required when using the tick form".to_string(),
+            )
+        })?;
+        return Ok((lower, upper));
+    }
+
+    // Price form.
+    let lower_raw = m.price_lower.as_deref().ok_or_else(|| {
+        CompileError::InvalidChain(
+            "lp_mint price_lower is required when using the price form".to_string(),
+        )
+    })?;
+    let upper_raw = m.price_upper.as_deref().ok_or_else(|| {
+        CompileError::InvalidChain(
+            "lp_mint price_upper is required when using the price form".to_string(),
+        )
+    })?;
+    let quote_token_raw = m.quote_token.as_deref().ok_or_else(|| {
+        CompileError::InvalidChain(
+            "lp_mint quote_token is required when using price_lower / price_upper".to_string(),
+        )
+    })?;
+    let quote_token = quote_token_override.unwrap_or(quote_token_raw);
+
+    let quote_is_token1 = classify_quote_direction(quote_token, token0_alias, token1_alias)?;
+
+    let lower_tick = resolve_lower_bound(lower_raw, quote_is_token1, dec0, dec1)?;
+    let upper_tick = resolve_upper_bound(upper_raw, quote_is_token1, dec0, dec1)?;
+    // Inverting the quote direction flips which bound is numerically smaller,
+    // so swap the pair back into (low, high) tick order.
+    let (lower_tick, upper_tick) = maybe_swap_inverted(lower_tick, upper_tick, quote_is_token1);
+
+    let (snapped_lo, snapped_hi) = snap_range(lower_tick, upper_tick, spacing);
+    // Snapping is an implementation detail — the realized range always
+    // contains the user's requested prices, so we don't emit a warning.
+    let _ = tokens_swapped; // kept for signature symmetry.
+    Ok((snapped_lo, snapped_hi))
+}
+
 /// Validate that an LP tick range is non-empty, bounded, and aligned with
 /// the pool's tick spacing.
 fn validate_uniswap_tick_range(lower: i32, upper: i32, spacing: i32) -> Result<()> {
@@ -1293,10 +1718,10 @@ fn resolve_uniswap_position_manager(registry: &RegistryContext) -> Result<Addres
 /// Compute a deadline for an LP step, falling back to the script's
 /// effective deadline and ultimately the default swap window.
 fn resolve_step_deadline(step_deadline: Option<u64>, script: &IntentScript) -> u64 {
-    if let Some(d) = step_deadline {
-        if d > 0 {
-            return d;
-        }
+    if let Some(d) = step_deadline
+        && d > 0
+    {
+        return d;
     }
     match script.deadline {
         Some(d) if d > 0 => d,
@@ -1398,15 +1823,257 @@ pub(crate) fn parse_amount(amount_str: &str, decimals: u8) -> Result<U256> {
     }
 }
 
-/// Decode a hex string into bytes.
-fn hex_decode(hex: &str) -> core::result::Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
-        return Err("Odd-length hex string".to_string());
+/// Resolve a Morpho market alias to its parsed parameters.
+fn resolve_morpho_market(
+    market_alias: &str,
+    registry: &RegistryContext,
+) -> Result<(Address, MorphoMarketParams, MorphoMarketConfig)> {
+    let protocol =
+        registry
+            .protocols
+            .get("morpho")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "morpho".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+
+    let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
+        CompileError::Adapter("Protocol 'morpho' has no 'pool' contract configured".to_string())
+    })?;
+    let pool = parse_address(pool_addr)?;
+
+    let markets = protocol.markets.as_ref().ok_or_else(|| {
+        CompileError::Adapter("Protocol 'morpho' has no 'markets' table configured".to_string())
+    })?;
+
+    let market = markets.get(market_alias).ok_or_else(|| {
+        CompileError::Validation(format!(
+            "Unknown Morpho market '{}'. Available: {}",
+            market_alias,
+            {
+                let mut keys: Vec<String> = markets.keys().cloned().collect();
+                keys.sort();
+                keys.join(", ")
+            }
+        ))
+    })?;
+
+    let loan_token = resolve_asset_address(&market.loan, registry)?;
+    let collateral_token = resolve_asset_address(&market.collateral, registry)?;
+    let oracle = parse_address(&market.oracle)?;
+    let irm = parse_address(&market.irm)?;
+    let lltv = U256::from_str_radix(&market.lltv, 10).map_err(|_| {
+        CompileError::InvalidAmount(format!("Invalid Morpho lltv: {}", market.lltv))
+    })?;
+
+    // Parse the 32-byte market id (keccak256 of abi.encode(MarketParams)).
+    let id_hex = market.id.strip_prefix("0x").unwrap_or(&market.id);
+    if id_hex.len() != 64 {
+        return Err(CompileError::Adapter(format!(
+            "Morpho market '{}' has invalid id length: expected 32 bytes, got '{}'",
+            market_alias, market.id
+        )));
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| format!("Invalid hex: {}", e)))
-        .collect()
+    let mut id = [0u8; 32];
+    for (i, byte_out) in id.iter_mut().enumerate() {
+        *byte_out = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).map_err(|_| {
+            CompileError::Adapter(format!(
+                "Morpho market '{}' has invalid id hex: {}",
+                market_alias, market.id
+            ))
+        })?;
+    }
+
+    Ok((
+        pool,
+        MorphoMarketParams {
+            loan_token,
+            collateral_token,
+            oracle,
+            irm,
+            lltv,
+            id,
+        },
+        market.clone(),
+    ))
+}
+
+fn normalize_morpho_deposit(
+    d: &crate::schema::DepositStep,
+    signer: Address,
+    registry: &RegistryContext,
+    previous_steps: &[ResolvedStep],
+) -> Result<ResolvedStep> {
+    let market_alias = d.market.as_deref().ok_or_else(|| {
+        CompileError::Validation(
+            "Morpho deposit requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
+        )
+    })?;
+    let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
+
+    let is_collateral = match d.r#as.as_deref() {
+        None | Some("loan") => false,
+        Some("collateral") => true,
+        Some(other) => {
+            return Err(CompileError::Validation(format!(
+                "Morpho deposit 'as' must be 'collateral' or 'loan' (got '{}')",
+                other
+            )));
+        }
+    };
+
+    // Asset must match the market's loan side (for non-collateral deposits)
+    // or collateral side (for collateral deposits).
+    let expected_alias = if is_collateral {
+        &market_cfg.collateral
+    } else {
+        &market_cfg.loan
+    };
+    if &d.asset != expected_alias {
+        return Err(CompileError::Validation(format!(
+            "Morpho market '{}' expects asset '{}' for {} supply (got '{}')",
+            market_alias,
+            expected_alias,
+            if is_collateral { "collateral" } else { "loan" },
+            d.asset
+        )));
+    }
+
+    let asset_addr = resolve_asset_address(&d.asset, registry)?;
+    let decimals = resolve_asset_decimals(&d.asset, registry)?;
+    let amount = resolve_amount_or_all(
+        &d.amount,
+        decimals,
+        asset_addr,
+        previous_steps,
+        &d.asset,
+        registry,
+    )?;
+
+    if is_collateral {
+        Ok(ResolvedStep::MorphoSupplyCollat {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+        })
+    } else {
+        Ok(ResolvedStep::MorphoSupply {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+        })
+    }
+}
+
+fn normalize_morpho_borrow(
+    b: &crate::schema::BorrowStep,
+    signer: Address,
+    registry: &RegistryContext,
+    previous_steps: &[ResolvedStep],
+) -> Result<ResolvedStep> {
+    let market_alias = b.market.as_deref().ok_or_else(|| {
+        CompileError::Validation(
+            "Morpho borrow requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
+        )
+    })?;
+    let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
+
+    if b.asset != market_cfg.loan {
+        return Err(CompileError::Validation(format!(
+            "Morpho market '{}' expects loan asset '{}' (got '{}')",
+            market_alias, market_cfg.loan, b.asset
+        )));
+    }
+
+    let asset_addr = resolve_asset_address(&b.asset, registry)?;
+    let decimals = resolve_asset_decimals(&b.asset, registry)?;
+    let amount = resolve_amount_or_all(
+        &b.amount,
+        decimals,
+        asset_addr,
+        previous_steps,
+        &b.asset,
+        registry,
+    )?;
+
+    Ok(ResolvedStep::MorphoBorrow {
+        pool,
+        market_params: params,
+        amount,
+        on_behalf: signer,
+        receiver: signer,
+    })
+}
+
+fn normalize_morpho_withdraw(
+    w: &crate::schema::WithdrawStep,
+    signer: Address,
+    registry: &RegistryContext,
+    previous_steps: &[ResolvedStep],
+) -> Result<ResolvedStep> {
+    let market_alias = w.market.as_deref().ok_or_else(|| {
+        CompileError::Validation(
+            "Morpho withdraw requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
+        )
+    })?;
+    let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
+
+    let is_collateral = match w.r#as.as_deref() {
+        None | Some("loan") => false,
+        Some("collateral") => true,
+        Some(other) => {
+            return Err(CompileError::Validation(format!(
+                "Morpho withdraw 'as' must be 'collateral' or 'loan' (got '{}')",
+                other
+            )));
+        }
+    };
+    let expected_alias = if is_collateral {
+        &market_cfg.collateral
+    } else {
+        &market_cfg.loan
+    };
+    if &w.asset != expected_alias {
+        return Err(CompileError::Validation(format!(
+            "Morpho market '{}' expects asset '{}' for {} withdraw (got '{}')",
+            market_alias,
+            expected_alias,
+            if is_collateral { "collateral" } else { "loan" },
+            w.asset
+        )));
+    }
+
+    let asset_addr = resolve_asset_address(&w.asset, registry)?;
+    let decimals = resolve_asset_decimals(&w.asset, registry)?;
+    let amount = resolve_amount_or_all(
+        &w.amount,
+        decimals,
+        asset_addr,
+        previous_steps,
+        &w.asset,
+        registry,
+    )?;
+
+    if is_collateral {
+        Ok(ResolvedStep::MorphoWithdrawCollat {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+            receiver: signer,
+        })
+    } else {
+        Ok(ResolvedStep::MorphoWithdraw {
+            pool,
+            market_params: params,
+            amount,
+            on_behalf: signer,
+            receiver: signer,
+        })
+    }
 }
 
 #[cfg(test)]

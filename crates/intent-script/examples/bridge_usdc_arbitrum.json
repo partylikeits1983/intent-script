@@ -1,0 +1,17 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "current_timestamp": 1714000000,
+  "steps": [
+    {
+      "bridge": {
+        "via": "across",
+        "asset": "USDC",
+        "amount": "1000",
+        "to_chain": "arbitrum",
+        "recipient": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "relayer_fee_bps": "5"
+      }
+    }
+  ]
+}

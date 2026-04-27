@@ -302,7 +302,6 @@ If the protocol uses new tokens, also add them to `config/assets/ethereum.json`:
 | `aave_v3.rs` | `crates/intent-script/src/adapters/aave_v3.rs` | Medium | Supply/borrow/withdraw pattern |
 | `uniswap_v3.rs` | `crates/intent-script/src/adapters/uniswap_v3.rs` | Medium | Struct parameters, complex ABI |
 | `lido.rs` | `crates/intent-script/src/adapters/lido.rs` | Medium | ETH staking + token wrapping |
-| `oneinch.rs` | `crates/intent-script/src/adapters/oneinch.rs` | Simple | Calldata passthrough pattern |
 | `send.rs` | `crates/intent-script/src/adapters/send.rs` | Medium | ERC-20/ETH/ERC-721 transfers |
 
 ---
@@ -334,3 +333,27 @@ After implementing all 8 steps:
 4. Run `cargo test -p intent-script` — all tests must pass
 
 5. If Foundry tests exist, run `cd contracts && forge test`
+
+---
+
+## Appendix: Patterns from existing adapters
+
+### NFT custody — the `recipient=signer` shortcut
+
+For steps that mint NFTs (Uniswap V3 LP `mint`, potentially Morpho/Lido NFTs), set `recipient = signer` in the normalized step so the NFT bypasses the router entirely. The router supports `onERC721Received` (so safeTransferFrom inbound works), but keeping custody out of the router removes a class of stuck-NFT bugs. Example: `adapters/uniswap_v3_lp.rs::lower_lp_mint`.
+
+### Recursive enrich for flashloan-style steps
+
+Steps that embed a sub-pipeline of `ResolvedStep` (e.g. `BalancerFlashloan { inner_steps: Vec<ResolvedStep> }`) must NOT store pre-lowered `ConcreteCall[]` — enrich needs the chance to walk inner steps and auto-insert approvals/transferFroms just like the outer pass. The shared `enrich_steps(&mut ...)` helper in `compiler/enrich.rs` is reusable: seed `tokens_in_router` with whatever the outer machinery pre-delivers (flashloan proceeds, upstream swap outputs) and let the same logic flow. Merge inner `required_pulls` into outer so the builder emits prerequisite approvals for user-contributed tokens. Model in `adapters/balancer.rs` + `compiler/enrich.rs::BalancerFlashloan`.
+
+### Config-keyed markets (Morpho Blue)
+
+For protocols with many markets addressed by id, store a `markets: Option<HashMap<String, MarketConfig>>` on `ProtocolConfig` and require the DSL to reference a market by alias (e.g. `"USDC-WETH-86"`). The `id` (`keccak256(abi.encode(MarketParams))`) is **pre-computed at config-authoring time** and stored alongside the constituent fields — keeps the compiler deterministic and offline. Adapters reconstruct the struct for calldata but can also reference the id directly when Morpho's ABI takes it. See `registry::MorphoMarketConfig`, `adapters/morpho.rs`.
+
+### User-prerequisite NFT approval (Uniswap V3 LP decrease/collect)
+
+Steps that operate on an existing NFT held by the signer (decrease liquidity, collect fees) require the user to have already called `NPM.approve(router, tokenId)` out-of-band. Do not synthesize an approval call inside the compiler — the caller's wallet must do this as a prerequisite tx. Document this in the JSON spec and surface a clear error message. Pattern: `adapters/uniswap_v3_lp.rs` + `skills/json-dsl-spec.md` `### lp_decrease`.
+
+### Leverage sugar composing the flashloan primitive
+
+High-level sugar (`long`/`short`/`close_position`) should desugar into existing IR rather than introducing new IR variants. The `compiler/leverage.rs` expander returns `ResolvedStep::BalancerFlashloan { inner_steps: vec![ AaveV3Supply, AaveV3Borrow, UniswapV3Swap ] }` — zero new IR, zero new adapter code. Validate/enrich/lower paths for the primitive handle the composition automatically. When the user contributes equity alongside the flashloan, pre-insert an explicit `Erc20TransferFrom { from: signer, to: router, amount: user_contribution }` as the first inner step; that satisfies the flashloan repayability validator (see `step_produces` special case for transferFrom) and registers `required_pulls` via the enricher's pre-existing-transferFrom match arm.

@@ -1,0 +1,20 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "deadline": 9999999999,
+  "current_timestamp": 1712700000,
+  "steps": [
+    {
+      "long": {
+        "collateral": "wstETH",
+        "borrow": "USDC",
+        "amount": "1.0",
+        "leverage": "1.5",
+        "slippage": "200",
+        "price": "3500",
+        "fee": "500"
+      }
+    }
+  ]
+}
+
