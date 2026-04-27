@@ -48,6 +48,7 @@ pub struct PreviewStepInfo {
 
 /// The result of compiling an intent script.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum CompileOutput {
     /// A single unsigned transaction (for single-call intents)
     SingleTx(UnsignedTx),

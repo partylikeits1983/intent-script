@@ -792,14 +792,14 @@ fn normalize_step(
                 (false, false, _) => None,
                 (true, true, _) => unreachable!("both-native lp_mint rejected above"),
             };
-            if let Some(amt) = wrap_amount {
-                if amt > U256::ZERO {
-                    let weth_addr = resolve_asset_address(&weth_alias, registry)?;
-                    prepend_steps.push(ResolvedStep::Wrap {
-                        wrapped_token: weth_addr,
-                        amount: amt,
-                    });
-                }
+            if let Some(amt) = wrap_amount
+                && amt > U256::ZERO
+            {
+                let weth_addr = resolve_asset_address(&weth_alias, registry)?;
+                prepend_steps.push(ResolvedStep::Wrap {
+                    wrapped_token: weth_addr,
+                    amount: amt,
+                });
             }
 
             Ok(ResolvedStep::UniswapV3LpMint {
@@ -1327,15 +1327,15 @@ fn resolve_amount_or_all(
     if amount_str == "all" {
         let fee_bps = registry.fee_bps();
         for step in previous_steps.iter().rev() {
-            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps) {
-                if produced_token == token {
-                    if guaranteed == U256::ZERO {
-                        return Err(CompileError::InvalidChain(
-                            "Cannot use 'all': previous step has zero guaranteed output".into(),
-                        ));
-                    }
-                    return Ok(guaranteed);
+            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps)
+                && produced_token == token
+            {
+                if guaranteed == U256::ZERO {
+                    return Err(CompileError::InvalidChain(
+                        "Cannot use 'all': previous step has zero guaranteed output".into(),
+                    ));
                 }
+                return Ok(guaranteed);
             }
         }
         return Err(CompileError::InvalidChain(
@@ -1584,6 +1584,7 @@ fn classify_quote_direction(
 /// (preferred, human-friendly) or the raw tick form (advanced). Exactly one
 /// of the two shapes must be supplied per bound. Price-derived ticks are
 /// snapped to the fee tier's spacing with a warning describing the snap.
+#[allow(clippy::too_many_arguments)]
 fn resolve_lp_mint_ticks(
     m: &crate::schema::public_ast::LpMintStep,
     token0_alias: &str,
@@ -1717,10 +1718,10 @@ fn resolve_uniswap_position_manager(registry: &RegistryContext) -> Result<Addres
 /// Compute a deadline for an LP step, falling back to the script's
 /// effective deadline and ultimately the default swap window.
 fn resolve_step_deadline(step_deadline: Option<u64>, script: &IntentScript) -> u64 {
-    if let Some(d) = step_deadline {
-        if d > 0 {
-            return d;
-        }
+    if let Some(d) = step_deadline
+        && d > 0
+    {
+        return d;
     }
     match script.deadline {
         Some(d) if d > 0 => d,

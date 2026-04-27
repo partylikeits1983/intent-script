@@ -186,7 +186,7 @@ mod tests {
         let hash = hash_calls(&calls);
 
         // keccak256("") for empty encodePacked
-        let expected = keccak256(&[]);
+        let expected = keccak256([]);
         assert_eq!(hash, expected.0);
     }
 

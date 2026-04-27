@@ -950,19 +950,31 @@ fn test_stake_lido_wsteth_from_example_file() {
 
 #[test]
 fn test_all_example_files_compile() {
-    // Ensure every example JSON file in the examples directory compiles successfully
+    // Ensure every example JSON file in the examples directory compiles
+    // successfully. Files containing `{{...}}` template markers (e.g.
+    // `{{POSITION_ID}}`) are documentation templates: a caller is expected
+    // to substitute the placeholder before compiling, so they're skipped.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let examples_dir = std::path::Path::new(manifest_dir).join("examples");
 
     let entries = std::fs::read_dir(&examples_dir).expect("should read examples directory");
     let mut count = 0;
+    let mut skipped = 0;
 
     for entry in entries {
         let entry = entry.expect("should read dir entry");
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "json") {
+        if path.extension().is_some_and(|ext| ext == "json") {
             let input = std::fs::read_to_string(&path)
                 .unwrap_or_else(|_| panic!("should read {}", path.display()));
+            if input.contains("{{") && input.contains("}}") {
+                skipped += 1;
+                println!(
+                    "⏭  {} skipped (contains template placeholder)",
+                    path.file_name().unwrap().to_string_lossy()
+                );
+                continue;
+            }
             let result = do_compile(&input);
             assert!(
                 result.is_ok(),
@@ -979,7 +991,7 @@ fn test_all_example_files_compile() {
     }
 
     assert!(count > 0, "Should have found at least one example file");
-    println!("All {count} example files compiled successfully");
+    println!("All {count} example files compiled successfully ({skipped} templates skipped)");
 }
 
 // ─── Invalid input tests ───────────────────────────────────────────────
@@ -2817,9 +2829,7 @@ fn test_lp_mint_native_eth_token0_still_substitutes() {
             // to the NPM, which hit the same target but a different selector.
             let wrap_deposits: Vec<_> = wrap_calls
                 .iter()
-                .filter(|c| {
-                    c.call_data.len() >= 4 && &c.call_data[..4] == &[0xd0, 0xe3, 0x0d, 0xb0]
-                })
+                .filter(|c| c.call_data.len() >= 4 && c.call_data[..4] == [0xd0, 0xe3, 0x0d, 0xb0])
                 .collect();
             assert_eq!(wrap_deposits.len(), 1);
             assert_eq!(wrap_deposits[0].value.to_string(), "300000000000000000");

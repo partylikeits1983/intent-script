@@ -82,16 +82,16 @@ fn enrich_steps(
                 ..
             } => {
                 // When batching via router, pull tokens from user if not already in router
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(asset) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *asset,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(*asset).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(asset)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *asset,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(*asset).or_insert(U256::ZERO) += *amount;
                 }
                 // Insert ERC-20 approve before supply.
                 enriched_steps.push(ResolvedStep::Erc20Approve {
@@ -110,16 +110,16 @@ fn enrich_steps(
                 // Repay pulls `amount` of `asset` from msg.sender (router) via
                 // transferFrom inside Aave, so we need the token in router and
                 // an approval for the pool.
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(asset) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *asset,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(*asset).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(asset)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *asset,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(*asset).or_insert(U256::ZERO) += *amount;
                 }
                 enriched_steps.push(ResolvedStep::Erc20Approve {
                     token: *asset,
@@ -151,16 +151,16 @@ fn enrich_steps(
             } => {
                 // Supplying the loan asset: pull from user + approve pool.
                 let token = market_params.loan_token;
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(&token) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(&token)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
                 }
                 enriched_steps.push(ResolvedStep::Erc20Approve {
                     token,
@@ -176,16 +176,16 @@ fn enrich_steps(
                 ..
             } => {
                 let token = market_params.collateral_token;
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(&token) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(&token)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
                 }
                 enriched_steps.push(ResolvedStep::Erc20Approve {
                     token,
@@ -201,16 +201,16 @@ fn enrich_steps(
                 ..
             } => {
                 let token = market_params.loan_token;
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(&token) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(&token)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(token).or_insert(U256::ZERO) += *amount;
                 }
                 enriched_steps.push(ResolvedStep::Erc20Approve {
                     token,
@@ -392,16 +392,16 @@ fn enrich_steps(
                 amount,
             } => {
                 // When batching via router, pull stETH from user if not already in router
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(steth) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *steth,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(*steth).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(steth)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *steth,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(*steth).or_insert(U256::ZERO) += *amount;
                 }
                 // Insert ERC-20 approve for stETH → wstETH before the wrap
                 enriched_steps.push(ResolvedStep::Erc20Approve {
@@ -425,16 +425,16 @@ fn enrich_steps(
                 amount,
             } => {
                 // When batching via router, pull wstETH from user if not already in router
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(wsteth) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *wsteth,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(*wsteth).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(wsteth)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *wsteth,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(*wsteth).or_insert(U256::ZERO) += *amount;
                 }
                 // No approve: `unwrap()` burns the caller's own wstETH balance.
                 enriched_steps.push(step.clone());
@@ -460,16 +460,16 @@ fn enrich_steps(
 
                 // When batching via router, pull the stETH/wstETH from user if
                 // not already in router so the router can approve the queue.
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(token) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *token,
-                            from: signer,
-                            to: router_addr,
-                            amount: total,
-                        });
-                        *required_pulls.entry(*token).or_insert(U256::ZERO) += total;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(token)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *token,
+                        from: signer,
+                        to: router_addr,
+                        amount: total,
+                    });
+                    *required_pulls.entry(*token).or_insert(U256::ZERO) += total;
                 }
 
                 // Queue pulls tokens via transferFrom on request; approve first.
@@ -624,16 +624,16 @@ fn enrich_steps(
                 // Pull input_token from user (if not already in router) and
                 // approve the SpokePool for input_amount. No sweep — the
                 // tokens are in flight cross-chain, not coming back.
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(input_token) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *input_token,
-                            from: signer,
-                            to: router_addr,
-                            amount: *input_amount,
-                        });
-                        *required_pulls.entry(*input_token).or_insert(U256::ZERO) += *input_amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(input_token)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *input_token,
+                        from: signer,
+                        to: router_addr,
+                        amount: *input_amount,
+                    });
+                    *required_pulls.entry(*input_token).or_insert(U256::ZERO) += *input_amount;
                 }
                 enriched_steps.push(ResolvedStep::Erc20Approve {
                     token: *input_token,
@@ -644,16 +644,16 @@ fn enrich_steps(
             }
             ResolvedStep::SendErc20 { token, amount, .. } => {
                 // When batching via router, pull tokens from user if not already in router
-                if let Some(router_addr) = router {
-                    if !tokens_in_router.contains(token) {
-                        enriched_steps.push(ResolvedStep::Erc20TransferFrom {
-                            token: *token,
-                            from: signer,
-                            to: router_addr,
-                            amount: *amount,
-                        });
-                        *required_pulls.entry(*token).or_insert(U256::ZERO) += *amount;
-                    }
+                if let Some(router_addr) = router
+                    && !tokens_in_router.contains(token)
+                {
+                    enriched_steps.push(ResolvedStep::Erc20TransferFrom {
+                        token: *token,
+                        from: signer,
+                        to: router_addr,
+                        amount: *amount,
+                    });
+                    *required_pulls.entry(*token).or_insert(U256::ZERO) += *amount;
                 }
                 enriched_steps.push(step.clone());
             }
