@@ -17,7 +17,10 @@ alloy_sol_types::sol! {
 /// Lower a SendErc20 step to a concrete transfer() call.
 pub fn lower_send_erc20(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
     let ResolvedStep::SendErc20 { token, to, amount } = step else {
-        return Err(CompileError::Adapter("Expected SendErc20 step".to_string()));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "send",
+            expected: "SendErc20",
+        });
     };
 
     let calldata = transferCall {
@@ -37,7 +40,10 @@ pub fn lower_send_erc20(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
 /// Lower a SendEth step to a concrete ETH transfer (empty calldata).
 pub fn lower_send_eth(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
     let ResolvedStep::SendEth { to, amount } = step else {
-        return Err(CompileError::Adapter("Expected SendEth step".to_string()));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "send",
+            expected: "SendEth",
+        });
     };
 
     Ok(vec![ConcreteCall {
@@ -57,9 +63,10 @@ pub fn lower_send_erc721(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         token_id,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected SendErc721 step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "send",
+            expected: "SendErc721",
+        });
     };
 
     let calldata = safeTransferFromCall {

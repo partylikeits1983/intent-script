@@ -38,7 +38,32 @@ pub enum CompileError {
         threshold: f64,
     },
     InvalidChain(String),
+    /// Catch-all adapter / lowering failure with a free-form message.
+    /// Prefer the typed variants below when the failure mode is known.
     Adapter(String),
+    /// The IR step the adapter received does not match the variant the
+    /// adapter handles (e.g. lowering called the Aave-supply adapter with
+    /// an Aave-borrow IR node). This is a compiler-internal bug, never
+    /// the user's fault — the LLM should NOT retry the same intent.
+    AdapterStepMismatch {
+        adapter: &'static str,
+        expected: &'static str,
+    },
+    /// A required protocol contract is missing from the registry config
+    /// (e.g. `protocols/ethereum.json` declares `morpho` but its
+    /// `contracts.pool` is absent). Compiler/config bug, not user-fixable.
+    ProtocolContractMissing {
+        protocol: String,
+        contract: String,
+    },
+    /// A Morpho step did not specify a `market` and there's no default in
+    /// the registry. User-fixable: add `"market": "<id>"` to the step.
+    MorphoMarketRequired,
+    /// A Uniswap V3 swap or LP step specified a fee tier that the
+    /// compiler doesn't recognize as a canonical tier (500, 3000, 10000).
+    UniswapFeeTierUnknown {
+        fee: String,
+    },
     Json(String),
     /// A batched intent was compiled without any source for an EIP-712
     /// deadline. The on-chain router's `executeSigned` rejects
@@ -110,6 +135,26 @@ impl fmt::Display for CompileError {
             ),
             CompileError::InvalidChain(s) => write!(f, "Invalid intent chain: {s}"),
             CompileError::Adapter(s) => write!(f, "Adapter error: {s}"),
+            CompileError::AdapterStepMismatch { adapter, expected } => write!(
+                f,
+                "Adapter '{adapter}' received the wrong IR step shape (expected '{expected}'). \
+                 This is a compiler-internal bug, not a user error."
+            ),
+            CompileError::ProtocolContractMissing { protocol, contract } => write!(
+                f,
+                "Protocol '{protocol}' has no '{contract}' contract configured in the \
+                 registry; the compiler cannot lower steps that target this protocol \
+                 until the registry is fixed."
+            ),
+            CompileError::MorphoMarketRequired => write!(
+                f,
+                "Morpho steps require an explicit `market` field naming an active market. \
+                 Add `\"market\": \"<id>\"` to the step."
+            ),
+            CompileError::UniswapFeeTierUnknown { fee } => write!(
+                f,
+                "Invalid Uniswap V3 fee tier '{fee}' (must be one of: 500, 3000, 10000)."
+            ),
             CompileError::Json(s) => write!(f, "JSON parse error: {s}"),
             CompileError::DeadlineMissing => write!(
                 f,
@@ -173,6 +218,62 @@ pub struct StructuredError {
     /// Imperative: "Replace 'UDSC' with 'USDC' in steps[0].swap.from."
     pub fix_instruction: String,
 }
+
+/// All stable compile-error codes emitted by `to_structured()`. The
+/// system-prompt's compile-error codes reference table is sourced from
+/// this list; the `code_registry_in_sync` unit test asserts every
+/// `to_structured()` arm returns one of these codes (catches drift when
+/// new variants are added without updating the prompt-side reference).
+///
+/// Keep alphabetized so diffs are easy to read.
+pub const ALL_COMPILE_ERROR_CODES: &[&str] = &[
+    "adapter_error",
+    "adapter_step_mismatch",
+    "borrow_without_collateral",
+    "call_budget_exceeded",
+    "config_error",
+    "deadline_in_past",
+    "deadline_missing",
+    "empty_steps",
+    "flashloan_assets_malformed",
+    "flashloan_balance_drift",
+    "flashloan_inner_steps_exceeded",
+    "flashloan_nested",
+    "flashloan_not_repayable",
+    "health_factor_risk",
+    "insufficient_balance",
+    "insufficient_running_balance",
+    "invalid_address",
+    "invalid_amount",
+    "invalid_chain",
+    "invalid_type",
+    "json_parse_error",
+    "lp_invalid",
+    "lp_tick_misaligned",
+    "max_spend_exceeded",
+    "missing_field",
+    "morpho_market_required",
+    "native_eth_into_aave",
+    "protocol_contract_missing",
+    "recipient_pinning_violation",
+    "schema_version_unsupported",
+    "send_to_zero",
+    "signer_zero",
+    "slippage_too_low",
+    "swap_to_self",
+    "too_many_steps",
+    "uniswap_fee_tier_unknown",
+    "unknown_asset",
+    "unknown_field",
+    "unknown_network",
+    "unknown_protocol",
+    "unknown_step_kind",
+    "validation_generic",
+    "withdraw_without_position",
+    "withdrawal_claim_invalid",
+    "withdrawal_request_invalid",
+    "zero_amount",
+];
 
 /// Recognized user-facing step kinds. Used to produce typo suggestions
 /// for `UnsupportedStep` errors. Kept in sync with `schema::public_ast::Step`.
@@ -450,6 +551,83 @@ impl CompileError {
                                   intent will keep failing until the adapter config is fixed."
                     .to_string(),
             },
+            CompileError::AdapterStepMismatch { adapter, expected } => StructuredError {
+                pipeline: "compile",
+                code: "adapter_step_mismatch",
+                message,
+                stage: Some("lower"),
+                step_index: None,
+                path: None,
+                fields: pairs(&[("adapter", adapter), ("expected", expected)]),
+                suggestion: None,
+                available: Vec::new(),
+                hint: "The lowering pipeline called the wrong adapter for this IR node. \
+                       This is a compiler-internal bug — the same intent will keep \
+                       failing until the compiler is fixed."
+                    .to_string(),
+                fix_instruction: "Do not retry. Surface this as a compiler bug to the user."
+                    .to_string(),
+            },
+            CompileError::ProtocolContractMissing { protocol, contract } => StructuredError {
+                pipeline: "compile",
+                code: "protocol_contract_missing",
+                message,
+                stage: Some("registry"),
+                step_index: None,
+                path: None,
+                fields: pairs(&[("protocol", protocol), ("contract", contract)]),
+                suggestion: None,
+                available: Vec::new(),
+                hint: "The registry config for this network is missing a contract entry \
+                       the compiler needs. This is a config bug, not a bad intent."
+                    .to_string(),
+                fix_instruction: "Do not retry. Surface this as a compiler/config issue \
+                                  to the user; the same intent will keep failing until \
+                                  the registry is fixed."
+                    .to_string(),
+            },
+            CompileError::MorphoMarketRequired => StructuredError {
+                pipeline: "compile",
+                code: "morpho_market_required",
+                message,
+                stage: Some("normalize"),
+                step_index: None,
+                path: None,
+                fields: BTreeMap::new(),
+                suggestion: None,
+                available: Vec::new(),
+                hint: "Morpho's lending pool is market-segmented; every supply / borrow / \
+                       withdraw step must name the market it operates on."
+                    .to_string(),
+                fix_instruction: "Add `\"market\": \"<id>\"` to the Morpho step. Use one \
+                                  of the markets in the user's `## Your Positions` block, \
+                                  or pick one from the registry's Morpho market list."
+                    .to_string(),
+            },
+            CompileError::UniswapFeeTierUnknown { fee } => StructuredError {
+                pipeline: "compile",
+                code: "uniswap_fee_tier_unknown",
+                message,
+                stage: Some("normalize"),
+                step_index: None,
+                path: None,
+                fields: pairs(&[("fee", fee)]),
+                suggestion: None,
+                available: alloc::vec![
+                    "500".to_string(),
+                    "3000".to_string(),
+                    "10000".to_string(),
+                ],
+                hint: "Uniswap V3 fee tiers are quantized to 100 (0.01%), 500 (0.05%), \
+                       3000 (0.3%), or 10000 (1%). Stable pairs use 500; volatile pairs \
+                       use 3000."
+                    .to_string(),
+                fix_instruction: format!(
+                    "Replace `fee: \"{fee}\"` with one of `\"500\"`, `\"3000\"`, or \
+                     `\"10000\"`. Stable pairs (USDC/USDT) → 500; ETH/USDC → 500 or \
+                     3000; volatile or low-liquidity → 3000 or 10000."
+                ),
+            },
             CompileError::Json(s) => classify_json_message(s, &message),
             CompileError::DeadlineMissing => StructuredError {
                 pipeline: "compile",
@@ -683,7 +861,67 @@ fn classify_validation_message(raw: &str, full_message: &str) -> StructuredError
         };
     }
 
+    if lower.contains("flashloan inner pipeline has") && lower.contains("steps but maximum is") {
+        // "flashloan inner pipeline has {n} steps but maximum is {max}"
+        let got = extract_between(raw, "has ", " steps").unwrap_or_default();
+        let max = extract_between(raw, "maximum is ", "").unwrap_or_default();
+        return StructuredError {
+            pipeline: "compile",
+            code: "flashloan_inner_steps_exceeded",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: None,
+            fields: pairs(&[("got", got.as_str()), ("max", max.as_str())]),
+            suggestion: None,
+            available: Vec::new(),
+            hint: "A flashloan's inner pipeline (the `then` array) is capped to bound \
+                   execution complexity; the limit is enforced separately from the \
+                   top-level step cap."
+                .to_string(),
+            fix_instruction: format!(
+                "Reduce the number of inner steps in the `flashloan.then` array to at \
+                 most {max} (or split work across two transactions: one before, one \
+                 inside the flashloan)."
+            ),
+        };
+    }
+
+    if lower.contains("flashloan tokens and amounts lengths must match") {
+        return StructuredError {
+            pipeline: "compile",
+            code: "flashloan_assets_malformed",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: step_index.map(|i| format!("steps[{i}].flashloan.assets")),
+            fields: BTreeMap::new(),
+            suggestion: None,
+            available: Vec::new(),
+            hint: "`flashloan.assets` is a list of `{asset, amount}` pairs; both fields \
+                   are required on each pair."
+                .to_string(),
+            fix_instruction: "Make sure every entry in `flashloan.assets` has BOTH `asset` \
+                              and `amount` populated, and that nothing in the list is \
+                              partially specified."
+                .to_string(),
+        };
+    }
+
     if lower.contains("flashloan") && lower.contains("not repayable") {
+        let token = extract_between(raw, "of token ", " but").unwrap_or_default();
+        let have = extract_between(raw, "leaves only ", " of token").unwrap_or_default();
+        let owed = extract_between(raw, "but ", " is owed").unwrap_or_default();
+        let mut fields = BTreeMap::new();
+        if !token.is_empty() {
+            fields.insert("token".to_string(), token);
+        }
+        if !have.is_empty() {
+            fields.insert("have".to_string(), have);
+        }
+        if !owed.is_empty() {
+            fields.insert("owed".to_string(), owed);
+        }
         return StructuredError {
             pipeline: "compile",
             code: "flashloan_not_repayable",
@@ -691,14 +929,18 @@ fn classify_validation_message(raw: &str, full_message: &str) -> StructuredError
             stage: Some("validate"),
             step_index,
             path: None,
-            fields: BTreeMap::new(),
+            fields,
             suggestion: None,
             available: Vec::new(),
             hint: "A flashloan inner pipeline must leave enough of each borrowed token to \
-                   repay the Vault."
+                   repay the Vault. The compiler simulates the static balance flow and \
+                   refuses to emit a tx guaranteed to revert."
                 .to_string(),
             fix_instruction: "Adjust the inner steps so their net produce covers each \
-                              borrowed `(asset, amount)` at the end of the pipeline."
+                              borrowed `(asset, amount)` at the end of the pipeline. \
+                              Common fixes: increase the borrow that's expected to repay, \
+                              add a swap from a produced token back into the borrowed one, \
+                              or reduce the flashloan amount."
                 .to_string(),
         };
     }
@@ -721,6 +963,11 @@ fn classify_validation_message(raw: &str, full_message: &str) -> StructuredError
 }
 
 /// Classify a `CompileError::InvalidChain(msg)` payload.
+///
+/// Branch ordering matters: more-specific patterns must come before
+/// more-general ones. For example, "LP decrease liquidity must be greater
+/// than zero" matches both `lp_*` and the generic `zero_amount` rule, but
+/// the LP-specific code is more actionable.
 fn classify_invalid_chain_message(raw: &str, full_message: &str) -> StructuredError {
     let lower = raw.to_lowercase();
     let step_index = extract_step_index(raw);
@@ -748,14 +995,19 @@ fn classify_invalid_chain_message(raw: &str, full_message: &str) -> StructuredEr
     }
 
     if lower.contains("swap an asset to itself") {
+        let asset = single_quoted(raw).unwrap_or_default();
+        let mut fields = BTreeMap::new();
+        if !asset.is_empty() {
+            fields.insert("asset".to_string(), asset);
+        }
         return StructuredError {
             pipeline: "compile",
             code: "swap_to_self",
             message: full_message.to_string(),
             stage: Some("validate"),
             step_index,
-            path: None,
-            fields: BTreeMap::new(),
+            path: step_index.map(|i| format!("steps[{i}].swap.to")),
+            fields,
             suggestion: None,
             available: Vec::new(),
             hint: "Swap source and destination must be different tokens.".to_string(),
@@ -772,7 +1024,7 @@ fn classify_invalid_chain_message(raw: &str, full_message: &str) -> StructuredEr
             message: full_message.to_string(),
             stage: Some("validate"),
             step_index,
-            path: None,
+            path: step_index.map(|i| format!("steps[{i}].send.to")),
             fields: BTreeMap::new(),
             suggestion: None,
             available: Vec::new(),
@@ -783,95 +1035,251 @@ fn classify_invalid_chain_message(raw: &str, full_message: &str) -> StructuredEr
         };
     }
 
-    if lower.contains("must be greater than zero") || lower.contains("greater than zero") {
+    // ── Flashloan-specific (must precede the generic "running balance" /
+    // ── "requires" branches because the prose contains those words too).
+
+    if lower.contains("flashloan inner step consumes") && lower.contains("available") {
+        // "flashloan inner step consumes {a} of token {t} but only {have} is
+        //  available (flashloaned + produced)"
+        let token = extract_between(raw, "of token ", " but").unwrap_or_default();
+        let consumed = extract_between(raw, "consumes ", " of token").unwrap_or_default();
+        let available = extract_between(raw, "but only ", " is available").unwrap_or_default();
         return StructuredError {
             pipeline: "compile",
-            code: "zero_amount",
+            code: "flashloan_balance_drift",
             message: full_message.to_string(),
             stage: Some("validate"),
             step_index,
             path: None,
-            fields: BTreeMap::new(),
+            fields: pairs(&[
+                ("token", token.as_str()),
+                ("consumed", consumed.as_str()),
+                ("available", available.as_str()),
+            ]),
             suggestion: None,
             available: Vec::new(),
-            hint: "Zero-amount steps are rejected because they can't do useful work and \
-                   are almost always an off-by-one."
+            hint: "Inside a flashloan, every inner step's net token flow must balance \
+                   against what the flashloan brought in plus what earlier inner steps \
+                   produced. The compiler checks this statically."
                 .to_string(),
-            fix_instruction: "Set the step's amount to a positive decimal in human units."
+            fix_instruction: format!(
+                "Either lower the consuming step's amount of `{token}` to at most \
+                 {available}, increase the flashloan amount of `{token}` to cover \
+                 the consumption, or add an earlier inner step that produces more \
+                 `{token}` (e.g., a swap into it)."
+            ),
+        };
+    }
+
+    if lower.contains("flashloan not repayable") {
+        // already classified by validation classifier; fall through doesn't
+        // happen here because this comes through Validation, not InvalidChain.
+        // Keep a synonym for safety in case the message moves variants.
+        let token = extract_between(raw, "of token ", " but").unwrap_or_default();
+        return StructuredError {
+            pipeline: "compile",
+            code: "flashloan_not_repayable",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: None,
+            fields: if token.is_empty() {
+                BTreeMap::new()
+            } else {
+                pairs(&[("token", token.as_str())])
+            },
+            suggestion: None,
+            available: Vec::new(),
+            hint: "A flashloan inner pipeline must leave enough of each borrowed token to \
+                   repay the Vault."
+                .to_string(),
+            fix_instruction: "Adjust the inner steps so their net produce covers each \
+                              borrowed `(asset, amount)` at the end of the pipeline."
                 .to_string(),
         };
     }
 
-    if lower.contains("borrow requires collateral")
-        || lower.contains("no prior deposit")
-        || lower.contains("existing aave collateral")
-    {
+    // ── Lido withdrawal step shapes (must precede generic zero_amount).
+
+    if lower.contains("request_withdrawal requires") {
         return StructuredError {
             pipeline: "compile",
-            code: "borrow_without_collateral",
+            code: "withdrawal_request_invalid",
             message: full_message.to_string(),
             stage: Some("validate"),
             step_index,
-            path: None,
+            path: step_index.map(|i| format!("steps[{i}].request_withdrawal.amounts")),
             fields: BTreeMap::new(),
             suggestion: None,
             available: Vec::new(),
-            hint: "Aave borrows require existing collateral. The compiler saw neither a \
-                   prior deposit in this intent nor wallet-reported Aave collateral."
+            hint: "A `request_withdrawal` step must include at least one positive \
+                   amount (the per-NFT chunk size, in the staked-asset's native units)."
                 .to_string(),
-            fix_instruction: "Prepend a `deposit` step that supplies collateral to Aave \
-                              before borrowing."
+            fix_instruction: "Populate `request_withdrawal.amounts` with one or more \
+                              positive decimal strings (e.g. [\"32\"] for one Beacon \
+                              validator-sized chunk)."
                 .to_string(),
         };
     }
 
-    if lower.contains("withdraw requires an existing position")
-        || lower.contains("no supplied position")
-    {
+    if lower.contains("request_withdrawal amounts") && lower.contains("greater than zero") {
         return StructuredError {
             pipeline: "compile",
-            code: "withdraw_without_position",
+            code: "withdrawal_request_invalid",
             message: full_message.to_string(),
             stage: Some("validate"),
             step_index,
-            path: None,
+            path: step_index.map(|i| format!("steps[{i}].request_withdrawal.amounts")),
             fields: BTreeMap::new(),
             suggestion: None,
             available: Vec::new(),
-            hint: "Withdraws target an existing supplied position; the compiler saw none \
-                   for this asset."
+            hint: "Every entry in `request_withdrawal.amounts` must be a positive number \
+                   — zero-amount entries are rejected as off-by-one bugs."
                 .to_string(),
-            fix_instruction: "Remove the withdraw, or add a supply step first for the same \
-                              asset."
+            fix_instruction: "Replace every `0` in `request_withdrawal.amounts` with a \
+                              positive decimal string."
                 .to_string(),
         };
     }
 
-    if lower.contains("running balance") || lower.contains("requires") {
+    if lower.contains("claim_withdrawal requires") {
         return StructuredError {
             pipeline: "compile",
-            code: "insufficient_running_balance",
+            code: "withdrawal_claim_invalid",
             message: full_message.to_string(),
             stage: Some("validate"),
             step_index,
-            path: None,
+            path: step_index.map(|i| format!("steps[{i}].claim_withdrawal.request_ids")),
             fields: BTreeMap::new(),
             suggestion: None,
             available: Vec::new(),
-            hint: "A step consumes more of a token than the wallet seed + prior steps \
-                   guarantee. On-chain execution would revert."
+            hint: "A `claim_withdrawal` step must reference at least one prior \
+                   request_withdrawal NFT id."
                 .to_string(),
-            fix_instruction: "Lower the step amount to match the running balance, or add \
-                              an earlier step that produces enough of the token."
+            fix_instruction: "Populate `claim_withdrawal.request_ids` with the NFT ids \
+                              from a prior request_withdrawal step (or from the user's \
+                              live-positions block)."
                 .to_string(),
+        };
+    }
+
+    if lower.contains("claim_withdrawal hints") {
+        return StructuredError {
+            pipeline: "compile",
+            code: "withdrawal_claim_invalid",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: step_index.map(|i| format!("steps[{i}].claim_withdrawal.hints")),
+            fields: BTreeMap::new(),
+            suggestion: None,
+            available: Vec::new(),
+            hint: "When `hints` is provided, its length must equal `request_ids` length: \
+                   one checkpoint hint per id."
+                .to_string(),
+            fix_instruction: "Either provide one hint per request_id (in the same order), \
+                              or omit `hints` entirely and let the contract resolve them."
+                .to_string(),
+        };
+    }
+
+    // ── LP-specific must precede the generic zero_amount rule.
+
+    // Tick alignment errors don't include the literal "lp_mint" keyword
+    // (prose is "LP ticks (...) must be multiples of tick spacing N"),
+    // so check it before the lp_mint/decrease guard.
+    if lower.contains("multiples of tick spacing") {
+        let tick_lower = extract_between(raw, "ticks (", ",").unwrap_or_default();
+        let tick_upper = extract_between(raw, ", ", ") must").unwrap_or_default();
+        let spacing = extract_between(raw, "tick spacing ", " for").unwrap_or_default();
+        return StructuredError {
+            pipeline: "compile",
+            code: "lp_tick_misaligned",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: step_index.map(|i| format!("steps[{i}].lp_mint.tick_lower")),
+            fields: pairs(&[
+                ("tick_lower", tick_lower.as_str()),
+                ("tick_upper", tick_upper.as_str()),
+                ("tick_spacing", spacing.as_str()),
+            ]),
+            suggestion: None,
+            available: Vec::new(),
+            hint: "Uniswap V3 ticks must align to the pool's tick-spacing for the \
+                   chosen fee tier (10 for 0.05%, 60 for 0.3%, 200 for 1%)."
+                .to_string(),
+            fix_instruction: format!(
+                "Round both `tick_lower` and `tick_upper` to the nearest multiple \
+                 of {spacing}. E.g., for spacing 10: -510 and 490 are valid; \
+                 -513 and 487 are not."
+            ),
         };
     }
 
     if lower.contains("lp_mint")
         || lower.contains("lp mint")
-        || lower.contains("lp decrease")
+        || lower.contains("lp_increase")
+        || lower.contains("lp increase")
         || lower.contains("lp_decrease")
+        || lower.contains("lp decrease")
     {
+        if lower.contains("liquidity must be greater than zero") {
+            return StructuredError {
+                pipeline: "compile",
+                code: "lp_invalid",
+                message: full_message.to_string(),
+                stage: Some("validate"),
+                step_index,
+                path: step_index.map(|i| format!("steps[{i}].lp_decrease.liquidity")),
+                fields: BTreeMap::new(),
+                suggestion: None,
+                available: Vec::new(),
+                hint: "lp_decrease must remove a positive amount of liquidity.".to_string(),
+                fix_instruction: "Set `lp_decrease.liquidity` to a positive integer \
+                                  (use the position's current liquidity from the user's \
+                                  live-positions block, or a fraction of it)."
+                    .to_string(),
+            };
+        }
+        if lower.contains("requires slippage protection") {
+            return StructuredError {
+                pipeline: "compile",
+                code: "lp_invalid",
+                message: full_message.to_string(),
+                stage: Some("validate"),
+                step_index,
+                path: step_index.map(|i| format!("steps[{i}].lp_decrease.min_amount0")),
+                fields: BTreeMap::new(),
+                suggestion: None,
+                available: Vec::new(),
+                hint: "lp_decrease must include slippage protection on at least one side; \
+                       the compiler refuses to emit calls that allow zero-out withdraw."
+                    .to_string(),
+                fix_instruction: "Set `min_amount0` and/or `min_amount1` on the \
+                                  lp_decrease step to a positive value derived from the \
+                                  current pool price with 0.5–2% headroom."
+                    .to_string(),
+            };
+        }
+        if lower.contains("must resolve to erc-20") {
+            return StructuredError {
+                pipeline: "compile",
+                code: "lp_invalid",
+                message: full_message.to_string(),
+                stage: Some("validate"),
+                step_index,
+                path: step_index.map(|i| format!("steps[{i}].lp_mint")),
+                fields: pairs(&[("asset", "ETH")]),
+                suggestion: None,
+                available: Vec::new(),
+                hint: "Uniswap V3 LPs hold ERC-20 tokens, not native ETH.".to_string(),
+                fix_instruction: "Replace any native `ETH` token in `lp_mint.token0` / \
+                                  `token1` with `WETH` (or another ERC-20 alias)."
+                    .to_string(),
+            };
+        }
+        // Generic LP fallback when the above sub-cases don't fit.
         return StructuredError {
             pipeline: "compile",
             code: "lp_invalid",
@@ -887,6 +1295,132 @@ fn classify_invalid_chain_message(raw: &str, full_message: &str) -> StructuredEr
                 .to_string(),
             fix_instruction: "Re-emit the LP step with valid parameters — see the lp_mint \
                               section of the system prompt."
+                .to_string(),
+        };
+    }
+
+    if lower.contains("must be greater than zero") || lower.contains("greater than zero") {
+        // Pull a leading kind hint out of `"{action} amount must be greater
+        // than zero"` so the LLM knows which step kind to fix.
+        let action = raw
+            .split_whitespace()
+            .next()
+            .map(|s| s.trim_end_matches(':'))
+            .unwrap_or_default()
+            .to_string();
+        let mut fields = BTreeMap::new();
+        if !action.is_empty() {
+            fields.insert("action".to_string(), action);
+        }
+        return StructuredError {
+            pipeline: "compile",
+            code: "zero_amount",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: step_index.map(|i| format!("steps[{i}].amount")),
+            fields,
+            suggestion: None,
+            available: Vec::new(),
+            hint: "Zero-amount steps are rejected because they can't do useful work and \
+                   are almost always an off-by-one."
+                .to_string(),
+            fix_instruction: "Set the step's amount to a positive decimal in human units \
+                              (e.g. \"100\" for 100 USDC, \"0.5\" for half a WBTC)."
+                .to_string(),
+        };
+    }
+
+    if lower.contains("borrow requires collateral")
+        || lower.contains("no prior deposit")
+        || lower.contains("existing aave collateral")
+    {
+        // Try to lift the borrow asset out — recipient-pinned errors carry
+        // the asset in single quotes when the validator constructs them.
+        let asset = single_quoted(raw).unwrap_or_default();
+        let mut fields = BTreeMap::new();
+        if !asset.is_empty() {
+            fields.insert("asset".to_string(), asset);
+        }
+        return StructuredError {
+            pipeline: "compile",
+            code: "borrow_without_collateral",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: step_index.map(|i| format!("steps[{i}].borrow")),
+            fields,
+            suggestion: None,
+            available: Vec::new(),
+            hint: "Aave borrows require existing collateral. The compiler saw neither a \
+                   prior deposit in this intent nor wallet-reported Aave collateral."
+                .to_string(),
+            fix_instruction: "Prepend a `deposit` step that supplies collateral to Aave \
+                              before borrowing. The deposit's asset must be one Aave accepts \
+                              as collateral on this network (see the user's live-positions \
+                              block for assets they already hold)."
+                .to_string(),
+        };
+    }
+
+    if lower.contains("withdraw requires an existing position")
+        || lower.contains("no supplied position")
+    {
+        let asset = extract_between(raw, "asset ", ".").unwrap_or_default();
+        let mut fields = BTreeMap::new();
+        if !asset.is_empty() {
+            fields.insert("asset".to_string(), asset);
+        }
+        return StructuredError {
+            pipeline: "compile",
+            code: "withdraw_without_position",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: step_index.map(|i| format!("steps[{i}].withdraw")),
+            fields,
+            suggestion: None,
+            available: Vec::new(),
+            hint: "Withdraws target an existing supplied position; the compiler saw none \
+                   for this asset."
+                .to_string(),
+            fix_instruction: "Remove the withdraw, or add a supply step first for the same \
+                              asset."
+                .to_string(),
+        };
+    }
+
+    if lower.contains("running balance only guarantees")
+        || (lower.contains("running balance") && lower.contains("requires"))
+    {
+        let token = extract_between(raw, "of token ", " but").unwrap_or_default();
+        let required = extract_between(raw, "requires ", " of token").unwrap_or_default();
+        let guaranteed = extract_between(raw, "guarantees ", " (").unwrap_or_default();
+        let mut fields = BTreeMap::new();
+        if !token.is_empty() {
+            fields.insert("token".to_string(), token);
+        }
+        if !required.is_empty() {
+            fields.insert("required".to_string(), required);
+        }
+        if !guaranteed.is_empty() {
+            fields.insert("guaranteed".to_string(), guaranteed);
+        }
+        return StructuredError {
+            pipeline: "compile",
+            code: "insufficient_running_balance",
+            message: full_message.to_string(),
+            stage: Some("validate"),
+            step_index,
+            path: None,
+            fields,
+            suggestion: None,
+            available: Vec::new(),
+            hint: "A step consumes more of a token than the wallet seed + prior steps \
+                   guarantee. On-chain execution would revert."
+                .to_string(),
+            fix_instruction: "Lower the step amount to match the running-balance guarantee, \
+                              or add an earlier step that produces enough of the token."
                 .to_string(),
         };
     }
@@ -959,6 +1493,53 @@ fn classify_json_message(raw: &str, full_message: &str) -> StructuredError {
                 "Remove the field `{field}` from the intent JSON, or replace it with one \
                  of the accepted fields listed in `available`."
             ),
+        };
+    }
+
+    // Serde emits "unknown variant `foo`, expected ..." when an enum like
+    // `Step` (which is the {kind: payload} shape in the DSL) sees a typo'd
+    // variant. Treat this as an unknown step-kind for the LLM.
+    if lower.contains("unknown variant") {
+        let field = between_backticks(raw).unwrap_or_default();
+        let expected = extract_expected_list(raw);
+        let suggestion = if !expected.is_empty() {
+            closest_match(&field, expected.iter().map(|s| s.as_str()))
+        } else {
+            closest_match(&field, ALL_STEP_KINDS.iter().copied())
+        };
+        let available = if !expected.is_empty() {
+            expected
+        } else {
+            ALL_STEP_KINDS.iter().map(|s| s.to_string()).collect()
+        };
+        let mut fields = BTreeMap::new();
+        fields.insert("step".to_string(), field.clone());
+        if !position.is_empty() {
+            fields.insert("position".to_string(), position);
+        }
+        return StructuredError {
+            pipeline: "compile",
+            code: "unknown_step_kind",
+            message: full_message.to_string(),
+            stage: Some("parse"),
+            step_index: None,
+            path: None,
+            fields,
+            suggestion: suggestion.clone(),
+            available,
+            hint: "Step kinds are a closed enum. Serde rejects any key that's not one of \
+                   the documented step types."
+                .to_string(),
+            fix_instruction: match suggestion {
+                Some(s) => format!(
+                    "Replace the unrecognized step key `{field}` with `{s}` (or another \
+                     supported step kind)."
+                ),
+                None => format!(
+                    "Replace the unrecognized step key `{field}` with one of the supported \
+                     step kinds."
+                ),
+            },
         };
     }
 
@@ -1044,6 +1625,17 @@ fn between_backticks(s: &str) -> Option<String> {
     let start = s.find('`')?;
     let rest = &s[start + 1..];
     let end = rest.find('`')?;
+    Some(rest[..end].to_string())
+}
+
+/// Pull the first single-quoted token out of `s`. The compiler's prose
+/// uses single quotes around asset/protocol/field names. Returns `None`
+/// if no quoted token is present so the caller can decide whether to
+/// surface the field at all.
+fn single_quoted(s: &str) -> Option<String> {
+    let start = s.find('\'')?;
+    let rest = &s[start + 1..];
+    let end = rest.find('\'')?;
     Some(rest[..end].to_string())
 }
 
@@ -1361,5 +1953,222 @@ mod tests {
         assert!(json.contains("\"code\":\"deadline_missing\""));
         assert!(json.contains("\"pipeline\":\"compile\""));
         assert!(json.contains("\"fixInstruction\""));
+    }
+
+    /// Drift guard: every code emitted by `to_structured()` must appear in
+    /// the `ALL_COMPILE_ERROR_CODES` registry. The system-prompt's
+    /// compile-error reference is sourced from that list, so a code
+    /// missing from the registry would silently teach the LLM a code it
+    /// has no documented playbook for.
+    ///
+    /// We can't enumerate every possible classifier path exhaustively
+    /// (the prose-classifier branches depend on input strings), but we
+    /// can sample one representative input per code and verify it lands
+    /// in the registry. Adding a new variant or classifier branch
+    /// without a corresponding entry here will fail this test.
+    #[test]
+    fn code_registry_in_sync() {
+        let samples: alloc::vec::Vec<CompileError> = alloc::vec![
+            CompileError::UnknownNetwork("foo".into()),
+            CompileError::UnknownAsset {
+                asset: "UDSC".into(),
+                network: "ethereum".into(),
+                suggestion: Some("USDC".into()),
+            },
+            CompileError::UnknownProtocol {
+                protocol: "aavv".into(),
+                network: "ethereum".into(),
+                available: alloc::vec!["aave".into()],
+            },
+            CompileError::InvalidAmount("abc".into()),
+            CompileError::InvalidAddress("0x".into()),
+            CompileError::Config("missing assets".into()),
+            CompileError::UnsupportedStep("zap".into()),
+            CompileError::Validation("Unsupported schema_version '2.0'".into()),
+            CompileError::Validation("max_spend cap exceeded".into()),
+            CompileError::Validation("Call 1 sends 99 wei (> 1 wei per-call cap)".into()),
+            CompileError::Validation("Signer address cannot be zero".into()),
+            CompileError::Validation("Intent must have at least one step".into()),
+            CompileError::Validation("Intent has 9 steps but maximum is 8".into()),
+            CompileError::Validation(
+                "Step 2: field 'recipient' is 0xabc but must be the intent signer (0xdef)".into(),
+            ),
+            CompileError::Validation("nested flashloans are not allowed".into()),
+            CompileError::Validation(
+                "flashloan inner pipeline has 9 steps but maximum is 8".into(),
+            ),
+            CompileError::Validation(
+                "flashloan tokens and amounts lengths must match".into(),
+            ),
+            CompileError::Validation(
+                "flashloan not repayable: inner pipeline leaves only 1 of token 0xabc but 2 is owed to Balancer".into(),
+            ),
+            CompileError::InsufficientBalance {
+                token: "USDC".into(),
+                required: "1000".into(),
+                available: "500".into(),
+            },
+            CompileError::SlippageTooLow {
+                step_index: 0,
+                current: "0".into(),
+            },
+            CompileError::HealthFactorRisk {
+                current: 1.0,
+                threshold: 1.2,
+            },
+            CompileError::InvalidChain(
+                "Cannot deposit native ETH directly into Aave.".into(),
+            ),
+            CompileError::InvalidChain("Cannot swap an asset to itself.".into()),
+            CompileError::InvalidChain("Cannot send to the zero address".into()),
+            CompileError::InvalidChain("withdraw amount must be greater than zero".into()),
+            CompileError::InvalidChain(
+                "Borrow requires collateral: no prior deposit in this intent and user balance info shows no existing Aave collateral.".into(),
+            ),
+            CompileError::InvalidChain(
+                "Withdraw requires an existing position: no prior deposit in this intent and user balance info shows no supplied position for asset USDC.".into(),
+            ),
+            CompileError::InvalidChain(
+                "Step 3 requires 100 of token 0xabc but the running balance only guarantees 50 (wallet seed 0 prior-step produce).".into(),
+            ),
+            CompileError::InvalidChain(
+                "flashloan inner step consumes 30 of token 0xabc but only 20 is available (flashloaned + produced)".into(),
+            ),
+            CompileError::InvalidChain(
+                "request_withdrawal requires at least one amount".into(),
+            ),
+            CompileError::InvalidChain(
+                "claim_withdrawal requires at least one request_id".into(),
+            ),
+            CompileError::InvalidChain(
+                "claim_withdrawal hints length 1 does not match request_ids length 2".into(),
+            ),
+            CompileError::InvalidChain(
+                "LP mint/increase requires a non-zero amount on at least one side".into(),
+            ),
+            CompileError::InvalidChain(
+                "LP decrease liquidity must be greater than zero".into(),
+            ),
+            CompileError::InvalidChain(
+                "LP decrease requires slippage protection: min_amount0 or min_amount1 must be > 0".into(),
+            ),
+            CompileError::InvalidChain(
+                "lp_mint token addresses must resolve to ERC-20 contracts. Use WETH instead of native ETH.".into(),
+            ),
+            CompileError::InvalidChain(
+                "LP ticks (-513, 487) must be multiples of tick spacing 10 for this fee tier".into(),
+            ),
+            CompileError::Adapter("free-form".into()),
+            CompileError::AdapterStepMismatch {
+                adapter: "aave_v3",
+                expected: "AaveV3Supply",
+            },
+            CompileError::ProtocolContractMissing {
+                protocol: "morpho".into(),
+                contract: "pool".into(),
+            },
+            CompileError::MorphoMarketRequired,
+            CompileError::UniswapFeeTierUnknown {
+                fee: "1234".into(),
+            },
+            CompileError::Json("unknown field `oops` at line 1 column 1".into()),
+            CompileError::Json("missing field `network` at line 1 column 1".into()),
+            CompileError::Json(
+                "invalid type: integer `1`, expected a string at line 1 column 1".into(),
+            ),
+            CompileError::Json("expected colon at line 1 column 1".into()),
+            CompileError::DeadlineMissing,
+            CompileError::DeadlineInPast {
+                deadline: 100,
+                current_timestamp: 200,
+            },
+        ];
+
+        for err in &samples {
+            let s = err.to_structured();
+            assert!(
+                ALL_COMPILE_ERROR_CODES.contains(&s.code),
+                "code `{}` (from {err:?}) is not in ALL_COMPILE_ERROR_CODES; add it to the \
+                 registry and to the system-prompt reference table",
+                s.code,
+            );
+            assert!(
+                !s.fix_instruction.is_empty(),
+                "code `{}` has an empty fix_instruction; the LLM has nothing actionable",
+                s.code,
+            );
+            assert!(
+                !s.hint.is_empty(),
+                "code `{}` has an empty hint; the LLM gets no rationale",
+                s.code,
+            );
+        }
+    }
+
+    #[test]
+    fn classify_flashloan_balance_drift_extracts_fields() {
+        let err = CompileError::InvalidChain(
+            "flashloan inner step consumes 30000000000 of token 0xabc but only 20000000000 \
+             is available (flashloaned + produced)"
+                .into(),
+        );
+        let s = err.to_structured();
+        assert_eq!(s.code, "flashloan_balance_drift");
+        assert_eq!(s.fields.get("token").map(|x| x.as_str()), Some("0xabc"));
+        assert_eq!(
+            s.fields.get("consumed").map(|x| x.as_str()),
+            Some("30000000000")
+        );
+        assert_eq!(
+            s.fields.get("available").map(|x| x.as_str()),
+            Some("20000000000")
+        );
+        assert!(s.fix_instruction.contains("0xabc"));
+    }
+
+    #[test]
+    fn classify_lp_decrease_zero_is_lp_invalid_not_zero_amount() {
+        // Regression: "LP decrease liquidity must be greater than zero"
+        // matches both `lp_*` and the generic `zero_amount` rule. The LP
+        // branch must come first so the LLM gets the more-specific code.
+        let err = CompileError::InvalidChain(
+            "LP decrease liquidity must be greater than zero".into(),
+        );
+        let s = err.to_structured();
+        assert_eq!(s.code, "lp_invalid");
+    }
+
+    #[test]
+    fn classify_claim_withdrawal_is_not_running_balance() {
+        // Regression: "claim_withdrawal requires at least one request_id"
+        // contains "requires" which used to misclassify as
+        // insufficient_running_balance.
+        let err = CompileError::InvalidChain(
+            "claim_withdrawal requires at least one request_id".into(),
+        );
+        let s = err.to_structured();
+        assert_eq!(s.code, "withdrawal_claim_invalid");
+    }
+
+    #[test]
+    fn classify_lp_tick_misaligned_extracts_spacing() {
+        let err = CompileError::InvalidChain(
+            "LP ticks (-513, 487) must be multiples of tick spacing 10 for this fee tier"
+                .into(),
+        );
+        let s = err.to_structured();
+        assert_eq!(s.code, "lp_tick_misaligned");
+        assert_eq!(s.fields.get("tick_spacing").map(|x| x.as_str()), Some("10"));
+    }
+
+    #[test]
+    fn classify_uniswap_fee_tier_unknown_lists_alternatives() {
+        let err = CompileError::UniswapFeeTierUnknown {
+            fee: "1234".into(),
+        };
+        let s = err.to_structured();
+        assert_eq!(s.code, "uniswap_fee_tier_unknown");
+        assert!(s.available.iter().any(|v| v == "500"));
+        assert!(s.available.iter().any(|v| v == "3000"));
     }
 }

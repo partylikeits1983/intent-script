@@ -4,7 +4,6 @@
 //! - Unwrap: calls `WETH.withdraw(uint256)` — function selector 0x2e1a7d4d
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256};
@@ -26,7 +25,10 @@ pub fn lower_wrap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount,
     } = step
     else {
-        return Err(CompileError::Adapter("Expected Wrap step".to_string()));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "wrap",
+            expected: "Wrap",
+        });
     };
 
     let calldata = depositCall {}.abi_encode();
@@ -46,7 +48,10 @@ pub fn lower_unwrap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount,
     } = step
     else {
-        return Err(CompileError::Adapter("Expected Unwrap step".to_string()));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "wrap",
+            expected: "Unwrap",
+        });
     };
 
     let calldata = withdrawCall { wad: *amount }.abi_encode();

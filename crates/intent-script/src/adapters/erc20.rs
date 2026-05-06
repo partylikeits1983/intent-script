@@ -5,7 +5,6 @@
 //! - `token.permit(owner, spender, value, deadline, v, r, s)` calldata
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{B256, Bytes, U256};
@@ -28,9 +27,10 @@ pub fn lower_approve(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected Erc20Approve step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "erc20",
+            expected: "Erc20Approve",
+        });
     };
 
     let calldata = approveCall {
@@ -59,9 +59,10 @@ pub fn lower_transfer_from(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected Erc20TransferFrom step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "erc20",
+            expected: "Erc20TransferFrom",
+        });
     };
 
     let calldata = transferFromCall {
@@ -95,9 +96,10 @@ pub fn lower_permit(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         deadline,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected Erc20Permit step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "erc20",
+            expected: "Erc20Permit",
+        });
     };
 
     let calldata = permitCall {

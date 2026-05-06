@@ -47,9 +47,10 @@ pub fn lower_flashloan(
         inner_steps,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected BalancerFlashloan step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "balancer",
+            expected: "BalancerFlashloan",
+        });
     };
 
     // 1. Lower the inner pipeline bottom-up into concrete calls.
@@ -82,9 +83,10 @@ pub fn lower_flashloan(
     // 3. Recipient must be the IntentRouter — that's where the Vault transfers
     //    tokens and which it calls back.
     let recipient = registry.router_address().ok_or_else(|| {
-        CompileError::Adapter(
-            "Balancer flashloan requires an IntentRouter address in the registry".to_string(),
-        )
+        CompileError::ProtocolContractMissing {
+            protocol: "intent_router".to_string(),
+            contract: "router".to_string(),
+        }
     })?;
 
     let calldata = flashLoanCall {

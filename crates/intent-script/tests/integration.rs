@@ -384,6 +384,40 @@ fn test_deposit_and_borrow_single_tx() {
     let json_str = serde_json::to_string_pretty(&json_output).unwrap();
     println!("Deposit+Borrow output:\n{json_str}");
     assert!(json_str.contains("eip712_intent"));
+
+    // When the caller supplies an empty allowances/delegations snapshot,
+    // the compiler must emit BOTH an ERC-20 approve (for the USDC pull)
+    // AND an Aave V3 approveDelegation (for the DAI borrow). Without the
+    // delegation prereq, the on-chain `executeDirect` reverts with
+    // InsufficientBorrowAllowance (0x1cb19ef3) — the exact symptom that
+    // motivated this feature.
+    let with_allowances_input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "steps": [
+            { "deposit": { "asset": "USDC", "amount": "5000", "into": "aave" } },
+            { "borrow":  { "asset": "DAI",  "amount": "2000", "from": "aave" } }
+        ]
+    }"#;
+    let with_allowances = do_compile_with_allowances(
+        with_allowances_input,
+        Some(r#"{ "tokens": {}, "delegations": {} }"#),
+    )
+    .expect("compile_with_allowances should succeed");
+    match &with_allowances.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let delegation_selector: [u8; 4] = [0xc0, 0x4a, 0x8a, 0x10]; // approveDelegation(address,uint256)
+            assert!(
+                intent
+                    .prerequisite_approvals
+                    .iter()
+                    .any(|tx| tx.data.starts_with(&delegation_selector)),
+                "expected an approveDelegation prerequisite for the DAI borrow; got {:?}",
+                intent.prerequisite_approvals
+            );
+        }
+        other => panic!("expected Eip712Intent, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3146,7 +3180,7 @@ fn test_morpho_requires_market_field() {
     }"#;
     let err = do_compile(input).unwrap_err().to_string();
     assert!(
-        err.contains("requires a 'market' field"),
+        err.contains("require an explicit `market` field") || err.contains("requires a 'market' field"),
         "expected missing-market error, got: {err}"
     );
 }

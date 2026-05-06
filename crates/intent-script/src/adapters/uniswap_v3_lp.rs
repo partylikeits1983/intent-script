@@ -7,7 +7,6 @@
 //! - `NPM.collect(CollectParams)`
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256, Uint};
@@ -80,9 +79,10 @@ pub fn lower_lp_mint(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         deadline,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected UniswapV3LpMint step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "uniswap_v3_lp",
+            expected: "UniswapV3LpMint",
+        });
     };
 
     let params = MintParams {
@@ -127,9 +127,10 @@ pub fn lower_lp_increase(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         ..
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected UniswapV3LpIncrease step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "uniswap_v3_lp",
+            expected: "UniswapV3LpIncrease",
+        });
     };
 
     let params = IncreaseLiquidityParams {
@@ -160,9 +161,10 @@ pub fn lower_lp_decrease(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         deadline,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected UniswapV3LpDecrease step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "uniswap_v3_lp",
+            expected: "UniswapV3LpDecrease",
+        });
     };
 
     let params = DecreaseLiquidityParams {
@@ -195,9 +197,10 @@ pub fn lower_lp_collect(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         ..
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected UniswapV3LpCollect step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "uniswap_v3_lp",
+            expected: "UniswapV3LpCollect",
+        });
     };
 
     let params = CollectParams {

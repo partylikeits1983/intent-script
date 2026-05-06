@@ -57,7 +57,11 @@ fn morpho_borrow_without_market_is_rejected() {
     }"#;
 
     let err = compile_anvil(input).unwrap_err().to_string();
-    assert!(err.contains("Morpho borrow requires a 'market' field"));
+    assert!(
+        err.contains("require an explicit `market` field")
+            || err.contains("Morpho borrow requires a 'market' field"),
+        "expected missing-market error, got: {err}",
+    );
 }
 
 #[test]

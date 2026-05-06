@@ -4,7 +4,6 @@
 //! - `router.exactInputSingle(ExactInputSingleParams)` — single-hop swap
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256, Uint};
@@ -42,9 +41,10 @@ pub fn lower_swap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         native_input,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected UniswapV3Swap step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "uniswap_v3",
+            expected: "UniswapV3Swap",
+        });
     };
 
     let params = ExactInputSingleParams {

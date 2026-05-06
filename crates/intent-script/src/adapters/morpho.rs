@@ -61,9 +61,10 @@ pub fn lower_supply(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         on_behalf,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected MorphoSupply step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "morpho",
+            expected: "MorphoSupply",
+        });
     };
 
     let calldata = supplyCall {
@@ -94,9 +95,10 @@ pub fn lower_supply_collateral(step: &ResolvedStep) -> Result<Vec<ConcreteCall>>
         on_behalf,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected MorphoSupplyCollat step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "morpho",
+            expected: "MorphoSupplyCollat",
+        });
     };
 
     let calldata = supplyCollateralCall {
@@ -127,9 +129,10 @@ pub fn lower_borrow(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         receiver,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected MorphoBorrow step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "morpho",
+            expected: "MorphoBorrow",
+        });
     };
 
     let calldata = borrowCall {
@@ -161,9 +164,10 @@ pub fn lower_withdraw(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         receiver,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected MorphoWithdraw step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "morpho",
+            expected: "MorphoWithdraw",
+        });
     };
 
     let calldata = withdrawCall {
@@ -195,9 +199,10 @@ pub fn lower_withdraw_collateral(step: &ResolvedStep) -> Result<Vec<ConcreteCall
         receiver,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected MorphoWithdrawCollat step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "morpho",
+            expected: "MorphoWithdrawCollat",
+        });
     };
 
     let calldata = withdrawCollateralCall {
@@ -227,9 +232,10 @@ pub fn lower_repay(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         on_behalf,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected MorphoRepay step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "morpho",
+            expected: "MorphoRepay",
+        });
     };
 
     let calldata = repayCall {

@@ -19,6 +19,13 @@ struct Cli {
     /// Pretty-print the JSON output
     #[arg(short, long)]
     pretty: bool,
+
+    /// Emit machine-readable structured errors alongside the human prose.
+    /// On compile failure, prints `INTENT_ERROR_V1::{json}` to stderr (same
+    /// shape the WASM binding produces) so agentic CLI flows can branch on
+    /// `code` and apply `fixInstruction` mechanically.
+    #[arg(long)]
+    structured: bool,
 }
 
 fn main() {
@@ -66,6 +73,13 @@ fn main() {
         }
         Err(e) => {
             eprintln!("Compile error: {e}");
+            if cli.structured {
+                let s = e.to_structured();
+                match serde_json::to_string(&s) {
+                    Ok(json) => eprintln!("INTENT_ERROR_V1::{json}"),
+                    Err(serr) => eprintln!("INTENT_ERROR_V1::serialize_failed: {serr}"),
+                }
+            }
             process::exit(1);
         }
     }

@@ -110,6 +110,10 @@ fn requires_router_step_without_router_is_rejected() {
     }"#;
 
     let err = compile_anvil_without_router(input).unwrap_err().to_string();
-    assert!(err.contains("IntentRouter"));
-    assert!(err.contains("requires"));
+    // The intent-router config gap surfaces as a typed
+    // ProtocolContractMissing variant; verify the user-visible prose
+    // mentions both the protocol and the missing contract.
+    assert!(err.contains("intent_router"));
+    assert!(err.contains("router"));
+    assert!(err.contains("registry"));
 }

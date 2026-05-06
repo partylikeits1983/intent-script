@@ -5,7 +5,6 @@
 //! destination chain is a separate intent.
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256};
@@ -48,9 +47,10 @@ pub fn lower_deposit_v3(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         message,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected AcrossDepositV3 step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "across",
+            expected: "AcrossDepositV3",
+        });
     };
 
     let calldata = depositV3Call {

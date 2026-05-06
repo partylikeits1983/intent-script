@@ -8,7 +8,6 @@
 //! - `WithdrawalQueue.claimWithdrawals(uint256[], uint256[])`
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256};
@@ -37,7 +36,10 @@ pub fn lower_stake(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         referral,
     } = step
     else {
-        return Err(CompileError::Adapter("Expected LidoStake step".to_string()));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "lido",
+            expected: "LidoStake",
+        });
     };
 
     let calldata = submitCall {
@@ -61,9 +63,10 @@ pub fn lower_wsteth_wrap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected WstETHWrap step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "lido",
+            expected: "WstETHWrap",
+        });
     };
 
     let calldata = wrapCall {
@@ -87,9 +90,10 @@ pub fn lower_wsteth_unwrap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected WstETHUnwrap step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "lido",
+            expected: "WstETHUnwrap",
+        });
     };
 
     let calldata = unwrapCall {
@@ -116,9 +120,10 @@ pub fn lower_request_withdrawal(step: &ResolvedStep) -> Result<Vec<ConcreteCall>
         owner,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected LidoRequestWithdrawal step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "lido",
+            expected: "LidoRequestWithdrawal",
+        });
     };
 
     let calldata = if *is_wsteth {
@@ -156,9 +161,10 @@ pub fn lower_claim_withdrawal(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> 
         hints,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected LidoClaimWithdrawal step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "lido",
+            expected: "LidoClaimWithdrawal",
+        });
     };
 
     let calldata = claimWithdrawalsCall {

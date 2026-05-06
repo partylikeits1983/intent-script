@@ -104,6 +104,7 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
             deadline: effective_deadline,
             user_balances,
             required_pulls: Vec::new(),
+            required_delegations: Vec::new(),
             fee_bps: registry.fee_bps(),
             requires_router,
         },
@@ -412,10 +413,9 @@ fn normalize_step(
                 "uniswap" | "" => {
                     // Parse optional fee tier (default 3000 = 0.3%)
                     let fee: u32 = s.fee.as_deref().unwrap_or("3000").parse().map_err(|_| {
-                        CompileError::InvalidAmount(format!(
-                            "Invalid fee tier: {}",
-                            s.fee.as_deref().unwrap_or("")
-                        ))
+                        CompileError::UniswapFeeTierUnknown {
+                            fee: s.fee.clone().unwrap_or_default(),
+                        }
                     })?;
 
                     // Look up Uniswap V3 router from protocol config
@@ -1539,10 +1539,9 @@ fn parse_uniswap_fee_tier(s: &str) -> Result<u32> {
         "500" => Ok(500),
         "3000" => Ok(3000),
         "10000" => Ok(10000),
-        other => Err(CompileError::InvalidAmount(format!(
-            "Invalid Uniswap V3 fee tier '{}' (must be 500, 3000, or 10000)",
-            other
-        ))),
+        other => Err(CompileError::UniswapFeeTierUnknown {
+            fee: other.to_string(),
+        }),
     }
 }
 
@@ -1839,12 +1838,18 @@ fn resolve_morpho_market(
             })?;
 
     let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
-        CompileError::Adapter("Protocol 'morpho' has no 'pool' contract configured".to_string())
+        CompileError::ProtocolContractMissing {
+            protocol: "morpho".to_string(),
+            contract: "pool".to_string(),
+        }
     })?;
     let pool = parse_address(pool_addr)?;
 
     let markets = protocol.markets.as_ref().ok_or_else(|| {
-        CompileError::Adapter("Protocol 'morpho' has no 'markets' table configured".to_string())
+        CompileError::ProtocolContractMissing {
+            protocol: "morpho".to_string(),
+            contract: "markets".to_string(),
+        }
     })?;
 
     let market = markets.get(market_alias).ok_or_else(|| {
@@ -1905,11 +1910,7 @@ fn normalize_morpho_deposit(
     registry: &RegistryContext,
     previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
-    let market_alias = d.market.as_deref().ok_or_else(|| {
-        CompileError::Validation(
-            "Morpho deposit requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
-        )
-    })?;
+    let market_alias = d.market.as_deref().ok_or(CompileError::MorphoMarketRequired)?;
     let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
 
     let is_collateral = match d.r#as.as_deref() {
@@ -1974,11 +1975,7 @@ fn normalize_morpho_borrow(
     registry: &RegistryContext,
     previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
-    let market_alias = b.market.as_deref().ok_or_else(|| {
-        CompileError::Validation(
-            "Morpho borrow requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
-        )
-    })?;
+    let market_alias = b.market.as_deref().ok_or(CompileError::MorphoMarketRequired)?;
     let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
 
     if b.asset != market_cfg.loan {
@@ -2014,11 +2011,7 @@ fn normalize_morpho_withdraw(
     registry: &RegistryContext,
     previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
-    let market_alias = w.market.as_deref().ok_or_else(|| {
-        CompileError::Validation(
-            "Morpho withdraw requires a 'market' field (e.g. \"USDC-WETH-86\")".to_string(),
-        )
-    })?;
+    let market_alias = w.market.as_deref().ok_or(CompileError::MorphoMarketRequired)?;
     let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
 
     let is_collateral = match w.r#as.as_deref() {

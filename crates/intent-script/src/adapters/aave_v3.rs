@@ -6,7 +6,6 @@
 //! - `pool.withdraw(address asset, uint256 amount, address to)`
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256};
@@ -31,9 +30,10 @@ pub fn lower_supply(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         on_behalf_of,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected AaveV3Supply step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "aave_v3",
+            expected: "AaveV3Supply",
+        });
     };
 
     let calldata = supplyCall {
@@ -62,9 +62,10 @@ pub fn lower_borrow(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         on_behalf_of,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected AaveV3Borrow step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "aave_v3",
+            expected: "AaveV3Borrow",
+        });
     };
 
     let calldata = borrowCall {
@@ -97,9 +98,10 @@ pub fn lower_repay(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         on_behalf_of,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected AaveV3Repay step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "aave_v3",
+            expected: "AaveV3Repay",
+        });
     };
 
     let calldata = repayCall {
@@ -130,9 +132,10 @@ pub fn lower_withdraw(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         to,
     } = step
     else {
-        return Err(CompileError::Adapter(
-            "Expected AaveV3Withdraw step".to_string(),
-        ));
+        return Err(CompileError::AdapterStepMismatch {
+            adapter: "aave_v3",
+            expected: "AaveV3Withdraw",
+        });
     };
 
     let calldata = withdrawCall {
