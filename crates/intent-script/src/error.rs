@@ -613,11 +613,7 @@ impl CompileError {
                 path: None,
                 fields: pairs(&[("fee", fee)]),
                 suggestion: None,
-                available: alloc::vec![
-                    "500".to_string(),
-                    "3000".to_string(),
-                    "10000".to_string(),
-                ],
+                available: alloc::vec!["500".to_string(), "3000".to_string(), "10000".to_string(),],
                 hint: "Uniswap V3 fee tiers are quantized to 100 (0.01%), 500 (0.05%), \
                        3000 (0.3%), or 10000 (1%). Stable pairs use 500; volatile pairs \
                        use 3000."
@@ -2131,9 +2127,8 @@ mod tests {
         // Regression: "LP decrease liquidity must be greater than zero"
         // matches both `lp_*` and the generic `zero_amount` rule. The LP
         // branch must come first so the LLM gets the more-specific code.
-        let err = CompileError::InvalidChain(
-            "LP decrease liquidity must be greater than zero".into(),
-        );
+        let err =
+            CompileError::InvalidChain("LP decrease liquidity must be greater than zero".into());
         let s = err.to_structured();
         assert_eq!(s.code, "lp_invalid");
     }
@@ -2143,9 +2138,8 @@ mod tests {
         // Regression: "claim_withdrawal requires at least one request_id"
         // contains "requires" which used to misclassify as
         // insufficient_running_balance.
-        let err = CompileError::InvalidChain(
-            "claim_withdrawal requires at least one request_id".into(),
-        );
+        let err =
+            CompileError::InvalidChain("claim_withdrawal requires at least one request_id".into());
         let s = err.to_structured();
         assert_eq!(s.code, "withdrawal_claim_invalid");
     }
@@ -2153,8 +2147,7 @@ mod tests {
     #[test]
     fn classify_lp_tick_misaligned_extracts_spacing() {
         let err = CompileError::InvalidChain(
-            "LP ticks (-513, 487) must be multiples of tick spacing 10 for this fee tier"
-                .into(),
+            "LP ticks (-513, 487) must be multiples of tick spacing 10 for this fee tier".into(),
         );
         let s = err.to_structured();
         assert_eq!(s.code, "lp_tick_misaligned");
@@ -2163,9 +2156,7 @@ mod tests {
 
     #[test]
     fn classify_uniswap_fee_tier_unknown_lists_alternatives() {
-        let err = CompileError::UniswapFeeTierUnknown {
-            fee: "1234".into(),
-        };
+        let err = CompileError::UniswapFeeTierUnknown { fee: "1234".into() };
         let s = err.to_structured();
         assert_eq!(s.code, "uniswap_fee_tier_unknown");
         assert!(s.available.iter().any(|v| v == "500"));

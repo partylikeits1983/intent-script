@@ -89,8 +89,7 @@ contract IntentLocalTests is Test {
         calls[0] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "transferFrom(address,address,uint256)",
-                user, address(router), usdcAmount
+                "transferFrom(address,address,uint256)", user, address(router), usdcAmount
             ),
             value: 0
         });
@@ -98,8 +97,7 @@ contract IntentLocalTests is Test {
         calls[1] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "approve(address,uint256)",
-                address(swapRouter), usdcAmount
+                "approve(address,uint256)", address(swapRouter), usdcAmount
             ),
             value: 0
         });
@@ -143,8 +141,8 @@ contract IntentLocalTests is Test {
 
     /// @notice Deposit USDC into Aave, then borrow DAI — all through the router.
     function test_depositAndBorrow_throughRouter() public {
-        uint256 usdcAmount = 5000 * 1e6;  // 5000 USDC
-        uint256 daiBorrow  = 2000 * 1e18; // 2000 DAI
+        uint256 usdcAmount = 5000 * 1e6; // 5000 USDC
+        uint256 daiBorrow = 2000 * 1e18; // 2000 DAI
 
         // User approves router to pull USDC
         vm.prank(user);
@@ -160,26 +158,21 @@ contract IntentLocalTests is Test {
         calls[0] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "transferFrom(address,address,uint256)",
-                user, address(router), usdcAmount
+                "transferFrom(address,address,uint256)", user, address(router), usdcAmount
             ),
             value: 0
         });
 
         calls[1] = IntentRouter.Call({
             target: address(usdc),
-            callData: abi.encodeWithSignature(
-                "approve(address,uint256)",
-                address(aavePool), usdcAmount
-            ),
+            callData: abi.encodeWithSignature("approve(address,uint256)", address(aavePool), usdcAmount),
             value: 0
         });
 
         calls[2] = IntentRouter.Call({
             target: address(aavePool),
             callData: abi.encodeWithSignature(
-                "supply(address,uint256,address,uint16)",
-                address(usdc), usdcAmount, user, uint16(0)
+                "supply(address,uint256,address,uint16)", address(usdc), usdcAmount, user, uint16(0)
             ),
             value: 0
         });
@@ -188,7 +181,11 @@ contract IntentLocalTests is Test {
             target: address(aavePool),
             callData: abi.encodeWithSignature(
                 "borrow(address,uint256,uint256,uint16,address)",
-                address(dai), daiBorrow, uint256(2), uint16(0), user
+                address(dai),
+                daiBorrow,
+                uint256(2),
+                uint16(0),
+                user
             ),
             value: 0
         });
@@ -213,7 +210,7 @@ contract IntentLocalTests is Test {
     /// @notice Full chain: Swap USDC → WETH, deposit WETH in Aave, borrow DAI.
     function test_swapDepositBorrow_throughRouter() public {
         uint256 usdcAmount = 5000 * 1e6;
-        uint256 daiBorrow  = 1000 * 1e18;
+        uint256 daiBorrow = 1000 * 1e18;
 
         // Expected WETH from swap: 5000e6 * 5e26 / 1e18 = 2.5e18 = 2.5 WETH
         uint256 expectedWeth = usdcAmount * USDC_WETH_RATE / 1e18;
@@ -234,8 +231,7 @@ contract IntentLocalTests is Test {
         calls[0] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "transferFrom(address,address,uint256)",
-                user, address(router), usdcAmount
+                "transferFrom(address,address,uint256)", user, address(router), usdcAmount
             ),
             value: 0
         });
@@ -243,8 +239,7 @@ contract IntentLocalTests is Test {
         calls[1] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "approve(address,uint256)",
-                address(swapRouter), usdcAmount
+                "approve(address,uint256)", address(swapRouter), usdcAmount
             ),
             value: 0
         });
@@ -272,8 +267,7 @@ contract IntentLocalTests is Test {
         calls[3] = IntentRouter.Call({
             target: address(weth),
             callData: abi.encodeWithSignature(
-                "approve(address,uint256)",
-                address(aavePool), expectedWeth
+                "approve(address,uint256)", address(aavePool), expectedWeth
             ),
             value: 0
         });
@@ -281,8 +275,7 @@ contract IntentLocalTests is Test {
         calls[4] = IntentRouter.Call({
             target: address(aavePool),
             callData: abi.encodeWithSignature(
-                "supply(address,uint256,address,uint16)",
-                address(weth), expectedWeth, user, uint16(0)
+                "supply(address,uint256,address,uint16)", address(weth), expectedWeth, user, uint16(0)
             ),
             value: 0
         });
@@ -291,7 +284,11 @@ contract IntentLocalTests is Test {
             target: address(aavePool),
             callData: abi.encodeWithSignature(
                 "borrow(address,uint256,uint256,uint16,address)",
-                address(dai), daiBorrow, uint256(2), uint16(0), user
+                address(dai),
+                daiBorrow,
+                uint256(2),
+                uint16(0),
+                user
             ),
             value: 0
         });
@@ -365,8 +362,7 @@ contract IntentLocalTests is Test {
         calls[0] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "transferFrom(address,address,uint256)",
-                user, address(router), usdcAmount
+                "transferFrom(address,address,uint256)", user, address(router), usdcAmount
             ),
             value: 0
         });
@@ -374,8 +370,7 @@ contract IntentLocalTests is Test {
         calls[1] = IntentRouter.Call({
             target: address(usdc),
             callData: abi.encodeWithSignature(
-                "approve(address,uint256)",
-                address(swapRouter), usdcAmount
+                "approve(address,uint256)", address(swapRouter), usdcAmount
             ),
             value: 0
         });

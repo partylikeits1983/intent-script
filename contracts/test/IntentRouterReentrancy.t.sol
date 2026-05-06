@@ -16,7 +16,10 @@ contract MaliciousToken {
         router = _router;
     }
 
-    function arm(address _user) external { user = _user; attackArmed = true; }
+    function arm(address _user) external {
+        user = _user;
+        attackArmed = true;
+    }
 
     function balanceOf(address) external view returns (uint256) {
         // Non-zero balance so _sweep takes the transfer branch.

@@ -41,10 +41,14 @@ generate-integration-fixtures:
 	cargo test -p intent-script --test generate_integration_fixtures -- --nocapture
 
 # Run Foundry tests excluding fork suites (requires: make generate-calldata first).
-# Both IntentForkE2E and IntentForkIntegration need --fork-url and are run
-# separately via make test-fork-e2e / make test-fork-integration.
+# Every IntentFork* contract needs --fork-url and is run separately via
+# make test-fork-e2e / make test-fork-integration. Use a prefix-anchored
+# regex so any new IntentFork* suite is auto-excluded — without this, a
+# new contract whose name doesn't literally contain "IntentForkE2E" or
+# "IntentForkIntegration" (e.g. IntentForkScenariosE2E) would silently
+# run here without a fork and revert in setUp.
 test-foundry:
-	cd contracts && forge test --no-match-contract 'IntentFork(E2E|Integration)' -vvv
+	cd contracts && forge test --no-match-contract '^IntentFork' -vvv
 
 # Full test flow: generate calldata, then run Foundry tests
 test-router: generate-calldata test-foundry
@@ -58,9 +62,13 @@ test-anvil:
 	cargo test -p evm-testing -- --nocapture
 
 # Run Foundry fork E2E tests against mainnet
-# These deploy IntentRouter on a fork and execute against real protocols
+# These deploy IntentRouter on a fork and execute against real protocols.
+# The regex matches any IntentFork* contract whose name ends in `E2E` —
+# IntentForkE2E (the original primitive-by-primitive suite) plus
+# IntentForkScenariosE2E (user-flow scenarios). Add new fork-mode
+# *E2E suites with no Makefile change.
 test-fork-e2e: generate-fixtures
-	cd contracts && forge test --mc IntentForkE2E --fork-url $(ETH_RPC_URL) -vvv
+	cd contracts && forge test --mc '^IntentFork.*E2E$$' --fork-url $(ETH_RPC_URL) -vvv
 
 # Run the DSL → compile → sign → executeSigned integration suite on fork.
 test-fork-integration: generate-integration-fixtures

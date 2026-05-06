@@ -79,6 +79,17 @@ pub struct AllowancesInput {
     /// refuses to emit anything outside it. Missing keys mean no cap.
     #[serde(default)]
     pub max_spend: HashMap<String, String>,
+    /// Per-borrowed-asset credit-delegation snapshot in base units, decimal
+    /// string. Keyed by **borrowed asset alias** (e.g. "USDT" → "0"); the
+    /// compiler maps each alias to its Aave V3 variable-debt-token via the
+    /// protocol registry's `variable_debt_tokens`. Missing keys mean 0
+    /// (no delegation), which forces a prerequisite
+    /// `vDebtToken.approveDelegation(router, amount)` for every borrow that
+    /// goes through the router. Empty / absent map ⇒ caller didn't snapshot
+    /// delegations, so no delegation prereqs are emitted (same back-compat
+    /// contract as `tokens`).
+    #[serde(default)]
+    pub delegations: HashMap<String, String>,
 }
 
 /// Aave V3 position information for balance-aware validation.

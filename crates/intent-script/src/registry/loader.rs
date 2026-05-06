@@ -67,6 +67,14 @@ pub struct ProtocolConfig {
     /// values only make the compiler more conservative, never less.
     #[serde(default)]
     pub ltv_bps: Option<HashMap<String, u16>>,
+    /// Aave-only: per-asset variable-debt-token addresses, keyed by the asset
+    /// alias (e.g. "USDT" -> 0x6df1...). When the compiler batches a borrow
+    /// through the IntentRouter, the router becomes `msg.sender` while the
+    /// user remains `onBehalfOf`; Aave V3 then requires a prior
+    /// `vDebtToken.approveDelegation(router, amount)` from the user. The
+    /// builder consults this map to emit that prerequisite tx.
+    #[serde(default)]
+    pub variable_debt_tokens: Option<HashMap<String, String>>,
     /// Aave-only: safety margin subtracted from the theoretical max leverage,
     /// in bps (300 = 3%). `0` means honor the raw LTV floor; callers opt into
     /// slack via an explicit `safety_margin_bps` on the leverage step.
@@ -190,6 +198,30 @@ impl RegistryContext {
         } else {
             full
         }
+    }
+
+    /// Look up the Aave V3 variable-debt-token address for a given underlying
+    /// asset address. Returns `None` when the asset isn't registered for
+    /// borrowing on this network or when no Aave protocol entry exists.
+    ///
+    /// Used by the enricher to attribute a borrow's required credit-delegation
+    /// onto the correct vDebt contract, which the builder then turns into an
+    /// `approveDelegation(router, amount)` prerequisite tx.
+    pub fn aave_variable_debt_token(&self, asset_address: &Address) -> Option<Address> {
+        use alloc::format;
+
+        let aave = self.protocols.get("aave")?;
+        let map = aave.variable_debt_tokens.as_ref()?;
+        let target = format!("{:?}", asset_address).to_lowercase();
+        for (alias, vdebt_str) in map.iter() {
+            let Some(cfg) = self.assets.get(alias) else {
+                continue;
+            };
+            if cfg.address.to_lowercase() == target {
+                return vdebt_str.parse().ok();
+            }
+        }
+        None
     }
 
     /// Look up decimals for an on-chain address. Defaults to 18 if unknown.

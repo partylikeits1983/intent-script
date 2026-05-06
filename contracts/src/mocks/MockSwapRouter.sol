@@ -38,8 +38,15 @@ contract MockSwapRouter {
     }
 
     /// @notice Mock swap: transfers tokenIn from msg.sender, produces tokenOut to recipient.
-    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut) {
-        require(block.timestamp <= params.deadline || params.deadline == type(uint256).max, "Deadline expired");
+    function exactInputSingle(ExactInputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountOut)
+    {
+        require(
+            block.timestamp <= params.deadline || params.deadline == type(uint256).max,
+            "Deadline expired"
+        );
 
         // Transfer tokenIn from caller
         IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountIn);
@@ -66,5 +73,5 @@ contract MockSwapRouter {
     }
 
     /// @notice Accept ETH (needed for WETH wrapping)
-    receive() external payable {}
+    receive() external payable { }
 }

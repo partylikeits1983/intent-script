@@ -15,7 +15,8 @@ use crate::output::{
     CallData, CompileOutput, Eip712Domain, Eip712IntentOutput, IntentBatchData, UnsignedTx,
 };
 
-// ABI definition for IntentRouter.executeDirect() and ERC-20 approve().
+// ABI definition for IntentRouter.executeDirect(), ERC-20 approve(),
+// and Aave V3 vDebtToken.approveDelegation().
 alloy_sol_types::sol! {
     struct RouterCall {
         address target;
@@ -26,6 +27,8 @@ alloy_sol_types::sol! {
     function executeDirect(RouterCall[] calls, address[] tokensToSweep) external payable;
 
     function approve(address spender, uint256 value) external returns (bool);
+
+    function approveDelegation(address delegatee, uint256 amount) external returns (bool);
 }
 
 /// Encode an ERC-20 `approve(spender, amount)` calldata.
@@ -37,6 +40,11 @@ fn encode_erc20_approve(spender: Address, amount: U256) -> Bytes {
         }
         .abi_encode(),
     )
+}
+
+/// Encode an Aave V3 vDebtToken `approveDelegation(delegatee, amount)` calldata.
+fn encode_credit_delegation(delegatee: Address, amount: U256) -> Bytes {
+    Bytes::from(approveDelegationCall { delegatee, amount }.abi_encode())
 }
 
 /// Format a short hex address like "0xC02a…6Cc2" for descriptions.
@@ -51,17 +59,27 @@ fn short_addr(addr: Address) -> String {
 
 /// Build the final compile output from an execution plan.
 ///
-/// `current_allowances` and `required_pulls` drive prerequisite-approval
-/// emission for the `Batched` path:
+/// `current_allowances` / `required_pulls` and `current_delegations` /
+/// `required_delegations` drive prerequisite-tx emission for the `Batched`
+/// path:
 /// - `required_pulls` is the aggregate amount the router will `transferFrom`
 ///   out of the signer for each token in this batch (populated by the
-///   enricher).
-/// - `current_allowances` is the caller-supplied snapshot of on-chain
-///   `allowance(signer, router)` per token. When `Some(_)`, every token in
-///   `required_pulls` whose current allowance is below the required amount
-///   gets a prepended `approve(router, amount)` UnsignedTx. When `None` (the
-///   4-arg legacy `compile()` entry point), no prerequisite approvals are
-///   emitted — preserving today's output byte-for-byte.
+///   enricher). `current_allowances` is the caller-supplied snapshot of
+///   on-chain `allowance(signer, router)` per token; an
+///   `approve(router, amount)` UnsignedTx is prepended for every
+///   under-allowanced token.
+/// - `required_delegations` is the aggregate Aave V3 borrow amount that will
+///   be drawn against the signer's credit-line through the router, keyed by
+///   variable-debt-token address. `current_delegations` is the snapshot of
+///   `borrowAllowance(signer, router)` per vDebt token; a
+///   `vDebt.approveDelegation(router, amount)` UnsignedTx is prepended for
+///   every under-delegated token (Aave V3 reverts with custom error
+///   `0x1cb19ef3` / InsufficientBorrowAllowance otherwise).
+///
+/// When the corresponding snapshot is `None` (the legacy 4-arg `compile()`
+/// entry point), no prerequisite txs of that kind are emitted — preserving
+/// today's output byte-for-byte for callers that don't supply allowances.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     plan: ExecutionPlan,
     chain_id: u64,
@@ -70,6 +88,8 @@ pub fn build(
     deadline: u64,
     current_allowances: Option<&HashMap<Address, U256>>,
     required_pulls: &[(Address, U256)],
+    current_delegations: Option<&HashMap<Address, U256>>,
+    required_delegations: &[(Address, U256)],
 ) -> CompileOutput {
     match plan {
         ExecutionPlan::Single(call) => {
@@ -181,7 +201,7 @@ pub fn build(
             // Build prerequisite approvals. When `current_allowances` is None
             // (the legacy 4-arg `compile()` entry point), we emit nothing —
             // backwards-compatible with every existing test and caller.
-            let prerequisite_approvals: Vec<UnsignedTx> = match current_allowances {
+            let mut prerequisite_approvals: Vec<UnsignedTx> = match current_allowances {
                 Some(allowances) => required_pulls
                     .iter()
                     .filter(|(token, need)| {
@@ -198,6 +218,31 @@ pub fn build(
                     .collect(),
                 None => Vec::new(),
             };
+
+            // Append credit-delegation prerequisites for Aave V3 borrows.
+            // Filtered against `current_delegations` (the user's on-chain
+            // `borrowAllowance(signer, router)`) so a max-approved vDebt
+            // doesn't get re-prompted on every batch. Same `None == legacy`
+            // contract as the ERC-20 path.
+            if let Some(delegations) = current_delegations {
+                for (vdebt, need) in required_delegations.iter() {
+                    let current = delegations.get(vdebt).copied().unwrap_or(U256::ZERO);
+                    if current >= *need {
+                        continue;
+                    }
+                    prerequisite_approvals.push(UnsignedTx {
+                        to: *vdebt,
+                        data: encode_credit_delegation(router, *need),
+                        value: U256::ZERO,
+                        chain_id,
+                        from: signer,
+                        description: format!(
+                            "Approve credit delegation: vDebt {} for IntentRouter",
+                            short_addr(*vdebt)
+                        ),
+                    });
+                }
+            }
 
             CompileOutput::Eip712Intent(Eip712IntentOutput {
                 domain,

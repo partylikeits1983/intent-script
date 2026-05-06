@@ -58,5 +58,5 @@ contract MockLido {
     }
 
     /// @notice Accept ETH transfers.
-    receive() external payable {}
+    receive() external payable { }
 }

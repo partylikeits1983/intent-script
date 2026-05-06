@@ -155,7 +155,10 @@ fn unknown_protocol_lists_alternatives() {
 
     let s = structured(input);
     assert_eq!(s.code, "unknown_protocol");
-    assert!(!s.available.is_empty(), "available list should be populated");
+    assert!(
+        !s.available.is_empty(),
+        "available list should be populated"
+    );
 }
 
 // ─── Uniswap fee tier unknown ───────────────────────────────────────────
@@ -200,10 +203,7 @@ fn slippage_too_low_includes_step_index_and_path() {
     let s = structured(input);
     assert_eq!(s.code, "slippage_too_low");
     assert_eq!(s.step_index, Some(0));
-    assert_eq!(
-        s.path.as_deref(),
-        Some("steps[0].swap.min_amount_out"),
-    );
+    assert_eq!(s.path.as_deref(), Some("steps[0].swap.min_amount_out"),);
 }
 
 // ─── Deadline missing on a batched intent ───────────────────────────────

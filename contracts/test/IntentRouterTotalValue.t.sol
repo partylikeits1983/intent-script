@@ -53,22 +53,26 @@ contract IntentRouterTotalValueTest is Test {
         );
         bytes32[] memory hashes = new bytes32[](batch.calls.length);
         for (uint256 i = 0; i < batch.calls.length; i++) {
-            hashes[i] = keccak256(abi.encode(
-                callTypehash,
-                batch.calls[i].target,
-                keccak256(batch.calls[i].callData),
-                batch.calls[i].value
-            ));
+            hashes[i] = keccak256(
+                abi.encode(
+                    callTypehash,
+                    batch.calls[i].target,
+                    keccak256(batch.calls[i].callData),
+                    batch.calls[i].value
+                )
+            );
         }
-        bytes32 structHash = keccak256(abi.encode(
-            batchTypehash,
-            batch.signer,
-            keccak256(abi.encodePacked(hashes)),
-            keccak256(abi.encodePacked(batch.tokensToSweep)),
-            batch.nonce,
-            batch.deadline,
-            batch.totalValue
-        ));
+        bytes32 structHash = keccak256(
+            abi.encode(
+                batchTypehash,
+                batch.signer,
+                keccak256(abi.encodePacked(hashes)),
+                keccak256(abi.encodePacked(batch.tokensToSweep)),
+                batch.nonce,
+                batch.deadline,
+                batch.totalValue
+            )
+        );
         return keccak256(abi.encodePacked(hex"1901", router.DOMAIN_SEPARATOR(), structHash));
     }
 

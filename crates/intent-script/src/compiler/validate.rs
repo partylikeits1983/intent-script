@@ -761,6 +761,7 @@ mod tests {
             deadline: 0,
             user_balances: None,
             required_pulls: Vec::new(),
+            required_delegations: Vec::new(),
             fee_bps: 0,
             requires_router: false,
         }

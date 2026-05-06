@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {console} from "forge-std/Test.sol";
-import {IntentForkBase} from "./IntentForkBase.t.sol";
-import {IntentRouter} from "../src/IntentRouter.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import { console } from "forge-std/Test.sol";
+import { IntentForkBase } from "./IntentForkBase.t.sol";
+import { IntentRouter } from "../src/IntentRouter.sol";
+import { IERC20 } from "../src/interfaces/IERC20.sol";
 
 /// @title IntentForkIntegration
 /// @notice Eight end-to-end integration scenarios that take a JSON DSL,
@@ -199,7 +199,9 @@ contract IntentForkIntegration is IntentForkBase {
 
         assertGt(IERC20(A_WBTC).balanceOf(user) - aWbtcBefore, 0, "user should have aWBTC");
         assertEq(
-            IERC20(USDT).balanceOf(user) - usdtBefore, 20_000 * 1e6, "user should have +20k USDT borrowed"
+            IERC20(USDT).balanceOf(user) - usdtBefore,
+            20_000 * 1e6,
+            "user should have +20k USDT borrowed"
         );
 
         address[] memory cleared = new address[](2);
@@ -324,7 +326,8 @@ contract IntentForkIntegration is IntentForkBase {
     }
 
     function _nftBalance(address who) internal view returns (uint256) {
-        (bool ok, bytes memory ret) = NPM.staticcall(abi.encodeWithSignature("balanceOf(address)", who));
+        (bool ok, bytes memory ret) =
+            NPM.staticcall(abi.encodeWithSignature("balanceOf(address)", who));
         require(ok && ret.length == 32, "NPM.balanceOf failed");
         return abi.decode(ret, (uint256));
     }
@@ -374,6 +377,8 @@ interface INPM {
         uint128 amount1Max;
     }
 
-    function decreaseLiquidity(DecreaseLiquidityParams calldata) external returns (uint256, uint256);
+    function decreaseLiquidity(DecreaseLiquidityParams calldata)
+        external
+        returns (uint256, uint256);
     function collect(CollectParams calldata) external returns (uint256, uint256);
 }

@@ -1837,20 +1837,24 @@ fn resolve_morpho_market(
                 available: known_protocols(registry),
             })?;
 
-    let pool_addr = protocol.contracts.get("pool").ok_or_else(|| {
-        CompileError::ProtocolContractMissing {
-            protocol: "morpho".to_string(),
-            contract: "pool".to_string(),
-        }
-    })?;
+    let pool_addr =
+        protocol
+            .contracts
+            .get("pool")
+            .ok_or_else(|| CompileError::ProtocolContractMissing {
+                protocol: "morpho".to_string(),
+                contract: "pool".to_string(),
+            })?;
     let pool = parse_address(pool_addr)?;
 
-    let markets = protocol.markets.as_ref().ok_or_else(|| {
-        CompileError::ProtocolContractMissing {
-            protocol: "morpho".to_string(),
-            contract: "markets".to_string(),
-        }
-    })?;
+    let markets =
+        protocol
+            .markets
+            .as_ref()
+            .ok_or_else(|| CompileError::ProtocolContractMissing {
+                protocol: "morpho".to_string(),
+                contract: "markets".to_string(),
+            })?;
 
     let market = markets.get(market_alias).ok_or_else(|| {
         CompileError::Validation(format!(
@@ -1910,7 +1914,10 @@ fn normalize_morpho_deposit(
     registry: &RegistryContext,
     previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
-    let market_alias = d.market.as_deref().ok_or(CompileError::MorphoMarketRequired)?;
+    let market_alias = d
+        .market
+        .as_deref()
+        .ok_or(CompileError::MorphoMarketRequired)?;
     let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
 
     let is_collateral = match d.r#as.as_deref() {
@@ -1975,7 +1982,10 @@ fn normalize_morpho_borrow(
     registry: &RegistryContext,
     previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
-    let market_alias = b.market.as_deref().ok_or(CompileError::MorphoMarketRequired)?;
+    let market_alias = b
+        .market
+        .as_deref()
+        .ok_or(CompileError::MorphoMarketRequired)?;
     let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
 
     if b.asset != market_cfg.loan {
@@ -2011,7 +2021,10 @@ fn normalize_morpho_withdraw(
     registry: &RegistryContext,
     previous_steps: &[ResolvedStep],
 ) -> Result<ResolvedStep> {
-    let market_alias = w.market.as_deref().ok_or(CompileError::MorphoMarketRequired)?;
+    let market_alias = w
+        .market
+        .as_deref()
+        .ok_or(CompileError::MorphoMarketRequired)?;
     let (pool, params, market_cfg) = resolve_morpho_market(market_alias, registry)?;
 
     let is_collateral = match w.r#as.as_deref() {

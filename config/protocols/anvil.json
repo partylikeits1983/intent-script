@@ -14,6 +14,14 @@
       "wstETH": 7500,
       "stETH":  7500
     },
+    "variable_debt_tokens": {
+      "USDC":   "0x72E95b8931767C79bA4EeE721354d6E99a61D004",
+      "USDT":   "0x6df1c1E379bC5a00a7b4C6e67a203333772f45A8",
+      "WETH":   "0xeA51d7853EEFb32b6ee06b1C12E6dcCA88Be0fFE",
+      "DAI":    "0xcF8d0c70c850859266f5C405E8318EF888DD0EC4",
+      "WBTC":   "0x40aAbEf1aa8f0eEc637E0E7d92fbfFB2F26A8b7B",
+      "wstETH": "0xC96113eED8cAB59cD8A66813bCB0cEb29F06D2e4"
+    },
     "max_leverage_safety_margin_bps": 0
   },
   "morpho": {

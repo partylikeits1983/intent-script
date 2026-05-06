@@ -15,9 +15,8 @@ contract IntentRouter is ReentrancyGuard {
     bytes32 public constant DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
-    bytes32 public constant CALL_TYPEHASH = keccak256(
-        "Call(address target,bytes callData,uint256 value)"
-    );
+    bytes32 public constant CALL_TYPEHASH =
+        keccak256("Call(address target,bytes callData,uint256 value)");
     bytes32 public constant INTENT_BATCH_TYPEHASH = keccak256(
         "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)"
     );
@@ -54,14 +53,14 @@ contract IntentRouter is ReentrancyGuard {
     bytes32 private constant FLASHLOAN_GUARD_SLOT = keccak256("intent.flashloan.guard");
 
     // ─── Fees ───────────────────────────────────────────────
-    uint16 public constant MAX_FEE_BPS = 100;   // 1.00% hard cap
+    uint16 public constant MAX_FEE_BPS = 100; // 1.00% hard cap
     uint256 public constant FEE_TIMELOCK = 1 days;
 
-    uint16  public feeBps;              // active rate
-    address public feeRecipient;        // active recipient
-    uint16  public pendingFeeBps;       // queued rate
+    uint16 public feeBps; // active rate
+    address public feeRecipient; // active recipient
+    uint16 public pendingFeeBps; // queued rate
     address public pendingFeeRecipient; // queued recipient
-    uint64  public pendingFeeApplyAt;   // earliest timestamp at which queued fee may be applied; 0 = none queued
+    uint64 public pendingFeeApplyAt; // earliest timestamp at which queued fee may be applied; 0 = none queued
 
     // ─── Pause (B11) ────────────────────────────────────────
     /// Emergency kill-switch. Owner can pause immediately to halt the
@@ -114,13 +113,15 @@ contract IntentRouter is ReentrancyGuard {
 
     constructor() {
         owner = msg.sender;
-        DOMAIN_SEPARATOR = keccak256(abi.encode(
-            DOMAIN_TYPEHASH,
-            keccak256("IntentRouter"),
-            keccak256("1"),
-            block.chainid,
-            address(this)
-        ));
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256("IntentRouter"),
+                keccak256("1"),
+                block.chainid,
+                address(this)
+            )
+        );
     }
 
     // ─── Allowlist management ───────────────────────────────
@@ -140,19 +141,16 @@ contract IntentRouter is ReentrancyGuard {
     /// @notice Set whether a `(target, selector)` pair is allowed. Takes
     ///         effect once `setSelectorAllowlistEnforced(true)` has been
     ///         called. Idempotent.
-    function setAllowedSelector(address target, bytes4 selector, bool allowed)
-        external onlyOwner
-    {
+    function setAllowedSelector(address target, bytes4 selector, bool allowed) external onlyOwner {
         allowedSelectors[target][selector] = allowed;
         emit SelectorAllowed(target, selector, allowed);
     }
 
     /// @notice Batch-set allowed selectors for a single target.
-    function setAllowedSelectors(
-        address target,
-        bytes4[] calldata selectors,
-        bool allowed
-    ) external onlyOwner {
+    function setAllowedSelectors(address target, bytes4[] calldata selectors, bool allowed)
+        external
+        onlyOwner
+    {
         for (uint256 i = 0; i < selectors.length; i++) {
             allowedSelectors[target][selectors[i]] = allowed;
             emit SelectorAllowed(target, selectors[i], allowed);
@@ -230,7 +228,10 @@ contract IntentRouter is ReentrancyGuard {
     /// @notice Accept ERC-721 safe transfers into the router. No custody logic — NFTs that
     ///         land here should be swept out by a follow-up call in the same or next batch.
     function onERC721Received(address, address, uint256, bytes calldata)
-        external pure returns (bytes4) {
+        external
+        pure
+        returns (bytes4)
+    {
         return IERC721Receiver.onERC721Received.selector;
     }
 
@@ -239,10 +240,12 @@ contract IntentRouter is ReentrancyGuard {
     /// @notice Execute a batch of calls and sweep tokens back to the caller.
     /// @param calls Array of calls to execute in order.
     /// @param tokensToSweep Array of ERC-20 token addresses to sweep back to msg.sender.
-    function executeDirect(
-        Call[] calldata calls,
-        address[] calldata tokensToSweep
-    ) external payable nonReentrant whenNotPaused {
+    function executeDirect(Call[] calldata calls, address[] calldata tokensToSweep)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+    {
         _executeCalls(calls);
         _sweep(tokensToSweep, msg.sender);
         _refundETH(msg.sender);
@@ -253,12 +256,16 @@ contract IntentRouter is ReentrancyGuard {
     /// @notice Execute a signed batch of calls on behalf of the signer.
     /// @param batch The signed intent batch.
     /// @param signature The EIP-712 signature (65 bytes: r, s, v).
-    function executeSigned(
-        IntentBatch calldata batch,
-        bytes calldata signature
-    ) external payable nonReentrant whenNotPaused {
+    function executeSigned(IntentBatch calldata batch, bytes calldata signature)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+    {
         // Verify deadline (Task 2: require non-zero deadline)
-        require(batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline");
+        require(
+            batch.deadline > 0 && block.timestamp <= batch.deadline, "Expired or missing deadline"
+        );
 
         // B9: Bound attached ETH to the signed total. Without this a
         // relayer could top msg.value up beyond what any inner call
@@ -289,10 +296,7 @@ contract IntentRouter is ReentrancyGuard {
         for (uint256 i = 0; i < calls.length; i++) {
             require(allowedTargets[calls[i].target], "Target not allowed");
             if (enforceSelectors) {
-                require(
-                    calls[i].callData.length >= 4,
-                    "Selector required"
-                );
+                require(calls[i].callData.length >= 4, "Selector required");
                 require(
                     allowedSelectors[calls[i].target][bytes4(calls[i].callData[:4])],
                     "Selector not allowed"
@@ -304,17 +308,17 @@ contract IntentRouter is ReentrancyGuard {
             // before running inner calls. This defends against a compromised
             // allowlisted target re-entering `receiveFlashLoan` via delegatecall.
             if (
-                calls[i].target == BALANCER_VAULT
-                && calls[i].callData.length >= 4
-                && bytes4(calls[i].callData[:4]) == FLASHLOAN_SELECTOR
+                calls[i].target == BALANCER_VAULT && calls[i].callData.length >= 4
+                    && bytes4(calls[i].callData[:4]) == FLASHLOAN_SELECTOR
             ) {
                 bytes32 slot = FLASHLOAN_GUARD_SLOT;
-                assembly { tstore(slot, 1) }
+                assembly {
+                    tstore(slot, 1)
+                }
             }
 
-            (bool success, bytes memory result) = calls[i].target.call{ value: calls[i].value }(
-                calls[i].callData
-            );
+            (bool success, bytes memory result) =
+                calls[i].target.call{ value: calls[i].value }(calls[i].callData);
             if (!success) {
                 // Bubble up the revert reason
                 assembly {
@@ -332,15 +336,16 @@ contract IntentRouter is ReentrancyGuard {
             require(call.callData.length >= 4, "Selector required");
             bytes4 sel;
             bytes memory cd = call.callData;
-            assembly { sel := mload(add(cd, 32)) }
-            require(
-                allowedSelectors[call.target][sel],
-                "Selector not allowed"
-            );
+            assembly {
+                sel := mload(add(cd, 32))
+            }
+            require(allowedSelectors[call.target][sel], "Selector not allowed");
         }
         (bool success, bytes memory result) = call.target.call{ value: call.value }(call.callData);
         if (!success) {
-            assembly { revert(add(result, 32), mload(result)) }
+            assembly {
+                revert(add(result, 32), mload(result))
+            }
         }
     }
 
@@ -361,11 +366,15 @@ contract IntentRouter is ReentrancyGuard {
 
         bytes32 slot = FLASHLOAN_GUARD_SLOT;
         bytes32 guard;
-        assembly { guard := tload(slot) }
+        assembly {
+            guard := tload(slot)
+        }
         require(guard != bytes32(0), "no flashloan in progress");
         // Clear before running inner calls so a nested flashLoan via a
         // compromised allowlisted target can't satisfy the sentinel check.
-        assembly { tstore(slot, 0) }
+        assembly {
+            tstore(slot, 0)
+        }
 
         Call[] memory innerCalls = abi.decode(userData, (Call[]));
         for (uint256 i = 0; i < innerCalls.length; i++) {
@@ -378,10 +387,7 @@ contract IntentRouter is ReentrancyGuard {
         // keeps semantics obvious.
         for (uint256 i = 0; i < tokens.length; i++) {
             uint256 owed = amounts[i] + feeAmounts[i];
-            require(
-                IERC20(tokens[i]).transfer(BALANCER_VAULT, owed),
-                "flashloan repay fail"
-            );
+            _safeTransfer(tokens[i], BALANCER_VAULT, owed, "flashloan repay fail");
         }
     }
 
@@ -394,11 +400,36 @@ contract IntentRouter is ReentrancyGuard {
             if (balance == 0) continue;
             uint256 fee = feesOn ? (balance * bps) / 10_000 : 0;
             if (fee > 0) {
-                require(IERC20(tokens[i]).transfer(feeTo, fee), "fee xfer fail");
+                _safeTransfer(tokens[i], feeTo, fee, "fee xfer fail");
                 emit FeeCollected(tokens[i], feeTo, fee);
             }
-            require(IERC20(tokens[i]).transfer(recipient, balance - fee), "Token sweep failed");
+            _safeTransfer(tokens[i], recipient, balance - fee, "Token sweep failed");
         }
+    }
+
+    /// @notice ERC-20 `transfer` that tolerates non-standard tokens like USDT,
+    /// which return no data from `transfer`. Strict `IERC20.transfer(...)`
+    /// declares a `bool` return; Solidity decodes the empty returndata as a
+    /// revert when the call is wrapped in `require(...)`. Mirrors the
+    /// OpenZeppelin SafeERC20 strategy: low-level call, success ⇒ either no
+    /// return data or `abi.decode(true)`. Otherwise revert: when the token
+    /// itself reverted with a reason, bubble it up so callers (and tests)
+    /// see the underlying message (e.g. "ReentrancyGuard: reentrant call");
+    /// for a clean false-return, fall back to `errMsg`.
+    function _safeTransfer(address token, address to, uint256 value, string memory errMsg)
+        internal
+    {
+        (bool ok, bytes memory data) =
+            token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
+        if (!ok) {
+            if (data.length > 0) {
+                assembly {
+                    revert(add(32, data), mload(data))
+                }
+            }
+            revert(errMsg);
+        }
+        require(data.length == 0 || abi.decode(data, (bool)), errMsg);
     }
 
     function _refundETH(address recipient) internal {
@@ -417,34 +448,31 @@ contract IntentRouter is ReentrancyGuard {
     }
 
     function _hashTypedData(IntentBatch calldata batch) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked(
-            "\x19\x01",
-            DOMAIN_SEPARATOR,
-            _hashIntentBatch(batch)
-        ));
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, _hashIntentBatch(batch)));
     }
 
     function _hashIntentBatch(IntentBatch calldata batch) internal pure returns (bytes32) {
-        return keccak256(abi.encode(
-            INTENT_BATCH_TYPEHASH,
-            batch.signer,
-            _hashCalls(batch.calls),
-            keccak256(abi.encodePacked(batch.tokensToSweep)),
-            batch.nonce,
-            batch.deadline,
-            batch.totalValue
-        ));
+        return keccak256(
+            abi.encode(
+                INTENT_BATCH_TYPEHASH,
+                batch.signer,
+                _hashCalls(batch.calls),
+                keccak256(abi.encodePacked(batch.tokensToSweep)),
+                batch.nonce,
+                batch.deadline,
+                batch.totalValue
+            )
+        );
     }
 
     function _hashCalls(Call[] calldata calls) internal pure returns (bytes32) {
         bytes32[] memory hashes = new bytes32[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
-            hashes[i] = keccak256(abi.encode(
-                CALL_TYPEHASH,
-                calls[i].target,
-                keccak256(calls[i].callData),
-                calls[i].value
-            ));
+            hashes[i] = keccak256(
+                abi.encode(
+                    CALL_TYPEHASH, calls[i].target, keccak256(calls[i].callData), calls[i].value
+                )
+            );
         }
         return keccak256(abi.encodePacked(hashes));
     }

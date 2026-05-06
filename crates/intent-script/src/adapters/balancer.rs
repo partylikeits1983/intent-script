@@ -82,12 +82,13 @@ pub fn lower_flashloan(
 
     // 3. Recipient must be the IntentRouter — that's where the Vault transfers
     //    tokens and which it calls back.
-    let recipient = registry.router_address().ok_or_else(|| {
-        CompileError::ProtocolContractMissing {
-            protocol: "intent_router".to_string(),
-            contract: "router".to_string(),
-        }
-    })?;
+    let recipient =
+        registry
+            .router_address()
+            .ok_or_else(|| CompileError::ProtocolContractMissing {
+                protocol: "intent_router".to_string(),
+                contract: "router".to_string(),
+            })?;
 
     let calldata = flashLoanCall {
         recipient,

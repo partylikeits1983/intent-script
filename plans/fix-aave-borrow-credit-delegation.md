@@ -53,19 +53,32 @@ Added a reusable helper `_approveDelegation()` and called it in all 3 failing te
 - **`test_fork_complexDefi_executeDirect`**: Added `_approveDelegation(VDEBT_DAI, user, ROUTER_ADDR, 1000e18)` before batch execution
 - **`test_fork_complexDefi_executeSigned`**: Added `_approveDelegation(VDEBT_DAI, signer, address(signedRouter), 1000e18)` before batch execution
 
-## Remaining Work (Future)
+## Remaining Work (Future) — DONE 2026-05-06
 
-### Compiler-side prerequisite metadata
+### Compiler-side prerequisite metadata — shipped
 
-The compiler could optionally output a list of required prerequisites (approvals + delegations) so frontends know what to prompt for. This is not blocking — the tests pass without it.
+The compiler now emits `vDebtToken.approveDelegation(router, amount)` as a
+prerequisite tx alongside ERC-20 approves, so the UI's
+`prerequisiteApprovals` chain handles credit delegation end-to-end. Selector:
+`0xc04a8a10` (`keccak256("approveDelegation(address,uint256)")[:4]`).
+
+**Implementation (all merged):**
 
 | File | Change |
 |------|--------|
-| `config/protocols/ethereum.json` | Add `variable_debt_tokens` map to aave config |
-| `crates/intent-script/src/registry/loader.rs` | Add `variable_debt_tokens` field to `ProtocolConfig`, add lookup helper |
-| `crates/intent-script/src/ir/canonical.rs` | Add `prerequisites` field to `ResolvedIntent` |
-| `crates/intent-script/src/compiler/enrich.rs` | Generate `approveDelegation` prerequisites for borrow steps |
-| `crates/intent-script/src/output.rs` | Add `Prerequisite` type and include in output types + JSON serialization |
+| `config/protocols/{ethereum,anvil}.json`, `intentOS-ui/lib/config/protocols-anvil.json` | Added `variable_debt_tokens` map to aave config (USDC, USDT, WETH, DAI, WBTC, wstETH) |
+| `crates/intent-script/src/registry/loader.rs` | Added `variable_debt_tokens` field to `ProtocolConfig`; added `aave_variable_debt_token(asset)` lookup helper |
+| `crates/intent-script/src/ir/canonical.rs` | Added `required_delegations: Vec<(Address, U256)>` field on `ResolvedIntent` (parallel to `required_pulls`) |
+| `crates/intent-script/src/compiler/enrich.rs` | `AaveV3Borrow` arm aggregates per-vDebt borrow amounts when batching through the router; recursion through `BalancerFlashloan` propagates inner delegations to outer |
+| `crates/intent-script/src/compiler/build.rs` | `build()` signature gained `current_delegations` + `required_delegations`; emits `approveDelegation(router, amount)` UnsignedTx in `prerequisite_approvals` for under-delegated vDebt entries (same `None == legacy` back-compat as ERC-20 approves) |
+| `crates/intent-script/src/schema/public_ast.rs` | `AllowancesInput` gained optional `delegations: HashMap<String, String>` keyed by borrowed-asset alias |
+| `crates/intent-script/src/compiler/mod.rs` | Parses `delegations`, resolves each alias → vDebt address via the registry, passes the snapshot map to `build()` |
+| `crates/intent-script/tests/allowance_tests.rs` | 4 new tests locking in the prereq emission, saturation skip, partial-delegation full-amount re-grant, and legacy-compile back-compat |
+| `crates/intent-script/tests/integration.rs` | `test_deposit_and_borrow_single_tx` extended to assert delegation prereq for the DAI borrow |
+| `intentOS-ui/lib/fetch-allowances-json.ts` | Multicall now reads `borrowAllowance(user, router)` for every vDebt token alongside ERC-20 allowances; emits `{ tokens, delegations }` |
+| `intentOS-ui/lib/required-approvals.ts` | Added `decodeApproveDelegationTx` + `kind: "credit_delegation"` discriminator on `MissingApproval`; preview card labels delegation entries as "USDT debt" via vDebt-→-underlying reverse-lookup |
+| `intentOS-ui/components/finalize-intent-tool.tsx` | `handleApprove` branches on `kind` and calls `approveDelegation` via the new `CREDIT_DELEGATION_ABI` for delegation prereqs |
+| `intentOS-ui/lib/diagnose-revert.ts` | `aave_borrow_delegation` branch matches the custom-error selector `0x1cb19ef3` (in addition to Aave's string codes), so the symptom that motivated this whole feature is named even when bypass paths leak through |
 
 ## Verification
 

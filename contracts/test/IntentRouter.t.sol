@@ -182,25 +182,29 @@ contract IntentRouterTest is Test {
         // Hash calls
         bytes32[] memory callHashes = new bytes32[](batch.calls.length);
         for (uint256 i = 0; i < batch.calls.length; i++) {
-            callHashes[i] = keccak256(abi.encode(
-                CALL_TYPEHASH_,
-                batch.calls[i].target,
-                keccak256(batch.calls[i].callData),
-                batch.calls[i].value
-            ));
+            callHashes[i] = keccak256(
+                abi.encode(
+                    CALL_TYPEHASH_,
+                    batch.calls[i].target,
+                    keccak256(batch.calls[i].callData),
+                    batch.calls[i].value
+                )
+            );
         }
         bytes32 callsHash = keccak256(abi.encodePacked(callHashes));
 
         // Hash struct (B9: totalValue is part of the signed digest)
-        bytes32 structHash = keccak256(abi.encode(
-            INTENT_BATCH_TYPEHASH_,
-            batch.signer,
-            callsHash,
-            keccak256(abi.encodePacked(batch.tokensToSweep)),
-            batch.nonce,
-            batch.deadline,
-            batch.totalValue
-        ));
+        bytes32 structHash = keccak256(
+            abi.encode(
+                INTENT_BATCH_TYPEHASH_,
+                batch.signer,
+                callsHash,
+                keccak256(abi.encodePacked(batch.tokensToSweep)),
+                batch.nonce,
+                batch.deadline,
+                batch.totalValue
+            )
+        );
 
         return keccak256(abi.encodePacked("\x19\x01", router.DOMAIN_SEPARATOR(), structHash));
     }
@@ -453,7 +457,9 @@ contract IntentRouterTest is Test {
         router.executeDirect(calls, sweep);
 
         // User balance should be unchanged (no ETH sent)
-        assertEq(user.balance, balanceBefore, "Balance should be unchanged after empty executeDirect");
+        assertEq(
+            user.balance, balanceBefore, "Balance should be unchanged after empty executeDirect"
+        );
     }
 
     /// @notice Fuzz: executeSigned with invalid signature should revert.
@@ -521,11 +527,7 @@ contract IntentRouterTest is Test {
         address notAllowed = makeAddr("notAllowed");
 
         IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
-        calls[0] = IntentRouter.Call({
-            target: notAllowed,
-            callData: "",
-            value: 0
-        });
+        calls[0] = IntentRouter.Call({ target: notAllowed, callData: "", value: 0 });
 
         address[] memory tokensToSweep = new address[](0);
 

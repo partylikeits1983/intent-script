@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test, console} from "forge-std/Test.sol";
-import {IntentRouter} from "../src/IntentRouter.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import { Test, console } from "forge-std/Test.sol";
+import { IntentRouter } from "../src/IntentRouter.sol";
+import { IERC20 } from "../src/interfaces/IERC20.sol";
 
 /// @title IntentForkScenariosE2E
 /// @notice User-flow integration tests for the JSON DSL → compiler → router
@@ -47,6 +47,7 @@ contract IntentForkScenariosE2E is Test {
     address constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
     address constant A_WSTETH = 0x0B925eD163218f6662a35e0f0371Ac234f9E9371;
     address constant VDEBT_USDC = 0x72E95b8931767C79bA4EeE721354d6E99a61D004;
+    address constant VDEBT_USDT = 0x6df1C1E379bC5a00a7b4C6e67A203333772f45A8;
     address constant VDEBT_WETH = 0xeA51d7853EEFb32b6ee06b1C12E6dcCA88Be0fFE;
 
     // Compiler signer — every example JSON uses this as `from`, so the
@@ -98,7 +99,7 @@ contract IntentForkScenariosE2E is Test {
         uint256 value = _readValue("aave_deposit_usdt_borrow_weth");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Aave USDT deposit + WETH borrow should succeed");
 
         uint256 aUsdtBal = IERC20(A_USDT).balanceOf(user);
@@ -107,7 +108,9 @@ contract IntentForkScenariosE2E is Test {
         uint256 debt = IERC20(VDEBT_WETH).balanceOf(user);
 
         assertGt(aUsdtBal, 0, "user should hold aUSDT after deposit");
-        assertApproxEqAbs(wethAfter - wethBefore, borrowAmount, 10, "WETH gained should equal borrow");
+        assertApproxEqAbs(
+            wethAfter - wethBefore, borrowAmount, 10, "WETH gained should equal borrow"
+        );
         assertEq(usdtAfter, 0, "all USDT should be spent");
         // Aave accrues interest at ~1 wei per block on a fresh borrow, so the
         // debt token balance can be up to a few wei above the principal.
@@ -144,7 +147,7 @@ contract IntentForkScenariosE2E is Test {
         uint256 value = _readValue("aave_deposit_wsteth_borrow_usdc");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Aave wstETH deposit + USDC borrow should succeed");
 
         uint256 aWstethBal = IERC20(A_WSTETH).balanceOf(user);
@@ -154,7 +157,9 @@ contract IntentForkScenariosE2E is Test {
 
         assertGt(aWstethBal, 0, "user should hold aWSTETH after deposit");
         assertEq(wstethAfter, 0, "all wstETH should be deposited");
-        assertApproxEqAbs(usdcAfter - usdcBefore, borrowAmount, 10, "USDC gained should equal borrow");
+        assertApproxEqAbs(
+            usdcAfter - usdcBefore, borrowAmount, 10, "USDC gained should equal borrow"
+        );
         assertApproxEqAbs(debt, borrowAmount, 100, "USDC variable debt ~= borrow");
 
         address[] memory cleared = new address[](2);
@@ -163,6 +168,57 @@ contract IntentForkScenariosE2E is Test {
         _assertRouterCleared(cleared);
 
         console.log("Test 2: aWSTETH", aWstethBal, "USDC gained", usdcAfter - usdcBefore);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // #2b Aave: deposit 10k USDC, borrow 2k USDT
+    //
+    // This is the exact intent shape that revealed the missing-credit-
+    // delegation bug from the UI: USDC collateral, USDT debt, batched
+    // through the IntentRouter as `executeDirect`. Without the
+    // approveDelegation prereq the borrow reverts with custom error
+    // 0x1cb19ef3 (InsufficientBorrowAllowance). Locking it in here so any
+    // regression on the prereq-emission path is caught the next time we
+    // touch the compiler.
+    // ═════════════════════════════════════════════════════════════════════
+
+    function test_fork_aaveDepositUSDC_borrowUSDT() public {
+        uint256 usdcAmount = 10_000 * 1e6;
+        uint256 borrowAmount = 2_000 * 1e6;
+
+        _dealERC20(USDC, user, usdcAmount);
+        vm.prank(user);
+        IERC20(USDC).approve(ROUTER_ADDR, usdcAmount);
+        _approveDelegation(VDEBT_USDT, user, ROUTER_ADDR, borrowAmount);
+
+        uint256 usdtBefore = IERC20(USDT).balanceOf(user);
+
+        bytes memory callData = _readCalldata("aave_deposit_usdc_borrow_usdt");
+        uint256 value = _readValue("aave_deposit_usdc_borrow_usdt");
+
+        vm.prank(user);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
+        assertTrue(success, "Aave USDC deposit + USDT borrow should succeed");
+
+        uint256 aUsdcBal = IERC20(A_USDC).balanceOf(user);
+        uint256 usdtAfter = IERC20(USDT).balanceOf(user);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(user);
+        uint256 debt = IERC20(VDEBT_USDT).balanceOf(user);
+
+        assertGt(aUsdcBal, 0, "user should hold aUSDC after deposit");
+        assertEq(usdcAfter, 0, "all USDC should be deposited");
+        assertApproxEqAbs(
+            usdtAfter - usdtBefore, borrowAmount, 10, "USDT gained should equal borrow"
+        );
+        // Aave accrues interest at ~1 wei per block on a fresh borrow.
+        assertApproxEqAbs(debt, borrowAmount, 100, "USDT variable debt ~= borrow");
+
+        address[] memory cleared = new address[](2);
+        cleared[0] = USDC;
+        cleared[1] = USDT;
+        _assertRouterCleared(cleared);
+
+        console.log("Test 2b: aUSDC", aUsdcBal, "USDT gained", usdtAfter - usdtBefore);
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -207,7 +263,7 @@ contract IntentForkScenariosE2E is Test {
         uint256 value = _readValue("long_eth_3x_balancer");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "leveraged long via Balancer flashloan should succeed");
 
         uint256 usdcAfter = IERC20(USDC).balanceOf(user);
@@ -215,13 +271,17 @@ contract IntentForkScenariosE2E is Test {
         uint256 aWstethAfter = IERC20(A_WSTETH).balanceOf(user);
         uint256 debtAfter = IERC20(VDEBT_USDC).balanceOf(user);
 
-        assertEq(usdcBefore - usdcAfter, ownContribution, "user spent exactly their USDC contribution");
+        assertEq(
+            usdcBefore - usdcAfter, ownContribution, "user spent exactly their USDC contribution"
+        );
         // Aave can round aToken minting down by 1-2 wei vs the supplied amount.
         assertGe(aUsdcAfter - aUsdcBefore, ownContribution - 10, "user pre-deposit landed as aUSDC");
         // Swap output varies with USDC/wstETH 0.05% pool liquidity at the fork
         // block; require at least ~0.8 wstETH (worst-case safe bound).
         assertGt(aWstethAfter - aWstethBefore, 0.8 ether, "user gained leveraged wstETH collateral");
-        assertApproxEqAbs(debtAfter - debtBefore, flashAmount, flashAmount / 1000, "USDC debt ~= flashloan");
+        assertApproxEqAbs(
+            debtAfter - debtBefore, flashAmount, flashAmount / 1000, "USDC debt ~= flashloan"
+        );
 
         address[] memory cleared = new address[](2);
         cleared[0] = USDC;
@@ -256,7 +316,7 @@ contract IntentForkScenariosE2E is Test {
         uint256 value = _readValue("short_eth_1x");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "1x short ETH should succeed");
 
         uint256 usdcAfter = IERC20(USDC).balanceOf(user);
@@ -276,7 +336,9 @@ contract IntentForkScenariosE2E is Test {
         cleared[1] = WETH;
         _assertRouterCleared(cleared);
 
-        console.log("Test 4: aUSDC", aUsdcBal, "USDC from swap", usdcAfter - (usdcBefore - usdcCollateral));
+        console.log(
+            "Test 4: aUSDC", aUsdcBal, "USDC from swap", usdcAfter - (usdcBefore - usdcCollateral)
+        );
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -311,7 +373,7 @@ contract IntentForkScenariosE2E is Test {
         bytes memory mintData = _readCalldata("lp_mint_usdc_usdt_0p95_1p05");
         uint256 mintValue = _readValue("lp_mint_usdc_usdt_0p95_1p05");
         vm.prank(user);
-        (bool mintOk,) = ROUTER_ADDR.call{value: mintValue}(mintData);
+        (bool mintOk,) = ROUTER_ADDR.call{ value: mintValue }(mintData);
         assertTrue(mintOk, "LP mint should succeed");
 
         assertEq(_nftBalance(user), nftBefore + 1, "user should own +1 LP NFT");
@@ -368,7 +430,9 @@ contract IntentForkScenariosE2E is Test {
         assertGe(usdtAfter, usdtBefore - maxLoss, "USDT balance roughly restored");
 
         console.log("Test 5: tokenId", tokenId, "liquidity drained");
-        console.log("Test 5: USDC delta", usdcBefore - usdcAfter, "USDT delta", usdtBefore - usdtAfter);
+        console.log(
+            "Test 5: USDC delta", usdcBefore - usdcAfter, "USDT delta", usdtBefore - usdtAfter
+        );
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────
@@ -407,16 +471,24 @@ contract IntentForkScenariosE2E is Test {
 
     /// Aave V3 requires credit delegation when msg.sender (router) is not
     /// the onBehalfOf (user) on a borrow.
-    function _approveDelegation(address vDebtToken, address delegator, address delegatee, uint256 amount) internal {
+    function _approveDelegation(
+        address vDebtToken,
+        address delegator,
+        address delegatee,
+        uint256 amount
+    ) internal {
         vm.prank(delegator);
-        (bool ok,) = vDebtToken.call(abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount));
+        (bool ok,) = vDebtToken.call(
+            abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount)
+        );
         require(ok, "approveDelegation failed");
     }
 
     // ─── Uniswap V3 NPM helpers ─────────────────────────────────────────
 
     function _nftBalance(address who) internal view returns (uint256) {
-        (bool ok, bytes memory ret) = NPM.staticcall(abi.encodeWithSignature("balanceOf(address)", who));
+        (bool ok, bytes memory ret) =
+            NPM.staticcall(abi.encodeWithSignature("balanceOf(address)", who));
         require(ok && ret.length == 32, "NPM.balanceOf failed");
         return abi.decode(ret, (uint256));
     }
@@ -433,7 +505,8 @@ contract IntentForkScenariosE2E is Test {
 
     /// NPM.positions returns a 12-tuple; slot 7 is liquidity.
     function _positionLiquidity(uint256 tokenId) internal view returns (uint128) {
-        (bool ok, bytes memory ret) = NPM.staticcall(abi.encodeWithSignature("positions(uint256)", tokenId));
+        (bool ok, bytes memory ret) =
+            NPM.staticcall(abi.encodeWithSignature("positions(uint256)", tokenId));
         require(ok && ret.length >= 12 * 32, "NPM.positions failed");
         uint256 liq;
         assembly {

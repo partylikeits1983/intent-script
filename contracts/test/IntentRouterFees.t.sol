@@ -144,13 +144,19 @@ contract IntentRouterFeesTest is Test {
         // 5 ETH wrapped → 5 WETH minus 1% fee = 4.95 WETH to user.
         uint256 expectedWethFee = (5 ether * 100) / 10_000; // 0.05 WETH
         assertEq(weth.balanceOf(feeTo), expectedWethFee, "WETH fee captured");
-        assertEq(weth.balanceOf(user) - userWethBefore, 5 ether - expectedWethFee, "user WETH after fee");
+        assertEq(
+            weth.balanceOf(user) - userWethBefore, 5 ether - expectedWethFee, "user WETH after fee"
+        );
 
         // 5 ETH refunded minus 1% = 4.95 ETH to user, 0.05 ETH to feeTo.
         uint256 expectedEthFee = (5 ether * 100) / 10_000; // 0.05 ETH
         assertEq(feeTo.balance - feeToEthBefore, expectedEthFee, "ETH fee captured");
         // User paid 10 ETH, got back (5 - 0.05) = 4.95 ETH → net spent 5.05 ETH.
-        assertEq(userEthBefore - user.balance, 10 ether - (5 ether - expectedEthFee), "user ETH net after fee refund");
+        assertEq(
+            userEthBefore - user.balance,
+            10 ether - (5 ether - expectedEthFee),
+            "user ETH net after fee refund"
+        );
     }
 
     /// @notice If feeRecipient is the zero address, no fee is taken even when feeBps > 0.

@@ -15,7 +15,9 @@ contract MockAavePool {
 
     /// @notice Supply (deposit) an asset into the pool.
     ///         Same ABI as Aave V3: supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)
-    function supply(address asset, uint256 amount, address onBehalfOf, uint16 /* referralCode */) external {
+    function supply(address asset, uint256 amount, address onBehalfOf, uint16 /* referralCode */ )
+        external
+    {
         // Transfer asset from caller to pool
         IERC20(asset).transferFrom(msg.sender, address(this), amount);
         deposits[onBehalfOf][asset] += amount;
@@ -27,16 +29,15 @@ contract MockAavePool {
     function borrow(
         address asset,
         uint256 amount,
-        uint256 /* interestRateMode */,
-        uint16 /* referralCode */,
+        uint256, /* interestRateMode */
+        uint16, /* referralCode */
         address onBehalfOf
     ) external {
         borrows[onBehalfOf][asset] += amount;
 
         // Mint borrowed tokens to the borrower
-        (bool success,) = asset.call(
-            abi.encodeWithSignature("mint(address,uint256)", onBehalfOf, amount)
-        );
+        (bool success,) =
+            asset.call(abi.encodeWithSignature("mint(address,uint256)", onBehalfOf, amount));
         require(success, "Mock: failed to mint borrowed tokens");
     }
 

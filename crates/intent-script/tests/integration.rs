@@ -3180,7 +3180,8 @@ fn test_morpho_requires_market_field() {
     }"#;
     let err = do_compile(input).unwrap_err().to_string();
     assert!(
-        err.contains("require an explicit `market` field") || err.contains("requires a 'market' field"),
+        err.contains("require an explicit `market` field")
+            || err.contains("requires a 'market' field"),
         "expected missing-market error, got: {err}"
     );
 }

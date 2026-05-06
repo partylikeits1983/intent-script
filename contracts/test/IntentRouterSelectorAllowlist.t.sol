@@ -14,7 +14,7 @@ import { WETH9 } from "../src/mocks/WETH9.sol";
 contract IntentRouterSelectorAllowlistTest is Test {
     IntentRouter router;
     WETH9 weth;
-    bytes4 constant WETH_DEPOSIT_SELECTOR  = bytes4(keccak256("deposit()"));
+    bytes4 constant WETH_DEPOSIT_SELECTOR = bytes4(keccak256("deposit()"));
     bytes4 constant WETH_WITHDRAW_SELECTOR = bytes4(keccak256("withdraw(uint256)"));
 
     function setUp() public {

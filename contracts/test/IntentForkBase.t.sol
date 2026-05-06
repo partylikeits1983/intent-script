@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test} from "forge-std/Test.sol";
-import {IntentRouter} from "../src/IntentRouter.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import { Test } from "forge-std/Test.sol";
+import { IntentRouter } from "../src/IntentRouter.sol";
+import { IERC20 } from "../src/interfaces/IERC20.sol";
 
 /// @title IntentForkBase
 /// @notice Shared scaffolding for fork-mode tests that exercise the
@@ -56,7 +56,8 @@ abstract contract IntentForkBase is Test {
     /// @dev IntentRouter EIP-712 typehashes — copy of the constants in
     ///      contracts/src/IntentRouter.sol, redeclared here so subclasses
     ///      don't need to import them.
-    bytes32 internal constant CALL_TYPEHASH = keccak256("Call(address target,bytes callData,uint256 value)");
+    bytes32 internal constant CALL_TYPEHASH =
+        keccak256("Call(address target,bytes callData,uint256 value)");
     bytes32 internal constant INTENT_BATCH_TYPEHASH = keccak256(
         "IntentBatch(address signer,Call[] calls,address[] tokensToSweep,uint256 nonce,uint256 deadline,uint256 totalValue)Call(address target,bytes callData,uint256 value)"
     );
@@ -104,15 +105,26 @@ abstract contract IntentForkBase is Test {
 
     /// @dev Aave V3 requires credit delegation when msg.sender (router) is
     ///      not the onBehalfOf (user) on a borrow.
-    function _approveDelegation(address vDebtToken, address delegator, address delegatee, uint256 amount) internal {
+    function _approveDelegation(
+        address vDebtToken,
+        address delegator,
+        address delegatee,
+        uint256 amount
+    ) internal {
         vm.prank(delegator);
-        (bool ok,) = vDebtToken.call(abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount));
+        (bool ok,) = vDebtToken.call(
+            abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount)
+        );
         require(ok, "approveDelegation failed");
     }
 
     function _assertRouterCleared(address[] memory tokens) internal view {
         for (uint256 i = 0; i < tokens.length; i++) {
-            assertEq(IERC20(tokens[i]).balanceOf(ROUTER_ADDR), 0, "router should not retain swept token balance");
+            assertEq(
+                IERC20(tokens[i]).balanceOf(ROUTER_ADDR),
+                0,
+                "router should not retain swept token balance"
+            );
         }
         assertEq(ROUTER_ADDR.balance, 0, "router should not retain ETH");
     }
@@ -126,7 +138,11 @@ abstract contract IntentForkBase is Test {
     // Solidity reads the .bin form because abi.decode handles nested dynamic
     // arrays cleanly without per-field vm.parseJson*** calls.
 
-    function _readBatch(string memory name) internal view returns (IntentRouter.IntentBatch memory batch) {
+    function _readBatch(string memory name)
+        internal
+        view
+        returns (IntentRouter.IntentBatch memory batch)
+    {
         string memory hexStr = vm.readFile(string.concat("test/fixtures/", name, "_batch.bin"));
         bytes memory raw = vm.parseBytes(hexStr);
         batch = abi.decode(raw, (IntentRouter.IntentBatch));
@@ -147,7 +163,10 @@ abstract contract IntentForkBase is Test {
         for (uint256 i = 0; i < batch.calls.length; i++) {
             callHashes[i] = keccak256(
                 abi.encode(
-                    CALL_TYPEHASH, batch.calls[i].target, keccak256(batch.calls[i].callData), batch.calls[i].value
+                    CALL_TYPEHASH,
+                    batch.calls[i].target,
+                    keccak256(batch.calls[i].callData),
+                    batch.calls[i].value
                 )
             );
         }
@@ -174,6 +193,6 @@ abstract contract IntentForkBase is Test {
         // The signer is also the relayer here. ETH for `totalValue` comes
         // out of their balance.
         vm.prank(user);
-        router.executeSigned{value: batch.totalValue}(batch, signature);
+        router.executeSigned{ value: batch.totalValue }(batch, signature);
     }
 }

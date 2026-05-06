@@ -84,12 +84,14 @@ pub fn compile_with_allowances(
     let registry =
         RegistryContext::load(chains_json, assets_json, protocols_json, &script.network)?;
 
-    // Parse the optional allowances blob into a (token_address → allowance) map
-    // plus an optional (token_address → max_spend) cap map. Unknown symbols are
-    // dropped with a warning; malformed numeric values bubble up as a parse
+    // Parse the optional allowances blob into a (token_address → allowance) map,
+    // an optional (token_address → max_spend) cap map, and a
+    // (vDebt_address → delegation) credit-delegation snapshot. Unknown symbols
+    // are dropped with a warning; malformed numeric values bubble up as a parse
     // error (bad UI data is a bug, not silently ignorable).
     let mut parse_warnings: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
     let mut max_spend_map: HashMap<Address, U256> = HashMap::new();
+    let mut current_delegations: Option<HashMap<Address, U256>> = None;
     let current_allowances: Option<HashMap<Address, U256>> = match allowances_json {
         Some(raw) if !raw.is_empty() => {
             let input: AllowancesInput = serde_json::from_str(raw)?;
@@ -116,6 +118,52 @@ pub fn compile_with_allowances(
                     }
                 }
             }
+            // Parse optional credit-delegation snapshot. Map each
+            // borrowed-asset alias to its variable-debt token via the
+            // registry, then store as (vDebt_address → current allowance).
+            // The presence of an empty map (vs. `None`) signals: "caller
+            // *did* snapshot delegations" — the builder filters with that
+            // map, so missing entries become 0 ⇒ a prereq is emitted. We
+            // mark `current_delegations = Some(_)` whenever the caller
+            // supplied any allowances JSON at all, even if `delegations` is
+            // absent from the JSON, so the back-compat contract matches
+            // `tokens`: pass an allowances JSON ⇒ get prereqs.
+            let mut delegation_map: HashMap<Address, U256> = HashMap::new();
+            for (alias, base_units) in input.delegations.iter() {
+                let asset_addr = match registry.assets.get(alias) {
+                    Some(cfg) if cfg.address != "native" => {
+                        cfg.address.parse::<Address>().map_err(|_| {
+                            crate::error::CompileError::Adapter(alloc::format!(
+                                "Invalid address in asset config for '{}'",
+                                alias
+                            ))
+                        })?
+                    }
+                    _ => {
+                        parse_warnings.push(alloc::format!(
+                            "Delegation entry for unknown asset '{}' ignored",
+                            alias
+                        ));
+                        continue;
+                    }
+                };
+                let vdebt_addr = match registry.aave_variable_debt_token(&asset_addr) {
+                    Some(addr) => addr,
+                    None => {
+                        parse_warnings.push(alloc::format!(
+                            "Delegation entry for '{}' ignored: asset not borrowable on this network",
+                            alias
+                        ));
+                        continue;
+                    }
+                };
+                let amount = U256::from_str_radix(base_units, 10).map_err(|_| {
+                    crate::error::CompileError::InvalidAmount(base_units.to_string())
+                })?;
+                delegation_map.insert(vdebt_addr, amount);
+            }
+            current_delegations = Some(delegation_map);
+
             // B4: Parse optional max_spend caps. Same alias-resolution and
             // error handling as `tokens`. Unknown aliases are dropped with a
             // warning rather than erroring so a UI that ships a stale alias
@@ -213,6 +261,8 @@ pub fn compile_with_allowances(
         enriched.deadline,
         current_allowances.as_ref(),
         &enriched.required_pulls,
+        current_delegations.as_ref(),
+        &enriched.required_delegations,
     );
 
     // Only batched (Eip712Intent) outputs need a deadline — `executeSigned`

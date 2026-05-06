@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test, console} from "forge-std/Test.sol";
-import {IntentRouter} from "../src/IntentRouter.sol";
-import {WETH9} from "../src/mocks/WETH9.sol";
+import { Test, console } from "forge-std/Test.sol";
+import { IntentRouter } from "../src/IntentRouter.sol";
+import { WETH9 } from "../src/mocks/WETH9.sol";
 
 /// @title IntentRouterCalldataTest
 /// @notice Tests that execute compiler-generated calldata against the router.
@@ -68,7 +68,7 @@ contract IntentRouterCalldataTest is Test {
         // The compiler targets the mainnet WETH address, but we have a local mock.
         // For this test, we call WETH directly (single tx, no router).
         vm.prank(user);
-        (bool success,) = address(weth).call{value: 1 ether}(callData);
+        (bool success,) = address(weth).call{ value: 1 ether }(callData);
         assertTrue(success, "Wrap ETH call should succeed");
 
         assertEq(weth.balanceOf(user), 1 ether, "User should have 1 WETH");
@@ -90,7 +90,8 @@ contract IntentRouterCalldataTest is Test {
         bytes memory callData = vm.parseBytes(calldataHex);
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
-        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) =
+            _decodeExecuteDirect(callData);
 
         assertEq(calls.length, 3, "deposit batch should be transferFrom + approve + supply");
         assertEq(tokensToSweep.length, 0, "pure deposit should not sweep outputs");
@@ -108,18 +109,22 @@ contract IntentRouterCalldataTest is Test {
     function test_wrapETH_compilerStyle_throughRouter() public {
         // Build the same calldata structure the compiler produces
         IntentRouter.Call[] memory calls = new IntentRouter.Call[](1);
-        calls[0] =
-            IntentRouter.Call({target: address(weth), callData: abi.encodeWithSignature("deposit()"), value: 1 ether});
+        calls[0] = IntentRouter.Call({
+            target: address(weth),
+            callData: abi.encodeWithSignature("deposit()"),
+            value: 1 ether
+        });
 
         address[] memory tokensToSweep = new address[](1);
         tokensToSweep[0] = address(weth);
 
         // Encode as router.executeDirect() calldata — same as what the Rust compiler produces
-        bytes memory routerCalldata = abi.encodeCall(IntentRouter.executeDirect, (calls, tokensToSweep));
+        bytes memory routerCalldata =
+            abi.encodeCall(IntentRouter.executeDirect, (calls, tokensToSweep));
 
         // Execute the raw calldata against the router
         vm.prank(user);
-        (bool success,) = address(router).call{value: 1 ether}(routerCalldata);
+        (bool success,) = address(router).call{ value: 1 ether }(routerCalldata);
         assertTrue(success, "Router execute should succeed");
 
         // Verify the result
@@ -138,7 +143,8 @@ contract IntentRouterCalldataTest is Test {
         bytes memory callData = vm.parseBytes(calldataHex);
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
-        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) =
+            _decodeExecuteDirect(callData);
 
         assertEq(calls.length, 3, "swap batch should be transferFrom + approve + swap");
         assertEq(tokensToSweep.length, 1, "swap should sweep output token");
@@ -156,7 +162,8 @@ contract IntentRouterCalldataTest is Test {
         bytes memory callData = vm.parseBytes(calldataHex);
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
-        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) =
+            _decodeExecuteDirect(callData);
 
         assertEq(calls.length, 4, "deposit+borrow batch should be 4 calls");
         assertEq(tokensToSweep.length, 1, "deposit+borrow should sweep borrowed asset");
@@ -174,10 +181,15 @@ contract IntentRouterCalldataTest is Test {
         bytes memory callData = vm.parseBytes(calldataHex);
 
         assertTrue(callData.length > 4, "Calldata should be non-empty");
-        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) = _decodeExecuteDirect(callData);
+        (IntentRouter.Call[] memory calls, address[] memory tokensToSweep) =
+            _decodeExecuteDirect(callData);
 
         assertEq(calls.length, 6, "swap+deposit+borrow batch should be 6 calls");
-        assertEq(tokensToSweep.length, 2, "swap+deposit+borrow should sweep intermediate dust + borrowed asset");
+        assertEq(
+            tokensToSweep.length,
+            2,
+            "swap+deposit+borrow should sweep intermediate dust + borrowed asset"
+        );
         assertEq(_selector(calls[0].callData), TRANSFER_FROM_SELECTOR, "call 0 selector");
         assertEq(_selector(calls[1].callData), APPROVE_SELECTOR, "call 1 selector");
         assertEq(_selector(calls[2].callData), EXACT_INPUT_SINGLE_SELECTOR, "call 2 selector");

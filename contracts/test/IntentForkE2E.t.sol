@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test, console} from "forge-std/Test.sol";
-import {IntentRouter} from "../src/IntentRouter.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import { Test, console } from "forge-std/Test.sol";
+import { IntentRouter } from "../src/IntentRouter.sol";
+import { IERC20 } from "../src/interfaces/IERC20.sol";
 
 /// @title IntentForkE2E
 /// @notice End-to-end fork tests that:
@@ -134,7 +134,11 @@ contract IntentForkE2E is Test {
 
     function _assertRouterCleared(address[] memory tokens) internal view {
         for (uint256 i = 0; i < tokens.length; i++) {
-            assertEq(IERC20(tokens[i]).balanceOf(ROUTER_ADDR), 0, "router should not retain swept token balance");
+            assertEq(
+                IERC20(tokens[i]).balanceOf(ROUTER_ADDR),
+                0,
+                "router should not retain swept token balance"
+            );
         }
         assertEq(address(ROUTER_ADDR).balance, 0, "router should not retain ETH");
     }
@@ -144,9 +148,16 @@ contract IntentForkE2E is Test {
     /// @dev Aave V3 requires credit delegation when msg.sender != onBehalfOf.
     ///      When borrowing through the router, the router is msg.sender but
     ///      onBehalfOf is the user, so the user must delegate borrow power.
-    function _approveDelegation(address vDebtToken, address delegator, address delegatee, uint256 amount) internal {
+    function _approveDelegation(
+        address vDebtToken,
+        address delegator,
+        address delegatee,
+        uint256 amount
+    ) internal {
         vm.prank(delegator);
-        (bool ok,) = vDebtToken.call(abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount));
+        (bool ok,) = vDebtToken.call(
+            abi.encodeWithSignature("approveDelegation(address,uint256)", delegatee, amount)
+        );
         require(ok, "approveDelegation failed");
     }
 
@@ -162,7 +173,10 @@ contract IntentForkE2E is Test {
         for (uint256 i = 0; i < batch.calls.length; i++) {
             callHashes[i] = keccak256(
                 abi.encode(
-                    CALL_TYPEHASH, batch.calls[i].target, keccak256(batch.calls[i].callData), batch.calls[i].value
+                    CALL_TYPEHASH,
+                    batch.calls[i].target,
+                    keccak256(batch.calls[i].callData),
+                    batch.calls[i].value
                 )
             );
         }
@@ -198,7 +212,7 @@ contract IntentForkE2E is Test {
 
         // Execute directly against WETH (wrap is a SingleTx, not batched)
         vm.prank(user);
-        (bool success,) = WETH.call{value: value}(callData);
+        (bool success,) = WETH.call{ value: value }(callData);
         assertTrue(success, "Wrap ETH should succeed");
 
         uint256 wethAfter = IERC20(WETH).balanceOf(user);
@@ -232,7 +246,7 @@ contract IntentForkE2E is Test {
 
         // Execute through router
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Swap USDC->WETH should succeed");
 
         uint256 wethAfter = IERC20(WETH).balanceOf(user);
@@ -270,7 +284,7 @@ contract IntentForkE2E is Test {
         uint256 value = _readValue("aave_deposit_usdc");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Aave deposit USDC should succeed");
 
         uint256 aUsdcAfter = IERC20(A_USDC).balanceOf(user);
@@ -312,7 +326,7 @@ contract IntentForkE2E is Test {
         uint256 value = _readValue("deposit_borrow");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Deposit+Borrow should succeed");
 
         uint256 daiAfter = IERC20(DAI).balanceOf(user);
@@ -323,8 +337,12 @@ contract IntentForkE2E is Test {
         assertEq(usdcAfter, 0, "User should have spent all USDC");
         // DAI borrowed amount — allow small dust tolerance because the router address
         // on the mainnet fork may have pre-existing DAI dust that gets swept too.
-        assertTrue(daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 2000 DAI");
-        assertApproxEqAbs(daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~2000 DAI");
+        assertTrue(
+            daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 2000 DAI"
+        );
+        assertApproxEqAbs(
+            daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~2000 DAI"
+        );
         address[] memory cleared = new address[](2);
         cleared[0] = USDC;
         cleared[1] = DAI;
@@ -347,7 +365,7 @@ contract IntentForkE2E is Test {
         uint256 value = _readValue("stake_eth_lido");
 
         vm.prank(user);
-        (bool success,) = STETH.call{value: value}(callData);
+        (bool success,) = STETH.call{ value: value }(callData);
         assertTrue(success, "Stake ETH in Lido should succeed");
 
         uint256 stethAfter = IERC20(STETH).balanceOf(user);
@@ -395,7 +413,7 @@ contract IntentForkE2E is Test {
         uint256 value = _readValue("complex_defi");
 
         vm.prank(user);
-        (bool success,) = ROUTER_ADDR.call{value: value}(callData);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
         assertTrue(success, "Complex DeFi executeDirect should succeed");
 
         uint256 wstethAfter = IERC20(WSTETH).balanceOf(user);
@@ -413,8 +431,12 @@ contract IntentForkE2E is Test {
         // 3. DAI should have increased by ~1000 (borrowed from Aave)
         //    Allow small dust tolerance because the router address on mainnet fork
         //    may have pre-existing DAI dust that gets swept too.
-        assertTrue(daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 1000 DAI");
-        assertApproxEqAbs(daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~1000 DAI");
+        assertTrue(
+            daiAfter - daiBefore >= borrowAmount, "User should have borrowed at least 1000 DAI"
+        );
+        assertApproxEqAbs(
+            daiAfter - daiBefore, borrowAmount, 100, "DAI borrowed should be ~1000 DAI"
+        );
         address[] memory cleared = new address[](2);
         cleared[0] = WSTETH;
         cleared[1] = DAI;
@@ -422,7 +444,9 @@ contract IntentForkE2E is Test {
 
         console.log("Fork complex DeFi executeDirect:");
         console.log("  USDC spent:", usdcAmount);
-        console.log("  wstETH balance change:", wstethAfter > wstethBefore ? wstethAfter - wstethBefore : 0);
+        console.log(
+            "  wstETH balance change:", wstethAfter > wstethBefore ? wstethAfter - wstethBefore : 0
+        );
         console.log("  aWstETH received:", aWstethAfter);
         console.log("  DAI borrowed:", daiAfter - daiBefore);
     }
@@ -449,7 +473,9 @@ contract IntentForkE2E is Test {
         // Step 0: Pull USDC from signer into router
         calls[0] = IntentRouter.Call({
             target: USDC,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", signer, routerAddr, usdcAmount),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", signer, routerAddr, usdcAmount
+            ),
             value: 0
         });
 
@@ -499,7 +525,12 @@ contract IntentForkE2E is Test {
         calls[5] = IntentRouter.Call({
             target: AAVE_POOL,
             callData: abi.encodeWithSignature(
-                "borrow(address,uint256,uint256,uint16,address)", DAI, borrowAmount, uint256(2), uint16(0), signer
+                "borrow(address,uint256,uint256,uint16,address)",
+                DAI,
+                borrowAmount,
+                uint256(2),
+                uint16(0),
+                signer
             ),
             value: 0
         });
@@ -547,7 +578,9 @@ contract IntentForkE2E is Test {
         // matches the min swap output (1.0 wstETH, adjusted by fee_bps if any).
         IntentRouter.IntentBatch memory batch = IntentRouter.IntentBatch({
             signer: signer,
-            calls: _buildComplexDefiCalls(signer, address(signedRouter), usdcAmount, 1 ether, borrowAmount),
+            calls: _buildComplexDefiCalls(
+                signer, address(signedRouter), usdcAmount, 1 ether, borrowAmount
+            ),
             tokensToSweep: tokensToSweep,
             nonce: 0,
             deadline: type(uint256).max,
@@ -566,7 +599,7 @@ contract IntentForkE2E is Test {
         vm.deal(relayer, 10 ether);
 
         vm.prank(relayer);
-        signedRouter.executeSigned{value: 0}(batch, signature);
+        signedRouter.executeSigned{ value: 0 }(batch, signature);
 
         // Assertions
         assertEq(IERC20(USDC).balanceOf(signer), 0, "Signer should have spent all USDC");
@@ -580,16 +613,18 @@ contract IntentForkE2E is Test {
     }
 
     /// @notice Helper to build digest using a specific router's DOMAIN_SEPARATOR
-    function _buildSignedRouterDigest(IntentRouter targetRouter, IntentRouter.IntentBatch memory batch)
-        internal
-        view
-        returns (bytes32)
-    {
+    function _buildSignedRouterDigest(
+        IntentRouter targetRouter,
+        IntentRouter.IntentBatch memory batch
+    ) internal view returns (bytes32) {
         bytes32[] memory callHashes = new bytes32[](batch.calls.length);
         for (uint256 i = 0; i < batch.calls.length; i++) {
             callHashes[i] = keccak256(
                 abi.encode(
-                    CALL_TYPEHASH, batch.calls[i].target, keccak256(batch.calls[i].callData), batch.calls[i].value
+                    CALL_TYPEHASH,
+                    batch.calls[i].target,
+                    keccak256(batch.calls[i].callData),
+                    batch.calls[i].value
                 )
             );
         }
@@ -720,11 +755,15 @@ contract IntentForkE2E is Test {
         // was deposited, minus rounding dust. Single-sided positions (when the
         // current tick sits at the edge of the range) can legitimately
         // collect only one asset, so assert at least one side returned.
-        assertTrue(collectedUsdc > 0 || collectedWeth > 0, "collect should return USDC or WETH to signer");
+        assertTrue(
+            collectedUsdc > 0 || collectedWeth > 0, "collect should return USDC or WETH to signer"
+        );
 
         console.log("LP lifecycle -USDC collected:", collectedUsdc);
         console.log("LP lifecycle -WETH collected:", collectedWeth);
-        console.log("LP lifecycle -liquidity before/after:", uint256(liquidity), uint256(liquidityAfter));
+        console.log(
+            "LP lifecycle -liquidity before/after:", uint256(liquidity), uint256(liquidityAfter)
+        );
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -839,7 +878,8 @@ contract IntentForkE2E is Test {
         (bool mintOk,) = ROUTER_ADDR.call(mintData);
         assertTrue(mintOk, "mint should succeed");
 
-        uint256 tokenId = INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
+        uint256 tokenId =
+            INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
         uint128 liquidity0 = _positionLiquidity(tokenId);
         assertGt(liquidity0, 0, "initial liquidity > 0");
 
@@ -851,12 +891,16 @@ contract IntentForkE2E is Test {
         IntentRouter.Call[] memory incCalls = new IntentRouter.Call[](5);
         incCalls[0] = IntentRouter.Call({
             target: USDC,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, addUsdc),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, addUsdc
+            ),
             value: 0
         });
         incCalls[1] = IntentRouter.Call({
             target: WETH,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, addWeth),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, addWeth
+            ),
             value: 0
         });
         incCalls[2] = IntentRouter.Call({
@@ -947,7 +991,10 @@ contract IntentForkE2E is Test {
 
         uint256 usdcCollected = IERC20(USDC).balanceOf(user) - usdcBeforeDec;
         uint256 wethCollected = IERC20(WETH).balanceOf(user) - wethBeforeDec;
-        assertTrue(usdcCollected > 0 || wethCollected > 0, "half-decrease + collect should return at least one token");
+        assertTrue(
+            usdcCollected > 0 || wethCollected > 0,
+            "half-decrease + collect should return at least one token"
+        );
         console.log("LP inc/dec - l0/l1/final:", uint256(liquidity0), uint256(liquidity1));
         console.log("LP inc/dec - l_final:", uint256(liquidityFinal));
         console.log("LP inc/dec - USDC/WETH collected:", usdcCollected, wethCollected);
@@ -991,12 +1038,16 @@ contract IntentForkE2E is Test {
         IntentRouter.Call[] memory mintCalls = new IntentRouter.Call[](5);
         mintCalls[0] = IntentRouter.Call({
             target: USDC,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount0),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount0
+            ),
             value: 0
         });
         mintCalls[1] = IntentRouter.Call({
             target: WETH,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount1),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount1
+            ),
             value: 0
         });
         mintCalls[2] = IntentRouter.Call({
@@ -1035,7 +1086,8 @@ contract IntentForkE2E is Test {
         vm.prank(user);
         router.executeDirect(mintCalls, sweepPair);
 
-        uint256 tokenId = INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
+        uint256 tokenId =
+            INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
         assertGt(tokenId, 0, "minted NFT");
 
         // ─── External actor swaps through the pool to generate fees ────
@@ -1150,12 +1202,16 @@ contract IntentForkE2E is Test {
         IntentRouter.Call[] memory calls = new IntentRouter.Call[](5);
         calls[0] = IntentRouter.Call({
             target: USDC,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount0),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount0
+            ),
             value: 0
         });
         calls[1] = IntentRouter.Call({
             target: WETH,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount1),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount1
+            ),
             value: 0
         });
         calls[2] = IntentRouter.Call({
@@ -1194,7 +1250,8 @@ contract IntentForkE2E is Test {
         vm.prank(user);
         router.executeDirect(calls, sweepPair);
 
-        uint256 tokenId = INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
+        uint256 tokenId =
+            INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
         assertGt(_positionLiquidity(tokenId), 0, "position should have liquidity");
 
         // Out-of-range mint with pool tick above range should use only USDC.
@@ -1278,17 +1335,23 @@ contract IntentForkE2E is Test {
         });
         inner[1] = IntentRouter.Call({
             target: AAVE_POOL,
-            callData: abi.encodeWithSignature("repay(address,uint256,uint256,address)", USDC, flashAmount, uint256(2), user),
+            callData: abi.encodeWithSignature(
+                "repay(address,uint256,uint256,address)", USDC, flashAmount, uint256(2), user
+            ),
             value: 0
         });
         inner[2] = IntentRouter.Call({
             target: A_WSTETH,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, aWstethAfterOpen),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, aWstethAfterOpen
+            ),
             value: 0
         });
         inner[3] = IntentRouter.Call({
             target: AAVE_POOL,
-            callData: abi.encodeWithSignature("withdraw(address,uint256,address)", WSTETH, type(uint256).max, ROUTER_ADDR),
+            callData: abi.encodeWithSignature(
+                "withdraw(address,uint256,address)", WSTETH, type(uint256).max, ROUTER_ADDR
+            ),
             value: 0
         });
         inner[4] = IntentRouter.Call({
@@ -1326,7 +1389,11 @@ contract IntentForkE2E is Test {
         outer[0] = IntentRouter.Call({
             target: BALANCER_VAULT,
             callData: abi.encodeWithSignature(
-                "flashLoan(address,address[],uint256[],bytes)", ROUTER_ADDR, flashTokens, flashAmounts, userData
+                "flashLoan(address,address[],uint256[],bytes)",
+                ROUTER_ADDR,
+                flashTokens,
+                flashAmounts,
+                userData
             ),
             value: 0
         });
@@ -1382,7 +1449,8 @@ contract IntentForkE2E is Test {
         (bool got, bytes memory ret) =
             AAVE_POOL.staticcall(abi.encodeWithSignature("getUserAccountData(address)", user));
         require(got && ret.length == 6 * 32, "getUserAccountData call failed");
-        (,,,,, uint256 healthFactor) = abi.decode(ret, (uint256, uint256, uint256, uint256, uint256, uint256));
+        (,,,,, uint256 healthFactor) =
+            abi.decode(ret, (uint256, uint256, uint256, uint256, uint256, uint256));
 
         assertGt(healthFactor, 115e16, "HF after open should exceed 1.15 (safe margin)");
         // And not absurdly high — very low LTV usage would indicate the
@@ -1417,12 +1485,16 @@ contract IntentForkE2E is Test {
         IntentRouter.Call[] memory calls = new IntentRouter.Call[](5);
         calls[0] = IntentRouter.Call({
             target: USDC,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount0),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount0
+            ),
             value: 0
         });
         calls[1] = IntentRouter.Call({
             target: WETH,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount1),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, amount1
+            ),
             value: 0
         });
         calls[2] = IntentRouter.Call({
@@ -1461,7 +1533,8 @@ contract IntentForkE2E is Test {
         vm.prank(user);
         router.executeDirect(calls, sweepPair);
 
-        uint256 tokenId = INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
+        uint256 tokenId =
+            INFTEnumerable(NPM).tokenOfOwnerByIndex(user, INFTEnumerable(NPM).balanceOf(user) - 1);
         assertGt(_positionLiquidity(tokenId), 0, "full-range position should have liquidity");
 
         // Full-range in-range: both tokens get used, both deltas positive.
@@ -1523,12 +1596,16 @@ contract IntentForkE2E is Test {
         IntentRouter.Call[] memory calls = new IntentRouter.Call[](6);
         calls[0] = IntentRouter.Call({
             target: USDC,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, 5_000 * 1e6),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, 5_000 * 1e6
+            ),
             value: 0
         });
         calls[1] = IntentRouter.Call({
             target: WETH,
-            callData: abi.encodeWithSignature("transferFrom(address,address,uint256)", user, ROUTER_ADDR, 1.6 ether),
+            callData: abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", user, ROUTER_ADDR, 1.6 ether
+            ),
             value: 0
         });
         calls[2] = IntentRouter.Call({
@@ -1548,11 +1625,12 @@ contract IntentForkE2E is Test {
         return calls;
     }
 
-    function _mintCall(int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired)
-        internal
-        view
-        returns (IntentRouter.Call memory)
-    {
+    function _mintCall(
+        int24 tickLower,
+        int24 tickUpper,
+        uint256 amount0Desired,
+        uint256 amount1Desired
+    ) internal view returns (IntentRouter.Call memory) {
         INPM.MintParams memory p = INPM.MintParams({
             token0: USDC,
             token1: WETH,
@@ -1566,7 +1644,11 @@ contract IntentForkE2E is Test {
             recipient: user,
             deadline: block.timestamp + 600
         });
-        return IntentRouter.Call({target: NPM, callData: abi.encodeWithSelector(INPM.mint.selector, p), value: 0});
+        return IntentRouter.Call({
+            target: NPM,
+            callData: abi.encodeWithSelector(INPM.mint.selector, p),
+            value: 0
+        });
     }
 
     // ─── Helpers for the new fork tests ──────────────────────────────
@@ -1653,7 +1735,10 @@ interface INPM {
         payable
         returns (uint256 amount0, uint256 amount1);
 
-    function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
+    function collect(CollectParams calldata params)
+        external
+        payable
+        returns (uint256 amount0, uint256 amount1);
 }
 
 interface IUniswapV3Pool {
@@ -1683,5 +1768,8 @@ interface ISwapRouter {
         uint160 sqrtPriceLimitX96;
     }
 
-    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+    function exactInputSingle(ExactInputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountOut);
 }

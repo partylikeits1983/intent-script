@@ -31,6 +31,15 @@ pub struct ResolvedIntent {
     /// which `approve(router, amount)` prerequisite txs to emit when the caller
     /// supplied `current_allowances`. Order is stable (sorted by address).
     pub required_pulls: Vec<(Address, U256)>,
+    /// Aggregate Aave V3 borrow amounts that will be drawn against the
+    /// signer's credit-line through the router, keyed by **variable-debt-token
+    /// address** (the contract whose `approveDelegation(router, amount)` the
+    /// user must call ahead of time). Populated by the enricher when an
+    /// `AaveV3Borrow` step lowers through the router. Used by the builder to
+    /// decide which `vDebt.approveDelegation(router, amount)` prerequisite
+    /// txs to emit when the caller supplied `current_delegations`. Order is
+    /// stable (sorted by vDebt address).
+    pub required_delegations: Vec<(Address, U256)>,
     /// Router fee in basis points applied at sweep/refund time on-chain.
     /// Populated from `registry.fee_bps()` during normalize so that
     /// `step_produces` can return post-fee floors for downstream `"all"`

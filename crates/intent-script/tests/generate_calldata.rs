@@ -353,6 +353,17 @@ fn generate_aave_deposit_usdt_borrow_weth_calldata() {
 }
 
 #[test]
+fn generate_aave_deposit_usdc_borrow_usdt_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/aave_deposit_usdc_borrow_usdt.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read aave_deposit_usdc_borrow_usdt.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("aave_deposit_usdc_borrow_usdt", &output);
+}
+
+#[test]
 fn generate_aave_deposit_wsteth_borrow_usdc_calldata() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let example_path =
@@ -378,8 +389,8 @@ fn generate_long_eth_3x_balancer_calldata() {
 fn generate_short_eth_1x_calldata() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let example_path = std::path::Path::new(manifest_dir).join("examples/short_eth_1x.json");
-    let input = std::fs::read_to_string(&example_path)
-        .expect("should read short_eth_1x.json example file");
+    let input =
+        std::fs::read_to_string(&example_path).expect("should read short_eth_1x.json example file");
     let output = do_compile(&input).expect("compile should succeed");
     write_calldata("short_eth_1x", &output);
 }

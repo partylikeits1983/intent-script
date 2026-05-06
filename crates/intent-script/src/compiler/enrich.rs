@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, U256};
 use hashbrown::{HashMap, HashSet};
 
-use crate::error::Result;
+use crate::error::{CompileError, Result};
 use crate::ir::{ResolvedIntent, ResolvedStep};
 use crate::registry::RegistryContext;
 
@@ -39,16 +39,24 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
     // the batch. Consumed downstream by the builder to decide which
     // `approve(router, amount)` prerequisite txs to emit.
     let mut required_pulls: HashMap<Address, U256> = HashMap::new();
+    // Aggregate per-vDebt-token credit-delegation amounts the user must grant
+    // the router before the batch can borrow on their behalf. Aave V3 enforces
+    // `borrowAllowance(user, msg.sender) >= amount` whenever
+    // `msg.sender != onBehalfOf`, which is always the case for router-batched
+    // borrows.
+    let mut required_delegations: HashMap<Address, U256> = HashMap::new();
 
     enrich_steps(
         &intent.steps,
         router,
         signer,
         is_single_user_step,
+        registry,
         &mut enriched_steps,
         &mut sweep_tokens,
         &mut tokens_in_router,
         &mut required_pulls,
+        &mut required_delegations,
     )?;
 
     intent.steps = enriched_steps;
@@ -59,6 +67,11 @@ pub fn enrich(mut intent: ResolvedIntent, registry: &RegistryContext) -> Result<
     required_pulls_vec.sort_by_key(|(addr, _)| *addr);
     intent.required_pulls = required_pulls_vec;
 
+    let mut required_delegations_vec: Vec<(Address, U256)> =
+        required_delegations.into_iter().collect();
+    required_delegations_vec.sort_by_key(|(addr, _)| *addr);
+    intent.required_delegations = required_delegations_vec;
+
     Ok(intent)
 }
 
@@ -68,10 +81,12 @@ fn enrich_steps(
     router: Option<Address>,
     signer: Address,
     is_single_user_step: bool,
+    registry: &RegistryContext,
     enriched_steps: &mut Vec<ResolvedStep>,
     sweep_tokens: &mut Vec<Address>,
     tokens_in_router: &mut HashSet<Address>,
     required_pulls: &mut HashMap<Address, U256>,
+    required_delegations: &mut HashMap<Address, U256>,
 ) -> Result<()> {
     for step in input_steps {
         match step {
@@ -128,18 +143,37 @@ fn enrich_steps(
                 });
                 enriched_steps.push(step.clone());
             }
-            ResolvedStep::AaveV3Borrow { asset, .. } => {
+            ResolvedStep::AaveV3Borrow { asset, amount, .. } => {
                 // Borrow doesn't need transferFrom (no input tokens consumed from user).
                 // But when batching via router, Aave V3 sends borrowed tokens to msg.sender
                 // (the router), not to onBehalfOf (the user). So we must sweep the borrowed
                 // asset back to the user after execution — and mark it as in-router so
                 // downstream steps in the same batch consume it from the router rather
                 // than re-pulling from the signer (crucial for flashloan-assisted loops).
+                //
+                // Aave V3 also enforces `borrowAllowance(user, router) >= amount` when
+                // `msg.sender != onBehalfOf` (custom error 0x1cb19ef3,
+                // InsufficientBorrowAllowance). The user must call
+                // `vDebtToken.approveDelegation(router, amount)` ahead of time, since
+                // the router can't make that call on their behalf (the delegation must
+                // come from the credit-line owner). Record the required delegation
+                // here so the builder can emit a prerequisite tx.
                 if router.is_some() {
                     tokens_in_router.insert(*asset);
                     if !sweep_tokens.contains(asset) {
                         sweep_tokens.push(*asset);
                     }
+                    let vdebt = registry.aave_variable_debt_token(asset).ok_or_else(|| {
+                        CompileError::Adapter(alloc::format!(
+                            "No variable_debt_tokens entry for asset {} on network '{}'; \
+                             Aave V3 borrow through the router requires a \
+                             vDebtToken.approveDelegation prerequisite, which the compiler \
+                             cannot synthesize without the vDebt address.",
+                            asset,
+                            registry.network
+                        ))
+                    })?;
+                    *required_delegations.entry(vdebt).or_insert(U256::ZERO) += *amount;
                 }
                 enriched_steps.push(step.clone());
             }
@@ -683,15 +717,18 @@ fn enrich_steps(
                     inner_in_router.insert(*t);
                 }
                 let mut inner_pulls: HashMap<Address, U256> = HashMap::new();
+                let mut inner_delegations: HashMap<Address, U256> = HashMap::new();
                 enrich_steps(
                     inner_steps,
                     router,
                     signer,
                     false, // inner pipeline always runs via router
+                    registry,
                     &mut inner_enriched,
                     &mut inner_sweep,
                     &mut inner_in_router,
                     &mut inner_pulls,
+                    &mut inner_delegations,
                 )?;
 
                 // Emit a single outer BalancerFlashloan carrying the enriched
@@ -707,6 +744,11 @@ fn enrich_steps(
                 // Merge inner pulls into outer (user approvals cover both).
                 for (t, a) in inner_pulls {
                     *required_pulls.entry(t).or_insert(U256::ZERO) += a;
+                }
+                // Inner borrows still draw against the user's credit-line, so
+                // their delegation requirements bubble up unchanged.
+                for (t, a) in inner_delegations {
+                    *required_delegations.entry(t).or_insert(U256::ZERO) += a;
                 }
                 // Dust sweep: inner non-flashloan tokens that ended up in the
                 // router are still there after the callback returns.
