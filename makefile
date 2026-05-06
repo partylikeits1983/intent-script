@@ -18,10 +18,11 @@ format:
 build:
 	cargo build --release --workspace
 
-# Primary offline test target: everything that does NOT need an RPC/fork.
-# Runs the Rust compiler tests, then (after fixture generation) the Foundry
-# tests that don't hit the fork.
-test: test-compiler generate-calldata test-foundry
+# Primary test target: Rust compiler tests, offline Foundry tests, and the
+# fork-mode E2E suites (which need ETH_RPC_URL — defaulted above to the
+# public node). test-fork-e2e matches `^IntentFork.*E2E$$`, picking up
+# IntentForkScenariosE2E and its `test_fork_stakeWrapDepositBorrow` case.
+test: test-compiler generate-calldata test-foundry test-fork-e2e
 
 # Rust compiler tests only — no network, no fork, no Foundry.
 test-compiler:

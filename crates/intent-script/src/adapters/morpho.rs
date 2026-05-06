@@ -12,7 +12,6 @@
 //! Morpho callbacks (`onMorphoSupply` / `onMorphoRepay`).
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 
 use alloy_primitives::{Bytes, U256};
