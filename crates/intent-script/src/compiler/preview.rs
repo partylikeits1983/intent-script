@@ -19,6 +19,7 @@ use crate::registry::RegistryContext;
 pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Preview {
     let mut inputs: HashMap<Address, U256> = HashMap::new();
     let mut outputs: HashMap<Address, U256> = HashMap::new();
+    let wsteth_rate = registry.wsteth_steth_rate_bps();
 
     // Aggregate at RAW amounts (fee_bps=0). The router's sweep-time fee only
     // hits tokens that actually leave the router back to the user — i.e. the
@@ -30,7 +31,7 @@ pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Pre
         if let Some((token, amount)) = step_consumes(step) {
             *inputs.entry(token).or_insert(U256::ZERO) += amount;
         }
-        if let Some((token, amount)) = step_produces(step, 0) {
+        if let Some((token, amount)) = step_produces(step, 0, wsteth_rate) {
             *outputs.entry(token).or_insert(U256::ZERO) += amount;
         }
         // Flashloans are self-contained router-side accounting — the vault

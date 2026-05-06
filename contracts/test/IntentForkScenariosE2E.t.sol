@@ -36,6 +36,7 @@ contract IntentForkScenariosE2E is Test {
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
     address constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    address constant STETH = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
 
     address constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
     address constant UNI_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
@@ -72,6 +73,7 @@ contract IntentForkScenariosE2E is Test {
         _allowTarget(USDC);
         _allowTarget(USDT);
         _allowTarget(WSTETH);
+        _allowTarget(STETH);
         _allowTarget(AAVE_POOL);
         _allowTarget(UNI_ROUTER);
         _allowTarget(BALANCER_VAULT);
@@ -339,6 +341,98 @@ contract IntentForkScenariosE2E is Test {
         console.log(
             "Test 4: aUSDC", aUsdcBal, "USDC from swap", usdcAfter - (usdcBefore - usdcCollateral)
         );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // #4b Stake → wrap → Aave deposit → borrow, all in one signed intent.
+    //
+    //   100 ETH → Lido.submit() (router gets ~100 stETH)
+    //          → stETH.approve(wstETH) + wstETH.wrap (router gets ~84 wstETH)
+    //          → wstETH.approve(pool) + pool.supply (~79.84 wstETH)
+    //          → pool.borrow 20k USDC on behalf of user
+    //          → sweep leftover wstETH + USDC back to user
+    //
+    // Why 79.84 wstETH instead of 99.9 (= stETH `all`): a previous compiler
+    // bug treated wstETH and stETH as 1:1, so an `"all"` deposit downstream
+    // of `wrap stETH` asked the pool to pull more wstETH than the wrap
+    // produced, reverting with `ERC20: transfer amount exceeds balance`.
+    // Fixed by applying the configured stETH/wstETH pool rate inside
+    // `step_produces`. Locking the regression in here.
+    //
+    // The user only authorizes credit delegation for USDC vDebt; no stETH
+    // / wstETH approve is needed because both intermediates live entirely
+    // inside the router until sweep.
+    // ═════════════════════════════════════════════════════════════════════
+
+    function test_fork_stakeWrapDepositBorrow() public {
+        uint256 stakeAmount = 100 ether;
+        uint256 borrowAmount = 20_000 * 1e6;
+
+        vm.deal(user, stakeAmount + 1 ether);
+
+        // The compiler signer (vitalik.eth on mainnet) carries stETH /
+        // wstETH dust. Snapshot starting balances and assert they're
+        // untouched after the call — a regression where the enricher
+        // pulls stETH from the user wallet (instead of relying on the
+        // staked-into-router balance) would show up as a delta here.
+        uint256 stethBefore = IERC20(STETH).balanceOf(user);
+        uint256 wstethBefore = IERC20(WSTETH).balanceOf(user);
+
+        _approveDelegation(VDEBT_USDC, user, ROUTER_ADDR, borrowAmount);
+
+        uint256 usdcBefore = IERC20(USDC).balanceOf(user);
+        uint256 aWstethBefore = IERC20(A_WSTETH).balanceOf(user);
+
+        bytes memory callData = _readCalldata("stake_wrap_deposit_borrow");
+        uint256 value = _readValue("stake_wrap_deposit_borrow");
+        assertEq(value, stakeAmount, "msg.value should equal stake amount");
+
+        vm.prank(user);
+        (bool success,) = ROUTER_ADDR.call{ value: value }(callData);
+        assertTrue(success, "stake -> wrap -> deposit -> borrow should succeed");
+
+        uint256 aWstethAfter = IERC20(A_WSTETH).balanceOf(user);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(user);
+        uint256 wstethAfter = IERC20(WSTETH).balanceOf(user);
+        uint256 debt = IERC20(VDEBT_USDC).balanceOf(user);
+
+        // The supply landed as aWSTETH on the user. Aave can round aToken
+        // minting down by 1-2 wei; require ≥ 78 wstETH (well below the
+        // ~79.84 the compiler emits, with margin for stETH share rounding).
+        assertGt(aWstethAfter - aWstethBefore, 78 ether, "supply produced aWSTETH");
+        // 20k USDC borrowed + sweep back to user.
+        assertApproxEqAbs(
+            usdcAfter - usdcBefore,
+            borrowAmount,
+            10,
+            "USDC gained should equal borrow"
+        );
+        // Aave accrues interest at ~1 wei per block on a fresh borrow.
+        assertApproxEqAbs(debt, borrowAmount, 100, "USDC variable debt ~= borrow");
+        // Sweep returned the slack wstETH (the router only deposited the
+        // conservative-rate amount; the rest comes back).
+        assertGt(wstethAfter - wstethBefore, 0, "sweep returned slack wstETH to user");
+        // The slack stETH (router got ~100 stETH from staking, wrapped 99.9,
+        // leftover ~0.1 stETH) is also swept back. The user's stETH balance
+        // therefore goes UP, never down: a regression that pulled stETH
+        // from the wallet for the wrap step would show as a *decrease*.
+        assertGe(
+            IERC20(STETH).balanceOf(user),
+            stethBefore,
+            "user stETH balance must not decrease (no transferFrom from wallet)"
+        );
+
+        // stETH is rebasing — transfer rounds down to whole shares, so the
+        // router can retain 1-2 wei of stETH after sweep. Tolerate dust.
+        assertLe(IERC20(STETH).balanceOf(ROUTER_ADDR), 5, "router stETH within dust");
+        address[] memory cleared = new address[](2);
+        cleared[0] = WSTETH;
+        cleared[1] = USDC;
+        _assertRouterCleared(cleared);
+
+        console.log("Test 4b: aWSTETH gained", aWstethAfter - aWstethBefore);
+        console.log("Test 4b: wstETH swept back", wstethAfter);
+        console.log("Test 4b: USDC borrowed", usdcAfter - usdcBefore);
     }
 
     // ═════════════════════════════════════════════════════════════════════

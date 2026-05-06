@@ -375,6 +375,22 @@ fn generate_aave_deposit_wsteth_borrow_usdc_calldata() {
 }
 
 #[test]
+fn generate_stake_wrap_deposit_borrow_calldata() {
+    // The "complex DeFi" UX flow: 100 ETH → Lido stETH → wstETH → Aave V3
+    // collateral → 20k USDC borrow, all in a single signed intent. Exercises
+    // the wstETH conversion in `step_produces` — without it the deposit's
+    // "all" resolves to the stETH amount (~99.8) and the on-chain
+    // transferFrom reverts because the router holds ~stETH/rate wstETH.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/stake_wrap_deposit_borrow.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read stake_wrap_deposit_borrow.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("stake_wrap_deposit_borrow", &output);
+}
+
+#[test]
 fn generate_long_eth_3x_balancer_calldata() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let example_path =

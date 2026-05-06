@@ -1326,8 +1326,9 @@ fn resolve_amount_or_all(
 ) -> Result<U256> {
     if amount_str == "all" {
         let fee_bps = registry.fee_bps();
+        let wsteth_rate = registry.wsteth_steth_rate_bps();
         for step in previous_steps.iter().rev() {
-            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps)
+            if let Some((produced_token, guaranteed)) = step_produces(step, fee_bps, wsteth_rate)
                 && produced_token == token
             {
                 if guaranteed == U256::ZERO {

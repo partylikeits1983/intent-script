@@ -1656,6 +1656,73 @@ fn test_all_after_wsteth_wrap() {
 }
 
 #[test]
+fn test_stake_wrap_deposit_borrow_aave() {
+    // The "complex DeFi" UX flow: route 100 ETH through Lido → wstETH →
+    // Aave V3 collateral → 20k USDC borrow in a single signed intent.
+    //
+    // The wrap step's "all" must resolve to the wstETH-denominated amount
+    // (≈ stETH ÷ wsteth_steth_rate), not the stETH input amount. Without
+    // that conversion, the downstream Aave deposit asks for ~99.8 wstETH
+    // when the router actually holds ~84 wstETH, and the on-chain
+    // transferFrom reverts with `ERC20: transfer amount exceeds balance`.
+    //
+    // Compile-only assertions; the actual on-chain behavior is covered by
+    // the matching Foundry fork test in IntentForkScenariosE2E.
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1712344000,
+        "steps": [
+            { "stake": { "asset": "ETH", "amount": "100.0", "into": "lido" } },
+            { "wrap": { "asset": "stETH", "amount": "all" } },
+            { "deposit": { "asset": "wstETH", "amount": "all", "into": "aave" } },
+            { "borrow": { "asset": "USDC", "amount": "20000", "from": "aave" } }
+        ]
+    }"#;
+
+    let result = do_compile(input).expect("stake→wrap→deposit→borrow should compile");
+
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            assert!(
+                intent.description.contains("Batched"),
+                "Description should mention batching: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.contains("Stake"),
+                "Description should mention Stake: {}",
+                intent.description
+            );
+            assert!(
+                intent.description.to_lowercase().contains("borrow"),
+                "Description should mention Borrow: {}",
+                intent.description
+            );
+
+            // Ensure the deposit amount sits below the stETH amount produced
+            // by the stake — i.e. the compiler converted stETH → wstETH
+            // through the configured pool rate rather than treating them 1:1.
+            let json: CompileOutputJson = (&result.output).into();
+            let json_str = serde_json::to_string(&json).expect("serialize compile output");
+            // 99.8001 stETH (= 100 ETH * 0.999 router_fee * 0.999 router_fee)
+            // would be the buggy 1:1 amount. After the wstETH conversion
+            // the deposit must be substantially smaller (≤ ~95 wstETH).
+            // 99800100... in 18-decimal wei = 99_800_100_000_000_000_000.
+            assert!(
+                !json_str.contains("99800100000000000000"),
+                "Deposit must not use stETH-denominated amount; the wstETH\
+                 conversion rate has not been applied"
+            );
+        }
+        other => panic!(
+            "Expected Eip712Intent (batched via router), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
 fn test_all_after_aave_withdraw() {
     let input = r#"{
         "network": "anvil",

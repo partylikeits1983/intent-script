@@ -68,7 +68,7 @@ pub struct ValidationResult {
 /// 8. Max step count (Task 4)
 /// 9. Cross-step amount flow validation (Task 5)
 /// 10. Send validation (Task 7)
-pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<ValidationResult> {
+pub fn validate(intent: &ResolvedIntent, registry: &RegistryContext) -> Result<ValidationResult> {
     let mut warnings = Vec::new();
 
     // Check signer is not zero address
@@ -146,7 +146,12 @@ pub fn validate(intent: &ResolvedIntent, _registry: &RegistryContext) -> Result<
     // the caller supplied them, so a hallucinated `deposit 1_000_000 USDC`
     // against a 100-USDC wallet is caught at compile time instead of
     // bubbling up as an on-chain revert after fees were already taken.
-    validate_amount_flow(&intent.steps, intent.fee_bps, intent.user_balances.as_ref())?;
+    validate_amount_flow(
+        &intent.steps,
+        intent.fee_bps,
+        registry.wsteth_steth_rate_bps(),
+        intent.user_balances.as_ref(),
+    )?;
 
     // B1: Recipient pinning. Every step with a recipient-like address must
     // name the signer (or, once the enricher has redirected, the router).
@@ -368,7 +373,7 @@ fn validate_flashloan(step: &ResolvedStep, fee_bps: u16) -> Result<()> {
             }
             balance.insert(t, have - a);
         }
-        if let Some((t, a)) = step_produces(inner, 0) {
+        if let Some((t, a)) = step_produces(inner, 0, 0) {
             *balance.entry(t).or_insert(U256::ZERO) += a;
         }
     }
@@ -441,6 +446,7 @@ fn validate_health_factor(
 fn validate_amount_flow(
     steps: &[ResolvedStep],
     fee_bps: u16,
+    wsteth_steth_rate_bps: u32,
     balances: Option<&ResolvedBalances>,
 ) -> Result<()> {
     // Intra-batch hand-offs stay inside the router; no fee is skimmed between
@@ -483,7 +489,7 @@ fn validate_amount_flow(
         // and no prior step produced it, we fall through without a check
         // — matches the pre-B3 trust contract for token streams the
         // caller didn't give us info about.
-        if let Some((token, guaranteed)) = step_produces(step, 0) {
+        if let Some((token, guaranteed)) = step_produces(step, 0, wsteth_steth_rate_bps) {
             *produced.entry(token).or_insert(U256::ZERO) += guaranteed;
         }
     }
@@ -983,7 +989,7 @@ mod tests {
                 on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             },
         ];
-        let result = validate_amount_flow(&steps, 0, None);
+        let result = validate_amount_flow(&steps, 0, 0, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires"));
     }
@@ -1009,7 +1015,7 @@ mod tests {
                 on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
             },
         ];
-        let result = validate_amount_flow(&steps, 0, None);
+        let result = validate_amount_flow(&steps, 0, 0, None);
         assert!(result.is_ok());
     }
 
@@ -1022,7 +1028,7 @@ mod tests {
             amount: U256::from(5_000_000_000u64),
             on_behalf_of: address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
         }];
-        let result = validate_amount_flow(&steps, 0, None);
+        let result = validate_amount_flow(&steps, 0, 0, None);
         assert!(result.is_ok());
     }
 

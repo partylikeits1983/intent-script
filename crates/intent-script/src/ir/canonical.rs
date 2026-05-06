@@ -434,7 +434,18 @@ pub fn step_consumes(step: &ResolvedStep) -> Option<(Address, U256)> {
 /// sweep. Pass `0` when the produced tokens do NOT flow through sweep
 /// (e.g. inside a flashloan's inner pipeline where tokens are transferred
 /// back to the flashloan provider, not swept to the user).
-pub fn step_produces(step: &ResolvedStep, fee_bps: u16) -> Option<(Address, U256)> {
+///
+/// `wsteth_steth_rate_bps` is the stETH-per-wstETH rate in basis points
+/// (10_000 = 1.0). Only consulted for the `WstETHWrap` arm: the step's
+/// `amount` field carries stETH input, but downstream "all" consumers want
+/// the wstETH output amount — so we divide by the rate. Other arms ignore
+/// it. Values below 10_000 are nonsensical (wstETH is always worth ≥ stETH);
+/// pass 0 to fall back to a hardcoded conservative rate.
+pub fn step_produces(
+    step: &ResolvedStep,
+    fee_bps: u16,
+    wsteth_steth_rate_bps: u32,
+) -> Option<(Address, U256)> {
     let (token, amount) = match step {
         // A transferFrom into the router brings tokens INTO the router's
         // balance sheet — important for flashloan repayability accounting
@@ -471,8 +482,37 @@ pub fn step_produces(step: &ResolvedStep, fee_bps: u16) -> Option<(Address, U256
             amount,
             ..
         } => (*wrapped_token, *amount),
-        ResolvedStep::WstETHWrap { wsteth, amount, .. } => (*wsteth, *amount),
-        ResolvedStep::WstETHUnwrap { steth, amount, .. } => (*steth, *amount),
+        ResolvedStep::WstETHWrap { wsteth, amount, .. } => {
+            // `amount` is stETH input; convert to wstETH output by dividing
+            // by the pool rate. A non-conservative (= too-low) rate would
+            // over-estimate wstETH output and trigger ERC20 transfer-amount-
+            // exceeds-balance reverts downstream — values below 10_000 (= 1:1)
+            // are nonsensical (wstETH is always worth ≥ stETH); we fall back
+            // to a built-in conservative constant in that case.
+            const FALLBACK_RATE_BPS: u32 = 13_000;
+            let rate = if wsteth_steth_rate_bps >= 10_000 {
+                wsteth_steth_rate_bps
+            } else {
+                FALLBACK_RATE_BPS
+            };
+            let wsteth_out = *amount * U256::from(10_000u64) / U256::from(rate);
+            (*wsteth, wsteth_out)
+        }
+        ResolvedStep::WstETHUnwrap { steth, amount, .. } => {
+            // `amount` is wstETH input; the stETH output is `amount * rate`.
+            // For "all"-resolution we want the floor, so applying the
+            // (configured-conservative-low) rate keeps the downstream
+            // estimate from over-shooting the actual mint. Using the
+            // hardcoded 13_000 fallback would over-estimate stETH out — for
+            // unwrap, missing rate means we conservatively assume 1:1.
+            let rate_for_steth_out = if wsteth_steth_rate_bps >= 10_000 {
+                wsteth_steth_rate_bps
+            } else {
+                10_000
+            };
+            let steth_out = *amount * U256::from(rate_for_steth_out) / U256::from(10_000u64);
+            (*steth, steth_out)
+        }
         _ => return None,
     };
 

@@ -80,6 +80,18 @@ pub struct ProtocolConfig {
     /// slack via an explicit `safety_margin_bps` on the leverage step.
     #[serde(default)]
     pub max_leverage_safety_margin_bps: Option<u16>,
+    /// Lido-only: stETH-per-wstETH conversion rate in basis points.
+    /// `12000` means 1 wstETH = 1.20 stETH. Used by `step_produces` to convert
+    /// the stETH input of a `WstETHWrap` step into the wstETH output amount
+    /// downstream "all" consumers see — without this, an `"all"` deposit
+    /// after `wrap stETH` reads the stETH-denominated amount and the on-chain
+    /// transferFrom reverts because the router holds ~stETH/rate wstETH.
+    /// The compiler is offline; the UI is expected to refresh this value
+    /// from `wstETH.stEthPerToken()` periodically and update the protocol
+    /// config it passes in. Missing or zero falls back to a conservative
+    /// constant in `RegistryContext::wsteth_steth_rate_bps`.
+    #[serde(default)]
+    pub wsteth_steth_rate_bps: Option<u32>,
 }
 
 /// Combined registry context for a specific network.
@@ -157,6 +169,26 @@ impl RegistryContext {
             .and_then(|p| p.fee_bps)
             .unwrap_or(0)
             .min(10_000)
+    }
+
+    /// stETH-per-wstETH conversion rate in basis points (10_000 = 1.0).
+    ///
+    /// Defaults to `13_000` (1 wstETH = 1.30 stETH) when neither the Lido
+    /// protocol config carries `wsteth_steth_rate_bps` nor a value is set.
+    /// 13_000 is intentionally conservative — the actual rate has historically
+    /// stayed under 1.30 — so an `"all"` resolution downstream of a wrap
+    /// step under-estimates wstETH output rather than over-estimating it.
+    /// The slack is swept back to the user.
+    pub fn wsteth_steth_rate_bps(&self) -> u32 {
+        const FALLBACK_BPS: u32 = 13_000;
+        let configured = self
+            .protocols
+            .get("lido")
+            .and_then(|p| p.wsteth_steth_rate_bps);
+        match configured {
+            Some(v) if v >= 10_000 => v,
+            _ => FALLBACK_BPS,
+        }
     }
 
     /// Look up the IntentRouter address for this network, if configured.
