@@ -1,0 +1,19 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "current_timestamp": 1893456000,
+  "steps": [
+    { "deposit": { "asset": "USDC", "amount": "10000", "into": "aave" } },
+    {
+      "flashloan": {
+        "via": "balancer",
+        "assets": [{ "asset": "USDC", "amount": "5000" }],
+        "then": [
+          { "swap":    { "from": "USDC",   "amount": "5000", "to": "wstETH", "min_amount_out": "1.0", "fee": "500" } },
+          { "deposit": { "asset": "wstETH","amount": "all",  "into": "aave" } },
+          { "borrow":  { "asset": "USDC",  "amount": "5000", "from": "aave" } }
+        ]
+      }
+    }
+  ]
+}

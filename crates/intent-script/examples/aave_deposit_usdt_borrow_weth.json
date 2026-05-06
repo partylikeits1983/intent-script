@@ -1,0 +1,9 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "current_timestamp": 1893456000,
+  "steps": [
+    { "deposit": { "asset": "USDT", "amount": "10000", "into": "aave" } },
+    { "borrow":  { "asset": "WETH", "amount": "1.0",   "from": "aave" } }
+  ]
+}

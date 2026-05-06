@@ -342,6 +342,60 @@ fn generate_flashloan_aave_loop_calldata() {
 }
 
 #[test]
+fn generate_aave_deposit_usdt_borrow_weth_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/aave_deposit_usdt_borrow_weth.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read aave_deposit_usdt_borrow_weth.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("aave_deposit_usdt_borrow_weth", &output);
+}
+
+#[test]
+fn generate_aave_deposit_wsteth_borrow_usdc_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/aave_deposit_wsteth_borrow_usdc.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read aave_deposit_wsteth_borrow_usdc.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("aave_deposit_wsteth_borrow_usdc", &output);
+}
+
+#[test]
+fn generate_long_eth_3x_balancer_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/long_eth_3x_balancer.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read long_eth_3x_balancer.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("long_eth_3x_balancer", &output);
+}
+
+#[test]
+fn generate_short_eth_1x_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path = std::path::Path::new(manifest_dir).join("examples/short_eth_1x.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read short_eth_1x.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("short_eth_1x", &output);
+}
+
+#[test]
+fn generate_lp_mint_usdc_usdt_0p95_1p05_calldata() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example_path =
+        std::path::Path::new(manifest_dir).join("examples/lp_mint_usdc_usdt_0p95_1p05.json");
+    let input = std::fs::read_to_string(&example_path)
+        .expect("should read lp_mint_usdc_usdt_0p95_1p05.json example file");
+    let output = do_compile(&input).expect("compile should succeed");
+    write_calldata("lp_mint_usdc_usdt_0p95_1p05", &output);
+}
+
+#[test]
 fn generate_morpho_supply_usdc_calldata() {
     // Single-step loan-side supply: exercises the MorphoSupply variant
     // with no `as: "collateral"` discriminator.

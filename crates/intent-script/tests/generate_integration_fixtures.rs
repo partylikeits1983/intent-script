@@ -339,3 +339,23 @@ fn build_long_eth_4x() {
 fn build_short_eth_3x() {
     build("short_eth_3x");
 }
+
+#[test]
+fn build_aave_deposit_usdt_borrow_weth() {
+    build("aave_deposit_usdt_borrow_weth");
+}
+
+#[test]
+fn build_aave_deposit_wsteth_borrow_usdc() {
+    build("aave_deposit_wsteth_borrow_usdc");
+}
+
+#[test]
+fn build_long_eth_3x_balancer() {
+    build("long_eth_3x_balancer");
+}
+
+#[test]
+fn build_short_eth_1x() {
+    build("short_eth_1x");
+}
