@@ -69,7 +69,7 @@
     "type": "router",
     "version": "v1",
     "contracts": {
-      "router": "0xe008520f77fD5c7EF5D0f6533969b8605065c59C"
+      "router": "0x1F3249a661012a1DFa0b085F5716851c45023548"
     },
     "fee_bps": 10
   }
