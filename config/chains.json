@@ -19,6 +19,11 @@
     "native_asset": "ETH",
     "wrapped_native": "WETH"
   },
+  "anvil-base": {
+    "chain_id": 31337,
+    "native_asset": "ETH",
+    "wrapped_native": "WETH"
+  },
   "arbitrum": {
     "chain_id": 42161,
     "native_asset": "ETH",

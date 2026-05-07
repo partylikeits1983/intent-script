@@ -42,14 +42,26 @@ contract IntentRouter is ReentrancyGuard {
     event SelectorAllowed(address indexed target, bytes4 indexed selector, bool allowed);
     event SelectorAllowlistEnforced(bool enforced);
 
-    // ─── Balancer V2 flashloan ──────────────────────────────
-    /// Balancer V2 Vault mainnet address — used for 0% flashloans.
-    address public constant BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
+    // ─── Flashloan providers ────────────────────────────────
+    /// Balancer V2 Vault — used for 0% flashloans on chains where Balancer is
+    /// deployed (Ethereum L1). Set per-chain at construction; pass
+    /// `address(0)` to disable the Balancer callback (e.g. Base, where
+    /// Balancer is not deployed).
+    address public immutable BALANCER_VAULT;
     /// `flashLoan(address,address[],uint256[],bytes)` selector.
     bytes4 public constant FLASHLOAN_SELECTOR = 0x5c38449e;
+
+    /// Aave V3 Pool — used for `flashLoanSimple` flashloans (incurs a small
+    /// premium, currently ~0.05%). Set per-chain at construction; pass
+    /// `address(0)` to disable the Aave callback. L1 typically configures
+    /// both providers; Base configures only Aave.
+    address public immutable AAVE_POOL;
+    /// `flashLoanSimple(address,address,uint256,bytes,uint16)` selector.
+    bytes4 public constant AAVE_FLASHLOAN_SIMPLE_SELECTOR = 0x42b0b77c;
+
     /// Transient-storage slot (EIP-1153) used as a boolean sentinel while a
-    /// flashloan call is in flight. Set just before `vault.flashLoan` and
-    /// cleared in `receiveFlashLoan` before the inner pipeline runs.
+    /// flashloan call is in flight. Set just before the outer flashLoan call
+    /// and cleared inside the provider callback before the inner pipeline runs.
     bytes32 private constant FLASHLOAN_GUARD_SLOT = keccak256("intent.flashloan.guard");
 
     // ─── Fees ───────────────────────────────────────────────
@@ -111,8 +123,16 @@ contract IntentRouter is ReentrancyGuard {
         uint256 totalValue;
     }
 
-    constructor() {
+    /// @param balancerVault Balancer V2 Vault address for this chain, or
+    ///                      `address(0)` to disable Balancer flashloans on
+    ///                      this deployment (e.g. Base).
+    /// @param aavePool      Aave V3 Pool address for this chain, or
+    ///                      `address(0)` to disable Aave flashloans on this
+    ///                      deployment.
+    constructor(address balancerVault, address aavePool) {
         owner = msg.sender;
+        BALANCER_VAULT = balancerVault;
+        AAVE_POOL = aavePool;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 DOMAIN_TYPEHASH,
@@ -303,17 +323,23 @@ contract IntentRouter is ReentrancyGuard {
                 );
             }
 
-            // Just before dispatching a Balancer flashLoan, arm the transient
-            // sentinel. `receiveFlashLoan` requires it to be set and clears it
-            // before running inner calls. This defends against a compromised
-            // allowlisted target re-entering `receiveFlashLoan` via delegatecall.
-            if (
-                calls[i].target == BALANCER_VAULT && calls[i].callData.length >= 4
-                    && bytes4(calls[i].callData[:4]) == FLASHLOAN_SELECTOR
-            ) {
-                bytes32 slot = FLASHLOAN_GUARD_SLOT;
-                assembly {
-                    tstore(slot, 1)
+            // Just before dispatching an outer flashloan call, arm the
+            // transient sentinel. The provider callback (`receiveFlashLoan`
+            // for Balancer, `executeOperation` for Aave) requires it to be
+            // set and clears it before running inner calls. This defends
+            // against a compromised allowlisted target re-entering the
+            // callback via delegatecall.
+            if (calls[i].callData.length >= 4) {
+                bytes4 sel = bytes4(calls[i].callData[:4]);
+                bool isBalancer = BALANCER_VAULT != address(0)
+                    && calls[i].target == BALANCER_VAULT && sel == FLASHLOAN_SELECTOR;
+                bool isAave = AAVE_POOL != address(0) && calls[i].target == AAVE_POOL
+                    && sel == AAVE_FLASHLOAN_SIMPLE_SELECTOR;
+                if (isBalancer || isAave) {
+                    bytes32 slot = FLASHLOAN_GUARD_SLOT;
+                    assembly {
+                        tstore(slot, 1)
+                    }
                 }
             }
 
@@ -362,6 +388,7 @@ contract IntentRouter is ReentrancyGuard {
         uint256[] calldata feeAmounts,
         bytes calldata userData
     ) external {
+        require(BALANCER_VAULT != address(0), "balancer disabled");
         require(msg.sender == BALANCER_VAULT, "not vault");
 
         bytes32 slot = FLASHLOAN_GUARD_SLOT;
@@ -389,6 +416,53 @@ contract IntentRouter is ReentrancyGuard {
             uint256 owed = amounts[i] + feeAmounts[i];
             _safeTransfer(tokens[i], BALANCER_VAULT, owed, "flashloan repay fail");
         }
+    }
+
+    /// @notice Aave V3 flashloan callback. The Pool transfers `amount` of
+    ///         `asset` to this contract, calls this function, and then pulls
+    ///         `amount + premium` back via `transferFrom` (so the receiver
+    ///         must approve the Pool before returning). The sentinel must
+    ///         have been armed by `_executeCalls` just before the
+    ///         `flashLoanSimple` call.
+    /// @return success Aave requires this to return `true`.
+    function executeOperation(
+        address asset,
+        uint256 amount,
+        uint256 premium,
+        address /* initiator */,
+        bytes calldata params
+    ) external returns (bool) {
+        require(AAVE_POOL != address(0), "aave disabled");
+        require(msg.sender == AAVE_POOL, "not aave pool");
+
+        bytes32 slot = FLASHLOAN_GUARD_SLOT;
+        bytes32 guard;
+        assembly {
+            guard := tload(slot)
+        }
+        require(guard != bytes32(0), "no flashloan in progress");
+        assembly {
+            tstore(slot, 0)
+        }
+
+        Call[] memory innerCalls = abi.decode(params, (Call[]));
+        for (uint256 i = 0; i < innerCalls.length; i++) {
+            _execOne(innerCalls[i]);
+        }
+
+        // Aave repays via `transferFrom(receiver, pool, amount + premium)`,
+        // so the receiver only needs to approve the pool for that amount.
+        // Use a low-level call (instead of `IERC20.approve(...)`) to tolerate
+        // non-standard tokens like USDT that don't return a bool from approve.
+        uint256 owed = amount + premium;
+        (bool ok, bytes memory data) =
+            asset.call(abi.encodeWithSelector(IERC20.approve.selector, AAVE_POOL, owed));
+        require(
+            ok && (data.length == 0 || abi.decode(data, (bool))),
+            "flashloan approve fail"
+        );
+
+        return true;
     }
 
     function _sweep(address[] calldata tokens, address recipient) internal {

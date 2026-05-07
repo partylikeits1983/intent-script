@@ -38,7 +38,10 @@ contract IntentLocalTests is Test {
 
     function setUp() public {
         // Deploy infrastructure
-        router = new IntentRouter();
+        // No real flashloan provider in mock-only tests; pass zero so both
+        // callbacks revert with "balancer disabled" / "aave disabled" if
+        // anything ever tries to invoke them.
+        router = new IntentRouter(address(0), address(0));
         weth = new WETH9();
 
         // Deploy mock tokens

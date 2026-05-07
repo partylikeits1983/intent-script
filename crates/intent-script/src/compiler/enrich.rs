@@ -767,6 +767,64 @@ fn enrich_steps(
                     }
                 }
             }
+            ResolvedStep::AaveFlashloan {
+                pool,
+                asset,
+                amount,
+                premium_bps,
+                inner_steps,
+            } => {
+                // Aave V3 single-asset flashloan: same enrichment shape as
+                // Balancer (pool transfers the asset to the router before
+                // calling executeOperation, router approves pool to pull
+                // amount + premium on return). Recurse into inner_steps with a
+                // fresh state seeded with the flashloaned asset already
+                // sitting in the router.
+                let mut inner_enriched: Vec<ResolvedStep> = Vec::new();
+                let mut inner_sweep: Vec<Address> = Vec::new();
+                let mut inner_in_router: HashSet<Address> = HashSet::new();
+                inner_in_router.insert(*asset);
+                let mut inner_pulls: HashMap<Address, U256> = HashMap::new();
+                let mut inner_delegations: HashMap<Address, U256> = HashMap::new();
+                enrich_steps(
+                    inner_steps,
+                    router,
+                    signer,
+                    false,
+                    registry,
+                    &mut inner_enriched,
+                    &mut inner_sweep,
+                    &mut inner_in_router,
+                    &mut inner_pulls,
+                    &mut inner_delegations,
+                )?;
+
+                enriched_steps.push(ResolvedStep::AaveFlashloan {
+                    pool: *pool,
+                    asset: *asset,
+                    amount: *amount,
+                    premium_bps: *premium_bps,
+                    inner_steps: inner_enriched,
+                });
+
+                for (t, a) in inner_pulls {
+                    *required_pulls.entry(t).or_insert(U256::ZERO) += a;
+                }
+                for (t, a) in inner_delegations {
+                    *required_delegations.entry(t).or_insert(U256::ZERO) += a;
+                }
+                for t in inner_sweep {
+                    let is_flashloaned = t == *asset;
+                    if !is_flashloaned && !sweep_tokens.contains(&t) {
+                        sweep_tokens.push(t);
+                    }
+                }
+                for t in inner_in_router {
+                    if t != *asset {
+                        tokens_in_router.insert(t);
+                    }
+                }
+            }
             ResolvedStep::Erc20TransferFrom {
                 token,
                 from,

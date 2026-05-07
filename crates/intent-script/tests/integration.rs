@@ -316,13 +316,14 @@ fn test_swap_native_eth_to_usdc_sends_msg_value() {
             // Must target the Uniswap V3 SwapRouter directly, NOT the IntentRouter.
             assert_eq!(
                 format!("{:?}", tx.to).to_lowercase(),
-                "0xe592427a0aece92de3edee1f18e0157c05861564",
+                "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45",
                 "native single-swap should go direct to SwapRouter"
             );
             // Calldata's `recipient` (slot 3 after the 4-byte selector) must
-            // be the signer, not any intermediary router.
+            // be the signer, not any intermediary router. SwapRouter02 has
+            // 7 fields (no deadline), so total length is 4 + 32*7 = 228.
             let data = &tx.data;
-            assert!(data.len() >= 4 + 32 * 8, "unexpected calldata length");
+            assert!(data.len() >= 4 + 32 * 7, "unexpected calldata length");
             let recipient =
                 alloy_primitives::Address::from_slice(&data[4 + 32 * 3 + 12..4 + 32 * 4]);
             assert_eq!(
@@ -765,7 +766,7 @@ fn test_wrap_then_swap_weth_elided_to_native_swap() {
             );
             assert_eq!(
                 format!("{:?}", tx.to).to_lowercase(),
-                "0xe592427a0aece92de3edee1f18e0157c05861564",
+                "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45",
                 "elided pair should be a single call to SwapRouter"
             );
         }
@@ -3692,7 +3693,10 @@ fn test_close_position_requires_state() {
 }
 
 #[test]
-fn test_close_position_compiles() {
+fn test_close_long_5x_eth_accepts() {
+    // Mirrors the state produced by `test_long_5x_eth_accepts`:
+    // 5.0 WETH collateral and ~12864 USDC debt
+    // (4 WETH flashloan x 3200 price x 1.005 slippage).
     let input = r#"{
         "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
@@ -3701,14 +3705,59 @@ fn test_close_position_compiles() {
             { "close_position": {
                 "collateral":         "WETH",
                 "borrow":             "USDC",
-                "current_debt":       "4180.0",
+                "current_debt":       "12864.0",
                 "current_collateral": "5.0",
                 "slippage":           "50"
             } }
         ]
     }"#;
-    let result = do_compile(input).expect("close_position should compile");
-    let _ = result;
+    let result = do_compile(input).expect("close of 5x long should compile");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
+            let has_vault = intent
+                .intent_batch
+                .calls
+                .iter()
+                .any(|c| format!("{}", c.target).eq_ignore_ascii_case(vault));
+            assert!(has_vault, "expected flashLoan call through Balancer vault");
+        }
+        other => panic!("expected Eip712Intent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_close_short_3x_eth_accepts() {
+    // Mirrors the state produced by a 3x short of `short_eth_3x.json`:
+    // 30000 USDC collateral and ~5.714286 WETH debt
+    // (20000 USDC borrowed / 3500 price).
+    let input = r#"{
+        "network": "anvil",
+        "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "current_timestamp": 1714000000,
+        "steps": [
+            { "close_position": {
+                "collateral":         "USDC",
+                "borrow":             "WETH",
+                "current_debt":       "5.714286",
+                "current_collateral": "30000.0",
+                "slippage":           "200"
+            } }
+        ]
+    }"#;
+    let result = do_compile(input).expect("close of 3x short should compile");
+    match &result.output {
+        CompileOutput::Eip712Intent(intent) => {
+            let vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
+            let has_vault = intent
+                .intent_batch
+                .calls
+                .iter()
+                .any(|c| format!("{}", c.target).eq_ignore_ascii_case(vault));
+            assert!(has_vault, "expected flashLoan call through Balancer vault");
+        }
+        other => panic!("expected Eip712Intent, got {:?}", other),
+    }
 }
 
 #[test]

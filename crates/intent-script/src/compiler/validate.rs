@@ -285,7 +285,8 @@ fn validate_recipient_pinning(
         | ResolvedStep::LidoClaimWithdrawal { .. }
         | ResolvedStep::UniswapV3LpIncrease { .. }
         | ResolvedStep::UniswapV3LpDecrease { .. }
-        | ResolvedStep::BalancerFlashloan { .. } => alloc::vec![],
+        | ResolvedStep::BalancerFlashloan { .. }
+        | ResolvedStep::AaveFlashloan { .. } => alloc::vec![],
     };
 
     for (field, actual) in check_pairs {
@@ -306,23 +307,64 @@ fn validate_recipient_pinning(
 }
 
 /// Flashloan validation: enforce bounded depth, bounded inner step count,
-/// and that the inner pipeline produces at least the flashloaned amount of
-/// each borrowed token.
+/// and that the inner pipeline produces at least the flashloaned amount
+/// (plus any provider premium) of each borrowed token.
 fn validate_flashloan(step: &ResolvedStep, fee_bps: u16) -> Result<()> {
-    let ResolvedStep::BalancerFlashloan {
-        tokens,
-        amounts,
-        inner_steps,
-        ..
-    } = step
-    else {
-        return Ok(());
+    // Normalize Balancer (multi-asset, no premium) and Aave (single-asset, with
+    // premium) into a common "what tokens were lent and what's owed back" view
+    // so the repayability walk is shared.
+    let (provider, tokens, amounts, owed, inner_steps): (
+        &str,
+        Vec<Address>,
+        Vec<U256>,
+        Vec<U256>,
+        &Vec<ResolvedStep>,
+    ) = match step {
+        ResolvedStep::BalancerFlashloan {
+            tokens,
+            amounts,
+            inner_steps,
+            ..
+        } => {
+            // Balancer V2 flashloans currently take no fee (0 bps) for the
+            // pools we use; owed == amount.
+            (
+                "Balancer",
+                tokens.clone(),
+                amounts.clone(),
+                amounts.clone(),
+                inner_steps,
+            )
+        }
+        ResolvedStep::AaveFlashloan {
+            asset,
+            amount,
+            premium_bps,
+            inner_steps,
+            ..
+        } => {
+            // Aave repays via transferFrom of `amount + premium`.
+            let premium = (*amount).saturating_mul(U256::from(*premium_bps as u64))
+                / U256::from(10_000u64);
+            let owed_total = amount.saturating_add(premium);
+            (
+                "Aave",
+                alloc::vec![*asset],
+                alloc::vec![*amount],
+                alloc::vec![owed_total],
+                inner_steps,
+            )
+        }
+        _ => return Ok(()),
     };
 
     // Depth 1: no nested flashloans. Also enforce the usual structural rules
     // (positive amounts, slippage, asset compatibility) on inner steps.
     for (inner_index, inner) in inner_steps.iter().enumerate() {
-        if matches!(inner, ResolvedStep::BalancerFlashloan { .. }) {
+        if matches!(
+            inner,
+            ResolvedStep::BalancerFlashloan { .. } | ResolvedStep::AaveFlashloan { .. }
+        ) {
             return Err(CompileError::Validation(
                 "nested flashloans are not allowed (max depth 1)".to_string(),
             ));
@@ -349,12 +391,12 @@ fn validate_flashloan(step: &ResolvedStep, fee_bps: u16) -> Result<()> {
     }
 
     // Repayability: seed the running balance with the flashloaned amounts
-    // (Balancer transfers those in before calling back), then walk the inner
-    // pipeline's produces/consumes. At the end, each flashloaned token must
-    // have at least `amount` of balance left to repay the Vault. `fee_bps = 0`
+    // (the provider transfers those in before calling back), then walk the
+    // inner pipeline's produces/consumes. At the end, each flashloaned token
+    // must have at least `owed[i]` of balance left to repay. `fee_bps = 0`
     // per the doc-comment on `step_produces`: produced tokens inside a
-    // flashloan are returned to the Vault by `receiveFlashLoan`, not swept
-    // through the router fee path, so no fee reduction applies.
+    // flashloan are returned to the provider, not swept through the router
+    // fee path, so no fee reduction applies.
     let _ = fee_bps;
     let mut balance: HashMap<Address, U256> = HashMap::new();
     for (t, a) in tokens.iter().zip(amounts.iter()) {
@@ -377,12 +419,12 @@ fn validate_flashloan(step: &ResolvedStep, fee_bps: u16) -> Result<()> {
             *balance.entry(t).or_insert(U256::ZERO) += a;
         }
     }
-    for (t, a) in tokens.iter().zip(amounts.iter()) {
+    for (t, owed_amt) in tokens.iter().zip(owed.iter()) {
         let have = balance.get(t).copied().unwrap_or(U256::ZERO);
-        if have < *a {
+        if have < *owed_amt {
             return Err(CompileError::Validation(format!(
-                "flashloan not repayable: inner pipeline leaves only {} of token {} but {} is owed to Balancer",
-                have, t, a
+                "flashloan not repayable: inner pipeline leaves only {} of token {} but {} is owed to {}",
+                have, t, owed_amt, provider
             )));
         }
     }
@@ -693,7 +735,7 @@ fn validate_amount(step: &ResolvedStep) -> Result<()> {
         // Flashloan: outer step has no single amount. Inner-step amounts are
         // validated in validate() via the main step loop when we call
         // validate_flashloan(), which also recursively walks inner_steps.
-        ResolvedStep::BalancerFlashloan { .. } => None,
+        ResolvedStep::BalancerFlashloan { .. } | ResolvedStep::AaveFlashloan { .. } => None,
         // Approve, TransferFrom, Permit, SendErc721 are auto-generated or don't have amounts
         ResolvedStep::Erc20Approve { .. }
         | ResolvedStep::Erc20TransferFrom { .. }

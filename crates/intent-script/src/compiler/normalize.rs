@@ -90,9 +90,12 @@ pub fn normalize(script: &IntentScript, registry: &RegistryContext) -> Result<No
     // Any step that must run inside the router's call loop (flashloans, whose
     // callback needs the transient sentinel armed by `_executeCalls`) forces
     // router batching even for single-call pipelines.
-    let requires_router = steps
-        .iter()
-        .any(|s| matches!(s, ResolvedStep::BalancerFlashloan { .. }));
+    let requires_router = steps.iter().any(|s| {
+        matches!(
+            s,
+            ResolvedStep::BalancerFlashloan { .. } | ResolvedStep::AaveFlashloan { .. }
+        )
+    });
 
     Ok(NormalizeResult {
         intent: ResolvedIntent {
@@ -411,12 +414,29 @@ fn normalize_step(
 
             match via {
                 "uniswap" | "" => {
-                    // Parse optional fee tier (default 3000 = 0.3%)
-                    let fee: u32 = s.fee.as_deref().unwrap_or("3000").parse().map_err(|_| {
-                        CompileError::UniswapFeeTierUnknown {
+                    // Default fee tier: 100 (0.01%) for stable↔stable pairs
+                    // (USDC↔USDT, USDC↔DAI, …) where the deep V3 liquidity
+                    // lives on the canonical 0.01% pool, and 3000 (0.3%)
+                    // for everything else. Without this conditional default,
+                    // a stable-stable swap with no explicit `fee` falls back
+                    // to 3000, hits a non-existent pool, and reverts with
+                    // empty data ("Execution reverted for an unknown reason"
+                    // in viem). Explicit `fee` from the LLM/user always
+                    // wins — this only kicks in when the field is omitted.
+                    let default_fee_tier =
+                        if is_stable_symbol(&s.from) && is_stable_symbol(&s.to) {
+                            "100"
+                        } else {
+                            "3000"
+                        };
+                    let fee: u32 = s
+                        .fee
+                        .as_deref()
+                        .unwrap_or(default_fee_tier)
+                        .parse()
+                        .map_err(|_| CompileError::UniswapFeeTierUnknown {
                             fee: s.fee.clone().unwrap_or_default(),
-                        }
-                    })?;
+                        })?;
 
                     // Look up Uniswap V3 router from protocol config
                     let protocol = registry.protocols.get("uniswap").ok_or_else(|| {
@@ -1165,9 +1185,9 @@ fn normalize_flashloan(
     warnings: &mut Vec<String>,
     script: &IntentScript,
 ) -> Result<ResolvedStep> {
-    if f.via != "balancer" {
+    if f.via != "balancer" && f.via != "aave" {
         return Err(CompileError::UnsupportedStep(format!(
-            "flashloan via '{}' is not supported (only 'balancer' in v1)",
+            "flashloan via '{}' is not supported (use 'balancer' or 'aave')",
             f.via
         )));
     }
@@ -1176,20 +1196,6 @@ fn normalize_flashloan(
             "flashloan requires at least one asset".to_string(),
         ));
     }
-
-    let balancer =
-        registry
-            .protocols
-            .get("balancer")
-            .ok_or_else(|| CompileError::UnknownProtocol {
-                protocol: "balancer".to_string(),
-                network: registry.network.clone(),
-                available: known_protocols(registry),
-            })?;
-    let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
-        CompileError::Adapter("Protocol 'balancer' has no 'vault' contract configured".to_string())
-    })?;
-    let vault = parse_address(vault_addr)?;
 
     let mut tokens = Vec::with_capacity(f.assets.len());
     let mut amounts = Vec::with_capacity(f.assets.len());
@@ -1233,6 +1239,50 @@ fn normalize_flashloan(
         inner_steps.extend(prepend);
         inner_steps.push(resolved);
     }
+
+    if f.via == "aave" {
+        // Aave V3 `flashLoanSimple` is single-asset.
+        if f.assets.len() != 1 {
+            return Err(CompileError::UnsupportedStep(
+                "Aave flashloans support a single asset only (use 'balancer' for multi-asset)"
+                    .to_string(),
+            ));
+        }
+        let aave = registry
+            .protocols
+            .get("aave")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "aave".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+        let pool_addr = aave.contracts.get("pool").ok_or_else(|| {
+            CompileError::Adapter("Protocol 'aave' has no 'pool' contract configured".to_string())
+        })?;
+        let pool = parse_address(pool_addr)?;
+        let premium_bps = registry.aave_flashloan_premium_bps();
+        return Ok(ResolvedStep::AaveFlashloan {
+            pool,
+            asset: tokens[0],
+            amount: amounts[0],
+            premium_bps,
+            inner_steps,
+        });
+    }
+
+    let balancer =
+        registry
+            .protocols
+            .get("balancer")
+            .ok_or_else(|| CompileError::UnknownProtocol {
+                protocol: "balancer".to_string(),
+                network: registry.network.clone(),
+                available: known_protocols(registry),
+            })?;
+    let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
+        CompileError::Adapter("Protocol 'balancer' has no 'vault' contract configured".to_string())
+    })?;
+    let vault = parse_address(vault_addr)?;
 
     Ok(ResolvedStep::BalancerFlashloan {
         vault,
@@ -1533,10 +1583,33 @@ fn reject_all_amount(step_name: &str, field: &str, value: &str) -> Result<()> {
     }
 }
 
+/// Returns `true` for asset symbols that are USD-pegged stablecoins. Used to
+/// pick a smarter default Uniswap V3 fee tier for stable-stable pairs (the
+/// 0.01% / fee=100 tier holds the deep liquidity for USDC↔USDT, USDC↔DAI
+/// etc.). Case-insensitive to tolerate "usdc" vs "USDC" hand-typed input.
+///
+/// Mirrors the UI's `STABLE_SYMBOLS` set in
+/// `intentOS-ui/lib/portfolio-summary.ts` and `lib/uniswap-v3-price.ts`; the
+/// two layers are deliberately duplicated rather than abstracted into a
+/// shared module since the WASM compiler has no JS imports. Any new stable
+/// added one place should be added the other too.
+fn is_stable_symbol(alias: &str) -> bool {
+    matches!(
+        alias.to_ascii_uppercase().as_str(),
+        "USDC" | "USDT" | "USDBC" | "DAI" | "USDE" | "FRAX" | "SDAI"
+    )
+}
+
 /// Parse a Uniswap V3 fee tier from a string, accepting only the canonical
-/// values.
+/// values. Fee 100 (0.01%) is the canonical stable-stable tier (USDC/USDT
+/// etc.) — it must be accepted here so swaps between two stables route to
+/// the correct pool. Without it, a USDC↔USDT swap on Base falls back to
+/// fee 3000, where the pool may not exist, and the SwapRouter02 calldata
+/// reverts with no reason (empty return data from the address-zero pool
+/// fails to decode).
 fn parse_uniswap_fee_tier(s: &str) -> Result<u32> {
     match s {
+        "100" => Ok(100),
         "500" => Ok(500),
         "3000" => Ok(3000),
         "10000" => Ok(10000),
@@ -1549,6 +1622,7 @@ fn parse_uniswap_fee_tier(s: &str) -> Result<u32> {
 /// Canonical tick spacing for a given Uniswap V3 fee tier.
 fn uniswap_tick_spacing(fee: u32) -> i32 {
     match fee {
+        100 => 1,
         500 => 10,
         3000 => 60,
         10000 => 200,

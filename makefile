@@ -10,7 +10,8 @@ ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
 .PHONY: ci fmt-check clippy format build test test-compiler generate-calldata \
 	generate-fixtures generate-integration-fixtures test-foundry test-router \
 	e2e-test test-anvil test-fork-e2e test-fork-integration test-fork-local \
-	test-all compile-intent start-anvil wasm-build server-compat
+	test-all compile-intent start start-anvil start-anvil-base start-l1 \
+	wasm-build server-compat
 
 format:
 	cargo fmt --all
@@ -86,9 +87,25 @@ test-all: test-compiler test-router test-anvil
 compile-intent:
 	cargo run -p intent-script --features clap -- crates/intent-script/examples/test.json --pretty
 
-# Start a local anvil node forking Ethereum L1 with chain id 31337
+# Default fork target: Base mainnet at chain id 8453, port 8545.
+# Delegates to the rich root-level script which (a) deploys IntentRouter via
+# DeployIntentRouterBase.s.sol with constructor `(0x0, AAVE_POOL_BASE)`,
+# (b) funds dev accounts with USDC + cbETH via whale impersonation, and
+# (c) auto-updates `intent_router.contracts.router` in both Base config
+# JSONs. Use `make start-l1` for the legacy Ethereum L1 fork.
+start: start-anvil-base
+
+start-anvil-base:
+	../scripts/run-local-anvil-base.sh
+
+# Forks Ethereum L1 with chain id 31337. Deploys IntentRouter with both
+# Balancer and Aave wired so leverage `via: balancer` (default) and
+# `via: aave` (with premium) both work. Mirrors run-local-anvil.sh.
 start-anvil:
 	./scripts/start-anvil.sh
+
+# Alias for the L1 fork. Kept for muscle-memory parity with `make start`.
+start-l1: start-anvil
 
 # Run the same gate the GitHub Actions `ci` workflow runs locally.
 # Skips test-evm (needs ETH_RPC_URL) — run `make test-anvil` separately

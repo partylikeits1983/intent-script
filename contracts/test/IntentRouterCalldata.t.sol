@@ -20,12 +20,14 @@ contract IntentRouterCalldataTest is Test {
     address public user = makeAddr("user");
     bytes4 internal constant APPROVE_SELECTOR = 0x095ea7b3;
     bytes4 internal constant TRANSFER_FROM_SELECTOR = 0x23b872dd;
-    bytes4 internal constant EXACT_INPUT_SINGLE_SELECTOR = 0x414bf389;
+    // SwapRouter02 selector — matches the V2 ABI without `deadline`. The
+    // older V3 SwapRouter used 0x414bf389; we no longer emit that.
+    bytes4 internal constant EXACT_INPUT_SINGLE_SELECTOR = 0x04e45aaf;
     bytes4 internal constant AAVE_SUPPLY_SELECTOR = 0x617ba037;
     bytes4 internal constant AAVE_BORROW_SELECTOR = 0xa415bcad;
 
     function setUp() public {
-        router = new IntentRouter();
+        router = new IntentRouter(0xBA12222222228d8Ba445958a75a0704d566BF2C8, 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2);
         weth = new WETH9();
 
         // Whitelist WETH as an allowed target (Task 8: allowlist)

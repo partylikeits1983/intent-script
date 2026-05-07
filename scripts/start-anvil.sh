@@ -99,8 +99,16 @@ if [ ! -f "$ROUTER_ARTIFACT" ] || [ "$REPO_ROOT/contracts/src/IntentRouter.sol" 
 fi
 
 ROUTER_BYTECODE=$(jq -r '.bytecode.object' "$ROUTER_ARTIFACT")
-echo "Deploying IntentRouter to $ROUTER_ADDR..."
-DEPLOY_TX=$(cast send --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --gas-limit 6000000 --create "$ROUTER_BYTECODE" --json | jq -r '.contractAddress')
+# Constructor args: (address balancerVault, address aavePool). On L1 we wire
+# both so the same router supports `via: balancer` (default, no premium) and
+# `via: aave` (with ~5 bps premium).
+BALANCER_VAULT_L1=0xBA12222222228d8Ba445958a75a0704d566BF2C8
+AAVE_POOL_L1=0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2
+CTOR_ARGS=$(cast abi-encode 'constructor(address,address)' "$BALANCER_VAULT_L1" "$AAVE_POOL_L1")
+# `cast abi-encode` returns 0x-prefixed; concat without the prefix.
+ROUTER_DEPLOY_PAYLOAD="${ROUTER_BYTECODE}${CTOR_ARGS#0x}"
+echo "Deploying IntentRouter to $ROUTER_ADDR (balancerVault=$BALANCER_VAULT_L1, aavePool=$AAVE_POOL_L1)..."
+DEPLOY_TX=$(cast send --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --gas-limit 6000000 --create "$ROUTER_DEPLOY_PAYLOAD" --json | jq -r '.contractAddress')
 # Case-insensitive compare. `${VAR,,}` (bash 4+) doesn't exist on the system
 # bash 3.2 that ships with macOS, so use `tr` — portable across every shell
 # anyone is realistically running.

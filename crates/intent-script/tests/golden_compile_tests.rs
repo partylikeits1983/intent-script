@@ -36,7 +36,7 @@ use common::compile_anvil;
 /// JSON; if they ever drift, the failure message points right at the
 /// updated address.
 const AAVE_POOL: &str = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2";
-const UNISWAP_V3_ROUTER: &str = "0xe592427a0aece92de3edee1f18e0157c05861564";
+const UNISWAP_V3_ROUTER: &str = "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45";
 const UNISWAP_V3_POSITION_MANAGER: &str = "0xc36442b4a4522e871399cd717abdd847ab11fe88";
 const LIDO_STETH: &str = "0xae7ab96520de3a18e5e111b5eaab095312d7fe84";
 const LIDO_WITHDRAWAL_QUEUE: &str = "0x889edc2edab5f40e902b864ad4d7ade8e412f9b1";

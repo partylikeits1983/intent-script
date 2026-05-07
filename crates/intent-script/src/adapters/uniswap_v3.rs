@@ -1,7 +1,10 @@
 //! Uniswap V3 adapter.
 //!
-//! Generates calldata for:
-//! - `router.exactInputSingle(ExactInputSingleParams)` — single-hop swap
+//! Generates calldata for `SwapRouter02.exactInputSingle(params)` — the
+//! modern unified V3 router used on every chain we target (Ethereum L1,
+//! Base, Arbitrum, Optimism, …). The original V3 SwapRouter (with a
+//! `deadline` field) is intentionally not supported; switching all
+//! deployments to SwapRouter02 means a single ABI everywhere.
 
 use alloc::format;
 use alloc::vec;
@@ -13,12 +16,15 @@ use crate::error::{CompileError, Result};
 use crate::ir::{ConcreteCall, ResolvedStep};
 
 alloy_sol_types::sol! {
+    /// SwapRouter02 ABI — no `deadline` field. Function selector
+    /// `0x04e45aaf`. Deadline handling moved to a Multicall wrapper in
+    /// V2; we don't use that wrapper, so the pool itself enforces price
+    /// freshness via the slippage `amountOutMinimum` check instead.
     struct ExactInputSingleParams {
         address tokenIn;
         address tokenOut;
         uint24 fee;
         address recipient;
-        uint256 deadline;
         uint256 amountIn;
         uint256 amountOutMinimum;
         uint160 sqrtPriceLimitX96;
@@ -27,7 +33,8 @@ alloy_sol_types::sol! {
     function exactInputSingle(ExactInputSingleParams params) external payable returns (uint256 amountOut);
 }
 
-/// Lower a UniswapV3Swap step to a concrete router.exactInputSingle() call.
+/// Lower a `UniswapV3Swap` step to a single SwapRouter02
+/// `exactInputSingle` call.
 pub fn lower_swap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
     let ResolvedStep::UniswapV3Swap {
         router,
@@ -36,9 +43,9 @@ pub fn lower_swap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         amount_in,
         fee,
         recipient,
-        deadline,
         amount_out_minimum,
         native_input,
+        ..
     } = step
     else {
         return Err(CompileError::AdapterStepMismatch {
@@ -52,7 +59,6 @@ pub fn lower_swap(step: &ResolvedStep) -> Result<Vec<ConcreteCall>> {
         tokenOut: *token_out,
         fee: Uint::from(*fee),
         recipient: *recipient,
-        deadline: *deadline,
         amountIn: *amount_in,
         amountOutMinimum: *amount_out_minimum,
         sqrtPriceLimitX96: Uint::ZERO,

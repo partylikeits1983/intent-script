@@ -198,6 +198,10 @@ pub enum ResolvedStep {
         amount_in: U256,
         fee: u32,
         recipient: Address,
+        /// Kept in the IR for backward-compat with code that destructures
+        /// this variant. SwapRouter02's ABI doesn't carry `deadline`, so
+        /// the adapter ignores it; deadline enforcement happens via the
+        /// pool's `amountOutMinimum` slippage check instead.
         deadline: U256,
         amount_out_minimum: U256,
         native_input: bool,
@@ -352,6 +356,18 @@ pub enum ResolvedStep {
         vault: Address,
         tokens: Vec<Address>,
         amounts: Vec<U256>,
+        inner_steps: Vec<ResolvedStep>,
+    },
+    /// Aave V3 single-asset flashloan (`flashLoanSimple`) wrapping an inner
+    /// pipeline. Aave's callback (`executeOperation`) requires the receiver to
+    /// approve the pool to pull `amount + premium` after the inner work runs;
+    /// the router handles that approve in Solidity. `premium_bps` is taken
+    /// from the registry (Aave's `FLASHLOAN_PREMIUM_TOTAL`, currently 5 bps).
+    AaveFlashloan {
+        pool: Address,
+        asset: Address,
+        amount: U256,
+        premium_bps: u16,
         inner_steps: Vec<ResolvedStep>,
     },
 }

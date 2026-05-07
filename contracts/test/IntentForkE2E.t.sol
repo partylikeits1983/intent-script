@@ -29,14 +29,14 @@ contract IntentForkE2E is Test {
     // config/protocols/ethereum.json — compiler-generated calldata bakes this
     // address into transferFrom/swap-recipient fields, and the fork test etches
     // IntentRouter bytecode at this same address so the calls line up.
-    address constant ROUTER_ADDR = 0x9fF4608bAEb3a055CcBBa85c2Aabaf6EF5c50120;
+    address constant ROUTER_ADDR = 0x1F3249a661012a1DFa0b085F5716851c45023548;
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
     address constant STETH = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
     address constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
     address constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
-    address constant UNI_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+    address constant UNI_ROUTER = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
 
     // Compiler signer address — must match the "from" field in example JSON files.
     // The compiler bakes this address into transferFrom calls, so the test user
@@ -70,7 +70,7 @@ contract IntentForkE2E is Test {
 
     function setUp() public {
         // Deploy a fresh IntentRouter to get the correct bytecode
-        IntentRouter impl_ = new IntentRouter();
+        IntentRouter impl_ = new IntentRouter(BALANCER_VAULT, AAVE_POOL);
 
         // Etch our router bytecode at the config address so compiler-generated
         // calldata works as-is. Note: DOMAIN_SEPARATOR immutable will have the
@@ -486,18 +486,16 @@ contract IntentForkE2E is Test {
             value: 0
         });
 
-        // Step 2: Swap USDC → wstETH through 0.05% pool, recipient = router
-        // amountOutMinimum is set to a conservative value for slippage protection
-        // (matches compiler behavior when min_amount_out is specified)
+        // Step 2: Swap USDC → wstETH through 0.05% pool, recipient = router.
+        // SwapRouter02 ABI — no `deadline` field, selector 0x04e45aaf.
         calls[2] = IntentRouter.Call({
             target: UNI_ROUTER,
             callData: abi.encodeWithSignature(
-                "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
+                "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
                 USDC,
                 WSTETH,
                 uint24(500),
                 routerAddr,
-                type(uint256).max,
                 usdcAmount,
                 uint256(1),
                 uint160(0)
@@ -542,7 +540,7 @@ contract IntentForkE2E is Test {
     ///         Deploys a fresh router (correct DOMAIN_SEPARATOR), builds the batch
     ///         manually, signs with vm.sign, and submits via a relayer.
     function test_fork_complexDefi_executeSigned() public {
-        IntentRouter signedRouter = new IntentRouter();
+        IntentRouter signedRouter = new IntentRouter(BALANCER_VAULT, AAVE_POOL);
 
         // Whitelist all target contracts on the signed router (Task 8: allowlist)
         signedRouter.setAllowedTarget(WSTETH, true);
@@ -1107,7 +1105,6 @@ contract IntentForkE2E is Test {
                     tokenOut: WETH,
                     fee: 3000,
                     recipient: swapper,
-                    deadline: block.timestamp + 600,
                     amountIn: swapSize / 6,
                     amountOutMinimum: 0,
                     sqrtPriceLimitX96: 0
@@ -1123,7 +1120,6 @@ contract IntentForkE2E is Test {
                     tokenOut: USDC,
                     fee: 3000,
                     recipient: swapper,
-                    deadline: block.timestamp + 600,
                     amountIn: wethBack,
                     amountOutMinimum: 0,
                     sqrtPriceLimitX96: 0
@@ -1368,7 +1364,6 @@ contract IntentForkE2E is Test {
                     tokenOut: USDC,
                     fee: 500,
                     recipient: ROUTER_ADDR,
-                    deadline: block.timestamp + 600,
                     amountIn: aWstethAfterOpen,
                     amountOutMinimum: flashAmount,
                     sqrtPriceLimitX96: 0
@@ -1757,12 +1752,13 @@ interface IUniswapV3Pool {
 }
 
 interface ISwapRouter {
+    // SwapRouter02 ABI — no `deadline` field. Selector `0x04e45aaf`.
+    // Matches the V2 router address baked into UNI_ROUTER above.
     struct ExactInputSingleParams {
         address tokenIn;
         address tokenOut;
         uint24 fee;
         address recipient;
-        uint256 deadline;
         uint256 amountIn;
         uint256 amountOutMinimum;
         uint160 sqrtPriceLimitX96;

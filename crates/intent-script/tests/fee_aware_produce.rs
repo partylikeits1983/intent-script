@@ -99,7 +99,7 @@ fn test_fee_aware_zero_fee_no_reduction() {
         "uniswap": {
             "type": "dex", "version": "v3",
             "contracts": {
-                "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+                "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
                 "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
             }
         }

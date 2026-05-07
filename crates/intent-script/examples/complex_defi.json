@@ -1,6 +1,7 @@
 {
   "network": "anvil",
   "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "deadline": 9999999999,
   "steps": [
     { "swap": { "from": "USDC", "amount": "5000", "to": "wstETH", "min_amount_out": "1.0", "fee": "500" } },
     { "deposit": { "asset": "wstETH", "amount": "all", "into": "aave" } },

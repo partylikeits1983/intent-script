@@ -75,11 +75,27 @@ pub struct ProtocolConfig {
     /// builder consults this map to emit that prerequisite tx.
     #[serde(default)]
     pub variable_debt_tokens: Option<HashMap<String, String>>,
+    /// Aave-only: per-asset aToken addresses, keyed by the asset alias
+    /// (e.g. "USDC" -> 0x98C2...). The compiler doesn't use these (supply
+    /// + withdraw flows go through the underlying), but the UI's portfolio
+    /// panel reads them to fetch supplied balances. Kept on this struct so
+    /// the registry has a single canonical layout per network.
+    #[serde(default)]
+    pub a_tokens: Option<HashMap<String, String>>,
     /// Aave-only: safety margin subtracted from the theoretical max leverage,
     /// in bps (300 = 3%). `0` means honor the raw LTV floor; callers opt into
     /// slack via an explicit `safety_margin_bps` on the leverage step.
     #[serde(default)]
     pub max_leverage_safety_margin_bps: Option<u16>,
+    /// Aave-only: V3 flashloan premium in basis points (5 = 0.05% on most
+    /// chains today). Read by the leverage sugar to size the inner borrow
+    /// (`borrow >= flashloan + premium`) and by the flashloan validator to
+    /// require enough produced output to repay `amount + premium`. The
+    /// compiler is offline; the on-chain canonical value is
+    /// `Pool.FLASHLOAN_PREMIUM_TOTAL()`. Missing/zero falls back to a
+    /// conservative default in `RegistryContext::aave_flashloan_premium_bps`.
+    #[serde(default)]
+    pub flashloan_premium_bps: Option<u16>,
     /// Lido-only: stETH-per-wstETH conversion rate in basis points.
     /// `12000` means 1 wstETH = 1.20 stETH. Used by `step_produces` to convert
     /// the stETH input of a `WstETHWrap` step into the wstETH output amount
@@ -189,6 +205,22 @@ impl RegistryContext {
             Some(v) if v >= 10_000 => v,
             _ => FALLBACK_BPS,
         }
+    }
+
+    /// Aave V3 flashloan premium in basis points.
+    ///
+    /// Reads `aave.flashloan_premium_bps` from the protocol registry. Falls
+    /// back to `5` (the current canonical value on Ethereum mainnet and
+    /// Base — `Pool.FLASHLOAN_PREMIUM_TOTAL()`). Used by the leverage sugar
+    /// when emitting an `AaveFlashloan` IR step, and by validators to size
+    /// the repayment expectation.
+    pub fn aave_flashloan_premium_bps(&self) -> u16 {
+        const DEFAULT_BPS: u16 = 5;
+        self.protocols
+            .get("aave")
+            .and_then(|p| p.flashloan_premium_bps)
+            .filter(|v| *v > 0)
+            .unwrap_or(DEFAULT_BPS)
     }
 
     /// Look up the IntentRouter address for this network, if configured.

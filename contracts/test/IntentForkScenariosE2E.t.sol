@@ -39,7 +39,7 @@ contract IntentForkScenariosE2E is Test {
     address constant STETH = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
 
     address constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
-    address constant UNI_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+    address constant UNI_ROUTER = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
     address constant BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
     address constant NPM = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88; // Uniswap V3 NonfungiblePositionManager
 
@@ -59,7 +59,7 @@ contract IntentForkScenariosE2E is Test {
     address public user;
 
     function setUp() public {
-        IntentRouter impl_ = new IntentRouter();
+        IntentRouter impl_ = new IntentRouter(BALANCER_VAULT, AAVE_POOL);
         vm.etch(ROUTER_ADDR, address(impl_).code);
         router = IntentRouter(payable(ROUTER_ADDR));
 

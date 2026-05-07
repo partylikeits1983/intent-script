@@ -153,7 +153,7 @@ impl fmt::Display for CompileError {
             ),
             CompileError::UniswapFeeTierUnknown { fee } => write!(
                 f,
-                "Invalid Uniswap V3 fee tier '{fee}' (must be one of: 500, 3000, 10000)."
+                "Invalid Uniswap V3 fee tier '{fee}' (must be one of: 100, 500, 3000, 10000)."
             ),
             CompileError::Json(s) => write!(f, "JSON parse error: {s}"),
             CompileError::DeadlineMissing => write!(
@@ -613,7 +613,12 @@ impl CompileError {
                 path: None,
                 fields: pairs(&[("fee", fee)]),
                 suggestion: None,
-                available: alloc::vec!["500".to_string(), "3000".to_string(), "10000".to_string(),],
+                available: alloc::vec![
+                    "100".to_string(),
+                    "500".to_string(),
+                    "3000".to_string(),
+                    "10000".to_string(),
+                ],
                 hint: "Uniswap V3 fee tiers are quantized to 100 (0.01%), 500 (0.05%), \
                        3000 (0.3%), or 10000 (1%). Stable pairs use 500; volatile pairs \
                        use 3000."
@@ -929,8 +934,9 @@ fn classify_validation_message(raw: &str, full_message: &str) -> StructuredError
             suggestion: None,
             available: Vec::new(),
             hint: "A flashloan inner pipeline must leave enough of each borrowed token to \
-                   repay the Vault. The compiler simulates the static balance flow and \
-                   refuses to emit a tx guaranteed to revert."
+                   repay the provider (Balancer Vault, or Aave Pool plus its premium). \
+                   The compiler simulates the static balance flow and refuses to emit a \
+                   tx guaranteed to revert."
                 .to_string(),
             fix_instruction: "Adjust the inner steps so their net produce covers each \
                               borrowed `(asset, amount)` at the end of the pipeline. \

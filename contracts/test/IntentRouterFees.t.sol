@@ -16,7 +16,7 @@ contract IntentRouterFeesTest is Test {
     address public outsider = makeAddr("outsider");
 
     function setUp() public {
-        router = new IntentRouter();
+        router = new IntentRouter(0xBA12222222228d8Ba445958a75a0704d566BF2C8, 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2);
         token = new MockERC20("Mock", "MCK", 18);
         weth = new WETH9();
 

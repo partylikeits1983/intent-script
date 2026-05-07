@@ -161,6 +161,7 @@ fn generate_swap_usdc_weth_calldata() {
     let input = r#"{
         "network": "anvil",
         "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "deadline": 9999999999,
         "steps": [
             { "swap": { "from": "USDC", "amount": "1000", "to": "WETH", "min_amount_out": "0.1" } }
         ]

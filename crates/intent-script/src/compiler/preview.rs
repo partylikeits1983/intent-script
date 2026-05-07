@@ -43,7 +43,12 @@ pub fn build_preview(intent: &ResolvedIntent, registry: &RegistryContext) -> Pre
         // router. Surface those transferFroms as user-visible inputs so the
         // preview card can show "You send: 5 WETH" for a leveraged long
         // instead of an empty "inputs" list.
-        if let ResolvedStep::BalancerFlashloan { inner_steps, .. } = step {
+        let inner_for_preview: Option<&Vec<ResolvedStep>> = match step {
+            ResolvedStep::BalancerFlashloan { inner_steps, .. }
+            | ResolvedStep::AaveFlashloan { inner_steps, .. } => Some(inner_steps),
+            _ => None,
+        };
+        if let Some(inner_steps) = inner_for_preview {
             for inner in inner_steps {
                 if let ResolvedStep::Erc20TransferFrom {
                     from,
@@ -702,6 +707,33 @@ fn describe_step(step: &ResolvedStep, registry: &RegistryContext) -> Option<Prev
                 description: format!(
                     "Flashloan {} via Balancer V2 with {} inner step(s)",
                     token_summary.join(" + "),
+                    inner_count
+                ),
+                inner_steps: described_inner,
+            })
+        }
+        ResolvedStep::AaveFlashloan {
+            asset,
+            amount,
+            premium_bps,
+            inner_steps,
+            ..
+        } => {
+            let sym = registry.symbol_for_address(asset);
+            let dec = registry.decimals_for_address(asset);
+            let described_inner: Vec<PreviewStepInfo> = inner_steps
+                .iter()
+                .filter_map(|s| describe_step(s, registry))
+                .collect();
+            let inner_count = described_inner.len();
+            Some(PreviewStepInfo {
+                action: "flashloan".into(),
+                protocol: "aave".into(),
+                description: format!(
+                    "Flashloan {} {} via Aave V3 ({} bps premium) with {} inner step(s)",
+                    format_amount(*amount, dec),
+                    sym,
+                    premium_bps,
                     inner_count
                 ),
                 inner_steps: described_inner,

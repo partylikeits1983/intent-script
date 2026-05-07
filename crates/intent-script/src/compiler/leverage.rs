@@ -1,13 +1,16 @@
 //! Leverage sugar — desugar `long` / `short` / `close_position` DSL steps
-//! into a single `ResolvedStep::BalancerFlashloan` wrapping an Aave
-//! supply/borrow/swap inner pipeline. The flashloan primitive (sub-task 06)
-//! already handles recursive enrichment and repayability validation, so this
-//! module is compiler-only sugar — no new IR, no new adapter.
+//! into a single flashloan-wrapped IR step (`BalancerFlashloan` or
+//! `AaveFlashloan`) carrying an Aave supply/borrow/swap inner pipeline.
+//! Provider selection is driven by the user's `via` field with a chain-aware
+//! default — Balancer when the registry has it (Ethereum L1), otherwise Aave
+//! (Base, where Balancer is not deployed). The flashloan primitives already
+//! handle recursive enrichment and repayability validation, so this module
+//! stays compiler-only sugar — no new IR for sugar, only provider routing.
 //!
-//! All three sugar forms share a symmetric structure so the IR emitted here
-//! is the same shape a power-user could hand-author via the `flashloan`
-//! primitive. That makes the sugar trivial to audit (`cargo test` can diff
-//! the expanded IR against a hand-written equivalent).
+//! All sugar forms share a symmetric structure so the IR emitted here is the
+//! same shape a power-user could hand-author via the `flashloan` primitive.
+//! That makes the sugar trivial to audit (`cargo test` can diff the expanded
+//! IR against a hand-written equivalent).
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -31,6 +34,50 @@ pub enum Side {
     Short,
 }
 
+/// Which on-chain protocol provides the flashloan that wraps the inner
+/// supply/borrow/swap pipeline. Selected per-leverage step via the `via`
+/// DSL field, with a chain-aware default (Balancer when available, else Aave).
+#[derive(Copy, Clone, Debug)]
+enum FlashloanProvider {
+    Balancer,
+    Aave,
+}
+
+/// Resolve a user-supplied `via` string (or the lack of one) to a concrete
+/// provider, validating that it is configured for the active network. The
+/// default prefers Balancer when present (no premium) and falls back to Aave
+/// (Base, where Balancer is not deployed).
+fn select_flashloan_provider(
+    via: Option<&str>,
+    registry: &RegistryContext,
+) -> Result<FlashloanProvider> {
+    let has_balancer = registry.protocols.contains_key("balancer");
+    let has_aave = registry.protocols.contains_key("aave");
+    let trimmed = via.map(str::trim).filter(|s| !s.is_empty());
+    match trimmed {
+        Some("balancer") if has_balancer => Ok(FlashloanProvider::Balancer),
+        Some("balancer") => Err(CompileError::UnsupportedStep(format!(
+            "via 'balancer' is not available on network '{}' (no Balancer Vault configured); use 'aave'",
+            registry.network
+        ))),
+        Some("aave") if has_aave => Ok(FlashloanProvider::Aave),
+        Some("aave") => Err(CompileError::UnsupportedStep(format!(
+            "via 'aave' is not available on network '{}' (no Aave Pool configured)",
+            registry.network
+        ))),
+        Some(other) => Err(CompileError::UnsupportedStep(format!(
+            "leverage via '{}' is not supported (use 'balancer' or 'aave')",
+            other
+        ))),
+        None if has_balancer => Ok(FlashloanProvider::Balancer),
+        None if has_aave => Ok(FlashloanProvider::Aave),
+        None => Err(CompileError::UnsupportedStep(format!(
+            "no flashloan provider configured for network '{}'",
+            registry.network
+        ))),
+    }
+}
+
 const DEFAULT_SLIPPAGE_BPS: u64 = 50;
 const MAX_SLIPPAGE_BPS: u64 = 500; // 5%
 const LEVERAGE_SCALE: u64 = 10_000; // leverage stored as fixed-point * 10_000
@@ -42,13 +89,7 @@ pub fn expand_leverage(
     registry: &RegistryContext,
     script: &IntentScript,
 ) -> Result<ResolvedStep> {
-    let via = step.via.as_deref().unwrap_or("balancer");
-    if via != "balancer" {
-        return Err(CompileError::UnsupportedStep(format!(
-            "leverage via '{}' is not supported (only 'balancer' in v1)",
-            via
-        )));
-    }
+    let provider = select_flashloan_provider(step.via.as_deref(), registry)?;
 
     // Apply the side-swap: `short X collateral=USDC borrow=WETH` is modeled
     // identically to `long USDC collateral=USDC borrow=WETH` — same expansion
@@ -217,13 +258,28 @@ pub fn expand_leverage(
         ));
     }
 
+    // Aave V3 flashloans charge a premium (`FLASHLOAN_PREMIUM_TOTAL`, currently
+    // 5 bps on L1 and Base). Balancer charges nothing today. We grow the
+    // amount the inner swap must produce so that the inner pipeline can repay
+    // `flashloan + premium` while still keeping the user's leveraged
+    // collateral position intact.
+    let premium_bps: u16 = match provider {
+        FlashloanProvider::Balancer => 0,
+        FlashloanProvider::Aave => registry.aave_flashloan_premium_bps(),
+    };
+    let premium = flashloan_amount.saturating_mul(U256::from(premium_bps as u64))
+        / U256::from(10_000u64);
+    let target_swap_out = flashloan_amount
+        .checked_add(premium)
+        .ok_or_else(|| CompileError::InvalidAmount("flashloan+premium overflow".into()))?;
+
     // Borrow amount sized from price + slippage:
-    //   borrow_amount_human = flashloan_amount_human * price * (1 + slippage/10_000)
+    //   borrow_amount_human = target_swap_out_human * price * (1 + slippage/10_000)
     //
     // We keep amounts in base units throughout. For collateral units C and
     // borrow units B, with price P = B-per-C (human), `price_scaled =
     // P * 10^borrow_decimals`. Then
-    //   borrow_base = flashloan_base * price_scaled * (10_000 + slippage) /
+    //   borrow_base = target_swap_out_base * price_scaled * (10_000 + slippage) /
     //                 (10^collateral_decimals * 10_000)
     let price_scaled = parse_amount(step.price.as_deref().unwrap_or("0"), borrow_decimals)?;
     if price_scaled == U256::ZERO {
@@ -234,7 +290,7 @@ pub fn expand_leverage(
     let scale_collateral = U256::from(10u128).pow(U256::from(collateral_decimals as u64));
     let slippage_u = U256::from(10_000u64 + slippage_bps);
     let denom_10k = U256::from(10_000u64);
-    let borrow_amount = flashloan_amount
+    let borrow_amount = target_swap_out
         .checked_mul(price_scaled)
         .and_then(|v| v.checked_mul(slippage_u))
         .ok_or_else(|| CompileError::InvalidAmount("borrow-amount overflow".into()))?
@@ -260,20 +316,28 @@ pub fn expand_leverage(
     })?;
     let swap_router = parse_asset_addr(swap_router_addr, registry)?;
 
-    // Balancer Vault address.
-    let balancer =
-        registry
-            .protocols
-            .get("balancer")
-            .ok_or_else(|| CompileError::UnknownProtocol {
-                protocol: "balancer".to_string(),
-                network: registry.network.clone(),
-                available: registry.protocols.keys().cloned().collect::<Vec<_>>(),
+    // Provider-specific outer wrapper address. For Balancer we look up the
+    // vault; for Aave we reuse the pool we already fetched for the LTV table.
+    let balancer_vault_opt: Option<Address> = match provider {
+        FlashloanProvider::Balancer => {
+            let balancer =
+                registry
+                    .protocols
+                    .get("balancer")
+                    .ok_or_else(|| CompileError::UnknownProtocol {
+                        protocol: "balancer".to_string(),
+                        network: registry.network.clone(),
+                        available: registry.protocols.keys().cloned().collect::<Vec<_>>(),
+                    })?;
+            let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
+                CompileError::Adapter(
+                    "Protocol 'balancer' has no 'vault' contract configured".to_string(),
+                )
             })?;
-    let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
-        CompileError::Adapter("Protocol 'balancer' has no 'vault' contract configured".to_string())
-    })?;
-    let vault = parse_asset_addr(vault_addr, registry)?;
+            Some(parse_asset_addr(vault_addr, registry)?)
+        }
+        FlashloanProvider::Aave => None,
+    };
 
     // Deadline for the inner swap — fall back to the script's effective
     // deadline or the 30-min default.
@@ -319,17 +383,28 @@ pub fn expand_leverage(
             fee: swap_fee,
             recipient: signer,
             deadline: U256::from(swap_deadline),
-            amount_out_minimum: flashloan_amount, // must be enough to repay
+            // Must cover repayment + provider premium. For Balancer (premium=0)
+            // this is exactly `flashloan_amount`; for Aave it grows by 5 bps.
+            amount_out_minimum: target_swap_out,
             native_input: false,
         },
     ];
 
-    Ok(ResolvedStep::BalancerFlashloan {
-        vault,
-        tokens: vec![collateral_addr],
-        amounts: vec![flashloan_amount],
-        inner_steps,
-    })
+    match provider {
+        FlashloanProvider::Balancer => Ok(ResolvedStep::BalancerFlashloan {
+            vault: balancer_vault_opt.expect("balancer provider implies vault was fetched"),
+            tokens: vec![collateral_addr],
+            amounts: vec![flashloan_amount],
+            inner_steps,
+        }),
+        FlashloanProvider::Aave => Ok(ResolvedStep::AaveFlashloan {
+            pool: aave_pool,
+            asset: collateral_addr,
+            amount: flashloan_amount,
+            premium_bps,
+            inner_steps,
+        }),
+    }
 }
 
 pub fn expand_close(
@@ -338,13 +413,7 @@ pub fn expand_close(
     registry: &RegistryContext,
     script: &IntentScript,
 ) -> Result<ResolvedStep> {
-    let via = step.via.as_deref().unwrap_or("balancer");
-    if via != "balancer" {
-        return Err(CompileError::UnsupportedStep(format!(
-            "close_position via '{}' is not supported (only 'balancer' in v1)",
-            via
-        )));
-    }
+    let provider = select_flashloan_provider(step.via.as_deref(), registry)?;
 
     if step.collateral == step.borrow {
         return Err(CompileError::Validation(
@@ -419,19 +488,37 @@ pub fn expand_close(
     })?;
     let swap_router = parse_asset_addr(swap_router_addr, registry)?;
 
-    let balancer =
-        registry
-            .protocols
-            .get("balancer")
-            .ok_or_else(|| CompileError::UnknownProtocol {
-                protocol: "balancer".to_string(),
-                network: registry.network.clone(),
-                available: registry.protocols.keys().cloned().collect::<Vec<_>>(),
+    // Provider-specific flashloan premium and outer wrapper.
+    let premium_bps: u16 = match provider {
+        FlashloanProvider::Balancer => 0,
+        FlashloanProvider::Aave => registry.aave_flashloan_premium_bps(),
+    };
+    let premium = current_debt.saturating_mul(U256::from(premium_bps as u64))
+        / U256::from(10_000u64);
+    let target_swap_out = current_debt
+        .checked_add(premium)
+        .ok_or_else(|| CompileError::InvalidAmount("close_position premium overflow".into()))?;
+
+    let balancer_vault_opt: Option<Address> = match provider {
+        FlashloanProvider::Balancer => {
+            let balancer =
+                registry
+                    .protocols
+                    .get("balancer")
+                    .ok_or_else(|| CompileError::UnknownProtocol {
+                        protocol: "balancer".to_string(),
+                        network: registry.network.clone(),
+                        available: registry.protocols.keys().cloned().collect::<Vec<_>>(),
+                    })?;
+            let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
+                CompileError::Adapter(
+                    "Protocol 'balancer' has no 'vault' contract configured".to_string(),
+                )
             })?;
-    let vault_addr = balancer.contracts.get("vault").ok_or_else(|| {
-        CompileError::Adapter("Protocol 'balancer' has no 'vault' contract configured".to_string())
-    })?;
-    let vault = parse_asset_addr(vault_addr, registry)?;
+            Some(parse_asset_addr(vault_addr, registry)?)
+        }
+        FlashloanProvider::Aave => None,
+    };
 
     let swap_deadline = swap_deadline_from_script(script);
     let _ = slippage_bps; // reserved for a future quote-based swap sizing
@@ -458,17 +545,27 @@ pub fn expand_close(
             fee: 3000,
             recipient: signer,
             deadline: U256::from(swap_deadline),
-            amount_out_minimum: current_debt, // must cover flashloan repayment
+            // Must cover repayment + provider premium.
+            amount_out_minimum: target_swap_out,
             native_input: false,
         },
     ];
 
-    Ok(ResolvedStep::BalancerFlashloan {
-        vault,
-        tokens: vec![borrow_addr],
-        amounts: vec![current_debt],
-        inner_steps,
-    })
+    match provider {
+        FlashloanProvider::Balancer => Ok(ResolvedStep::BalancerFlashloan {
+            vault: balancer_vault_opt.expect("balancer provider implies vault was fetched"),
+            tokens: vec![borrow_addr],
+            amounts: vec![current_debt],
+            inner_steps,
+        }),
+        FlashloanProvider::Aave => Ok(ResolvedStep::AaveFlashloan {
+            pool: aave_pool,
+            asset: borrow_addr,
+            amount: current_debt,
+            premium_bps,
+            inner_steps,
+        }),
+    }
 }
 
 fn resolve_sides(step: &LeverageStep, side: Side) -> Result<(String, String)> {

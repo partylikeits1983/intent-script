@@ -22,6 +22,14 @@
       "WBTC":   "0x40aAbEf1aa8f0eEc637E0E7d92fbfFB2F26A8b7B",
       "wstETH": "0xC96113eED8cAB59cD8A66813bCB0cEb29F06D2e4"
     },
+    "a_tokens": {
+      "WETH":   "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8",
+      "USDC":   "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c",
+      "USDT":   "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a",
+      "DAI":    "0x018008bfb33d285247A21d44E50697654f754e63",
+      "WBTC":   "0x5Ee5bf7ae06D1Be5997A1A72006FE6C607eC6DE8",
+      "wstETH": "0x0B925eD163218f6662a35e0f0371Ac234f9E9371"
+    },
     "max_leverage_safety_margin_bps": 0
   },
   "morpho": {
@@ -45,7 +53,7 @@
     "type": "dex",
     "version": "v3",
     "contracts": {
-      "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
       "quoter": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
       "position_manager": "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
     }

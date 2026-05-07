@@ -1,0 +1,16 @@
+{
+  "network": "ethereum",
+  "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "current_timestamp": 1714000000,
+  "steps": [
+    {
+      "close_position": {
+        "collateral": "WETH",
+        "borrow": "USDC",
+        "current_debt": "12864.0",
+        "current_collateral": "5.0",
+        "slippage": "50"
+      }
+    }
+  ]
+}

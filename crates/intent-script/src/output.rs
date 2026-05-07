@@ -40,7 +40,7 @@ pub struct PreviewStepInfo {
     pub action: String,
     pub protocol: String,
     pub description: String,
-    /// For composite steps (currently only `BalancerFlashloan`), the
+    /// For composite steps (`BalancerFlashloan`, `AaveFlashloan`), the
     /// user-meaningful inner steps in execution order. Empty for leaf steps.
     /// Auto-inserted approvals / transferFroms / permits are filtered out.
     pub inner_steps: Vec<PreviewStepInfo>,

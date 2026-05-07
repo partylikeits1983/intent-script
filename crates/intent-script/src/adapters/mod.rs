@@ -1,3 +1,4 @@
+pub mod aave_flashloan;
 pub mod aave_v3;
 pub mod across;
 pub mod balancer;
@@ -45,6 +46,7 @@ pub fn lower_step(step: &ResolvedStep, registry: &RegistryContext) -> Result<Vec
         ResolvedStep::SendEth { .. } => send::lower_send_eth(step),
         ResolvedStep::SendErc721 { .. } => send::lower_send_erc721(step),
         ResolvedStep::BalancerFlashloan { .. } => balancer::lower_flashloan(step, registry),
+        ResolvedStep::AaveFlashloan { .. } => aave_flashloan::lower_flashloan(step, registry),
         ResolvedStep::AcrossDepositV3 { .. } => across::lower_deposit_v3(step),
     }
 }
