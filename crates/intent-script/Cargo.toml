@@ -6,6 +6,18 @@ edition = "2024"
 [features]
 default = ["std"]
 std = ["serde_json/std", "thiserror/std"]
+# `advisor` builds the natural-language → DSL → compile → simulate binary.
+# All of its heavy deps are optional so the default lib build and the
+# `intent-script-wasm` crate stay `no_std`-clean and free of an async runtime.
+advisor = [
+    "std",
+    "clap",
+    "dep:rig-core",
+    "dep:tokio",
+    "dep:alloy",
+    "dep:dotenvy",
+    "dep:eyre",
+]
 
 [dependencies]
 alloy-primitives = { version = "1", default-features = false }
@@ -14,8 +26,28 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 thiserror = { version = "2", default-features = false }
 hashbrown = { version = "0.15", features = ["serde"] }
-clap = { version = "4", features = ["derive"], optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+
+# --- advisor-only deps (feature = "advisor") ---
+rig-core = { version = "0.36", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
+alloy = { version = "1.7", optional = true, features = [
+    "provider-anvil-node",
+    "signer-local",
+    "network",
+    "consensus",
+    "rpc-types",
+    "sol-types",
+] }
+dotenvy = { version = "0.15", optional = true }
+eyre = { version = "0.6", optional = true }
 
 [[bin]]
 name = "intent-script"
 required-features = ["std", "clap"]
+
+# Natural-language advisor: `cargo run -p intent-script --features advisor --bin advisor`
+[[bin]]
+name = "advisor"
+path = "src/bin/advisor/main.rs"
+required-features = ["advisor"]
