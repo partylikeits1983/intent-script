@@ -51,3 +51,12 @@ required-features = ["std", "clap"]
 name = "advisor"
 path = "src/bin/advisor/main.rs"
 required-features = ["advisor"]
+
+# Cross-stack e2e for the advisor binary. Gated behind the `advisor` feature
+# so default `cargo test -p intent-script` stays no_std-clean.
+# Run with: `cargo test -p intent-script --features advisor --test advisor_e2e
+#            -- --ignored --nocapture --test-threads=1`
+[[test]]
+name = "advisor_e2e"
+path = "tests/advisor_e2e.rs"
+required-features = ["advisor"]

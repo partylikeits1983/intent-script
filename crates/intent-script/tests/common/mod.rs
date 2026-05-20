@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use intent_script::error::CompileError;
 use intent_script::{CompileResult, compile, compile_with_allowances};
 
+#[cfg(feature = "advisor")]
+pub mod e2e;
+
 pub fn config_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest_dir)
