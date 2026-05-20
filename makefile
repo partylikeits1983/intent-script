@@ -11,7 +11,7 @@ ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
 	generate-fixtures generate-integration-fixtures test-foundry test-router \
 	e2e-test test-anvil test-fork-e2e test-fork-integration test-fork-local \
 	test-all compile-intent start start-anvil start-anvil-base start-l1 \
-	wasm-build server-compat
+	wasm-build server-compat advisor sync-advisor-prompt
 
 format:
 	cargo fmt --all
@@ -106,6 +106,23 @@ start-anvil:
 
 # Alias for the L1 fork. Kept for muscle-memory parity with `make start`.
 start-l1: start-anvil
+
+# Natural-language advisor: plain English -> DSL -> compile -> validate.
+# Needs OPENAI_API_KEY in the environment or .env. Add --simulate --rpc <url>
+# for a fork simulation (see `cargo run ... --bin advisor -- --help`).
+ADVISOR_PROMPT ?= deposit 5000 USDC into aave
+advisor:
+	cargo run -p intent-script --features advisor --bin advisor -- \
+		"$(ADVISOR_PROMPT)" \
+		--context crates/intent-script/examples/advisor-context.json \
+		--config-dir ./config --pretty
+
+# Re-copy the canonical system prompt from the frontend into the advisor crate.
+# Run this whenever intentOS-ui/lib/system-prompt.md changes.
+sync-advisor-prompt:
+	cp ../intentOS-ui/lib/system-prompt.md \
+		crates/intent-script/src/bin/advisor/system-prompt.md
+	@echo "advisor system prompt synced"
 
 # Run the same gate the GitHub Actions `ci` workflow runs locally.
 # Skips test-evm (needs ETH_RPC_URL) — run `make test-anvil` separately

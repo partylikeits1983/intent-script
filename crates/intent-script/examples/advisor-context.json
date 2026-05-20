@@ -1,0 +1,18 @@
+{
+  "wallet": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "network": "ethereum",
+  "balances": {
+    "ETH": "12.5",
+    "WETH": "3.0",
+    "USDC": "50000",
+    "DAI": "10000",
+    "WBTC": "0.8"
+  },
+  "prices": {
+    "ETH": "3500",
+    "WETH": "3500",
+    "USDC": "1.00",
+    "DAI": "1.00",
+    "WBTC": "65000"
+  }
+}
