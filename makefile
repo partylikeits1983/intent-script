@@ -10,8 +10,8 @@ ETH_RPC_URL ?= https://ethereum-rpc.publicnode.com
 .PHONY: ci fmt-check clippy format build test test-compiler generate-calldata \
 	generate-fixtures generate-integration-fixtures test-foundry test-router \
 	e2e-test test-anvil test-fork-e2e test-fork-integration test-fork-local \
-	test-all compile-intent start start-anvil start-anvil-base start-l1 \
-	wasm-build server-compat advisor sync-advisor-prompt
+	test-all test-e2e-advisor compile-intent start start-anvil start-anvil-base \
+	start-l1 wasm-build server-compat advisor sync-advisor-prompt
 
 format:
 	cargo fmt --all
@@ -116,6 +116,16 @@ advisor:
 		"$(ADVISOR_PROMPT)" \
 		--context crates/intent-script/examples/advisor-context.json \
 		--config-dir ./config --pretty
+
+# Cross-stack e2e for the advisor binary: spawns a local Anvil + IntentRouter
+# via `scripts/start-anvil.sh`, then runs the compiled `advisor` with
+# `--simulate --rpc <local>` and asserts the on-chain delta. Needs
+# OPENAI_API_KEY (in env or .env) plus anvil, cast, forge, jq on PATH —
+# skip-not-fail if any are missing. Use --test-threads=1 so multiple cases
+# don't race on port allocation. See WS-3C-full-stack-e2e.md.
+test-e2e-advisor:
+	cargo test -p intent-script --features advisor --test advisor_e2e -- \
+		--ignored --nocapture --test-threads=1
 
 # Re-copy the canonical system prompt from the frontend into the advisor crate.
 # Run this whenever intentOS-ui/lib/system-prompt.md changes.
